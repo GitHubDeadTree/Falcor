@@ -70,6 +70,22 @@ public:
     static float3 wavelengthToRGB_Rec709(const float lambda);
 
     /**
+     * Converts RGB color to dominant wavelength and purity.
+     * Based on CIE 1931 chromaticity diagram for physical accuracy.
+     * @param[in] rgb RGB color value, range [0,1].
+     * @param[out] purity Returns the color's purity value (0-1).
+     * @return Estimated dominant wavelength (nm), negative value for non-spectral colors (complement), or 0 if unable to estimate.
+     */
+    static float RGBtoDominantWavelength(const float3& rgb, float& purity);
+
+    /**
+     * Simplified version that converts RGB color to dominant wavelength without returning purity.
+     * @param[in] rgb RGB color value, range [0,1].
+     * @return Estimated dominant wavelength (nm), negative value for non-spectral colors (complement), or 0 if unable to estimate.
+     */
+    static float RGBtoDominantWavelength(const float3& rgb);
+
+    /**
      * Integrate over entire spectrum and apply user-supplied function to each integration.
      * @param[in] spectrum The spectrum to be converted.
      * @param[in] interpolationType Which type of interpolation that should be used.

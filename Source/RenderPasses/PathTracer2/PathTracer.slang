@@ -38,7 +38,6 @@ import RenderPasses.Shared.Denoising.NRDBuffers;
 import RenderPasses.Shared.Denoising.NRDData;
 import RenderPasses.Shared.Denoising.NRDHelpers;
 import Utils.Color.ColorHelpers;
-import Utils.Color.SpectrumUtils;
 import Utils.Geometry.GeometryHelpers;
 import Utils.Debug.PixelDebug;
 import LoadShadingData;
@@ -179,26 +178,6 @@ struct PathTracer
             guideData.setSpecularAlbedo(float3(0.f));
             guideData.setIndirectAlbedo(float3(0.f));
             guideData.setReflectionPos(float3(0.f));
-        }
-    }
-
-    /** Updates path wavelength based on emitted light properties.
-        This is called when a path segment contributes emitted light.
-    */
-    static void updatePathWavelength(inout PathState path, const float3 Le)
-    {
-        // Skip if no emission or path already has a valid wavelength
-        if (all(Le <= 0.0f) || path.getWavelength() != 0.0f)
-            return;
-
-        // Calculate dominant wavelength from emitted light color
-        float wavelength = SpectrumUtils::RGBtoDominantWavelength(Le);
-
-        // Only set wavelength if a valid value was determined
-        // (RGBtoDominantWavelength returns 0 if color is too dark or too close to white)
-        if (wavelength != 0.0f)
-        {
-            path.setWavelength(wavelength);
         }
     }
 
@@ -834,12 +813,20 @@ struct PathTracer
         }
     }
 
-    /**
-     * Handle a hit with simpler interface, used by TracePass.rt.slang.
-     * This version handles the creation of required data structures internally.
-     */
-    void handleHit<V : IVisibilityQuery>(inout PathState path, V visibilityQuery)
+    /** Handle the case when a scatter ray hits a surface.
+        After handling the hit, a new scatter ray is generated or the path is terminated.
+        \param[in,out] path The path state.
+        \param[in,out] vq Visibility query.
+    */
+    void handleHit<VisibilityQuery : IVisibilityQuery>(inout PathState path, inout VisibilityQuery vq)
     {
+        // Upon hit:
+        // - Load vertex/material data
+        // - Compute MIS weight if path.getVertexIndex() > 1 and emissive hit
+        // - Add emitted radiance
+        // - Sample light(s) using shadow rays
+        // - Sample scatter ray or terminate
+
         const bool isPrimaryHit = path.getVertexIndex() == 1;
         const HitType hitType = path.hit.getType();
         const bool isTriangleHit = hitType == HitType::Triangle;
@@ -928,13 +915,9 @@ struct PathTracer
             }
 
             // Accumulate emitted radiance weighted by path throughput and MIS weight.
-            float3 emission = misWeight * bsdfProperties.emission;
-            addToPathContribution(path, emission);
+            addToPathContribution(path, misWeight * bsdfProperties.emission);
 
-            attenuatedEmission = path.thp * emission;
-
-            // Update path wavelength based on emission color
-            updatePathWavelength(path, attenuatedEmission);
+            attenuatedEmission = path.thp * misWeight * bsdfProperties.emission;
         }
 
         // Terminate after scatter ray on last vertex has been processed.
@@ -943,11 +926,6 @@ struct PathTracer
             path.terminate();
             return;
         }
-
-        // 此处继续复制完整版handleHit的剩余代码，直到函数结束
-
-        // 以下是创建PathVertex对象的代码，用于后续的光源采样
-        PathVertex pathVertex = PathVertex(path.getVertexIndex(), sd.posW, sd.faceN, sd.frontFacing);
 
         // Compute origin for rays traced from this path vertex.
         if (isCurveHit)
@@ -990,6 +968,9 @@ struct PathTracer
             }
             else
             {
+                // Setup path vertex.
+                PathVertex vertex = PathVertex(path.getVertexIndex(), sd.posW, sd.faceN, sd.frontFacing);
+
                 const bool canNeeSampleSphere = isCurveHit || isCurvePolyTubeHit;
                 // Determine if upper/lower hemispheres need to be sampled.
                 bool sampleUpperHemisphere = canNeeSampleSphere || ((lobeTypes & (uint)LobeType::NonDeltaReflection) != 0);
@@ -997,7 +978,7 @@ struct PathTracer
                 if (!kUseLightsInDielectricVolumes && path.isInsideDielectricVolume()) sampleUpperHemisphere = false;
 
                 // Sample a light.
-                validSample = generateLightSample(pathVertex, sampleUpperHemisphere, sampleLowerHemisphere, path.sg, ls);
+                validSample = generateLightSample(vertex, sampleUpperHemisphere, sampleLowerHemisphere, path.sg, ls);
                 path.setLightSampled(sampleUpperHemisphere, sampleLowerHemisphere);
             }
 
@@ -1016,6 +997,7 @@ struct PathTracer
                 {
                     Ray ray = ls.getVisibilityRay();
 
+
                     if (isCurvePolyTubeHit)
                     {
                         // For curves tessellated into poly-tubes, we make sure that the origin is on the same side as light
@@ -1027,7 +1009,7 @@ struct PathTracer
                     }
 
                     logTraceRay(PixelStatsRayType::Visibility);
-                    bool visible = visibilityQuery.traceVisibilityRay(ray);
+                    bool visible = vq.traceVisibilityRay(ray);
                     if (visible) addToPathContribution(path, Lr);
                 }
             }
@@ -1127,18 +1109,7 @@ struct PathTracer
 
             float3 Le = envMapSampler.eval(path.dir);
             emitterRadiance = misWeight * Le;
-            float3 contribution = path.thp * emitterRadiance;
             addToPathContribution(path, emitterRadiance);
-
-            // Update path wavelength based on environment light
-            if (path.getWavelength() == 0.0f && any(contribution > 0.0f))
-            {
-                float wavelength = SpectrumUtils::RGBtoDominantWavelength(contribution);
-                if (wavelength != 0.0f)
-                {
-                    path.setWavelength(wavelength);
-                }
-            }
 
             if (kOutputGuideData && path.getVertexIndex() == 2
                 && (path.getBounces(BounceType::Specular) == 1

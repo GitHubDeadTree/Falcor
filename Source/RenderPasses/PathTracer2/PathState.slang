@@ -31,7 +31,6 @@ __exported import Utils.Math.Ray;
 __exported import Utils.Sampling.SampleGenerator;
 __exported import Rendering.Materials.InteriorList;
 __exported import GuideData;
-import Utils.Color.ColorHelpers;  // Import for luminance function
 
 static const uint kMaxRejectedHits = 16; // Maximum number of rejected hits along a path. The path is terminated if the limit is reached to avoid getting stuck in pathological cases.
 
@@ -104,8 +103,6 @@ struct PathState
     InteriorList interiorList;          ///< Interior list. Keeping track of a stack of materials with medium properties.
     SampleGenerator sg;                 ///< Sample generator state. Typically 4-16B.
 
-    float       wavelength;             ///< Light wavelength in nm (0 = not determined or white light)
-
     // Accessors
 
     bool isTerminated() { return !isActive(); }
@@ -155,16 +152,6 @@ struct PathState
     [mutating] void setDeltaReflectionPrimaryHit(bool value = true) { setFlag(PathFlags::deltaReflectionPrimaryHit, value); }
     [mutating] void setDeltaTransmissionPath(bool value = true) { setFlag(PathFlags::deltaTransmissionPath, value); }
     [mutating] void setDeltaOnlyPath(bool value = true) { setFlag(PathFlags::deltaOnlyPath, value); }
-
-    // Wavelength and intensity methods
-    [mutating] void setWavelength(float lambda) { wavelength = lambda; }
-    float getWavelength() { return wavelength; }
-
-    // Calculate light intensity based on luminance
-    float getLightIntensity()
-    {
-        return luminance(L);
-    }
 
     bool hasFlag(PathFlags flag)
     {

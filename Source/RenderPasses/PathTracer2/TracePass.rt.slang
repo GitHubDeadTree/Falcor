@@ -54,7 +54,6 @@ struct DummyAttribs { uint dummy; };
 struct PathPayload
 {
     uint4 packed[5];
-    uint  packed_extra;        ///< Additional data: x component stores wavelength
 
     PackedHitInfo hit;
     GuideData guideData;
@@ -79,9 +78,6 @@ struct PathPayload
 
         p.packed[4].xyz = asuint(path.L);
         p.packed[4].w = asuint(path.pdf);
-
-        // Pack additional data
-        p.packed_extra = asuint(path.wavelength);
 
         p.hit = path.hit.pack();
         p.guideData = path.guideData;
@@ -110,9 +106,6 @@ struct PathPayload
 
         path.L = asfloat(p.packed[4].xyz);
         path.pdf = asfloat(p.packed[4].w);
-
-        // Unpack additional data
-        path.wavelength = asfloat(p.packed_extra);
 
         path.hit = unpackHitInfo(p.hit);
         path.guideData = p.guideData;
