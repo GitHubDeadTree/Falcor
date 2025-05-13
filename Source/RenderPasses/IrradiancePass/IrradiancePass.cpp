@@ -1,0 +1,118 @@
+#include "IrradiancePass.h"
+#include "RenderGraph/RenderPassStandardFlags.h"
+
+namespace
+{
+    const std::string kShaderFile = "RenderPasses/IrradiancePass/IrradiancePass.cs.slang";
+
+    // Input/output channels
+    const std::string kInputRayInfo = "initialRayInfo";      // Input texture with ray direction and intensity
+    const std::string kOutputIrradiance = "irradiance";      // Output texture with irradiance values
+
+    // Shader constants
+    const std::string kReverseRayDirection = "reverseRayDirection";
+    const std::string kIntensityScale = "intensityScale";
+}
+
+IrradiancePass::IrradiancePass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
+{
+    // Parse properties
+    for (const auto& [key, value] : props)
+    {
+        if (key == "enabled") mEnabled = value;
+        else if (key == "reverseRayDirection") mReverseRayDirection = value;
+        else if (key == "intensityScale") mIntensityScale = value;
+        else logWarning("Unknown property '{}' in IrradiancePass properties.", key);
+    }
+
+    // Create compute pass
+    prepareProgram();
+}
+
+Properties IrradiancePass::getProperties() const
+{
+    Properties props;
+    props["enabled"] = mEnabled;
+    props["reverseRayDirection"] = mReverseRayDirection;
+    props["intensityScale"] = mIntensityScale;
+    return props;
+}
+
+RenderPassReflection IrradiancePass::reflect(const CompileData& compileData)
+{
+    RenderPassReflection reflector;
+
+    // Input: Initial ray direction and intensity
+    reflector.addInput(kInputRayInfo, "Initial ray direction (xyz) and intensity (w)").bindFlags(ResourceBindFlags::ShaderResource);
+
+    // Output: Irradiance
+    reflector.addOutput(kOutputIrradiance, "Calculated irradiance per pixel").bindFlags(ResourceBindFlags::UnorderedAccess).format(ResourceFormat::RGBA32Float);
+
+    return reflector;
+}
+
+void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& renderData)
+{
+    // Get input texture
+    const auto& pInputRayInfo = renderData.getTexture(kInputRayInfo);
+    if (!pInputRayInfo)
+    {
+        logWarning("IrradiancePass::execute() - Input ray info texture is missing. Make sure the PathTracer is outputting initialRayInfo data.");
+        return;
+    }
+
+    // If disabled, clear output and return
+    if (!mEnabled)
+    {
+        pRenderContext->clearUAV(renderData.getTexture(kOutputIrradiance)->getUAV().get(), float4(0.f));
+        return;
+    }
+
+    // Prepare resources and ensure shader program is updated
+    prepareResources(pRenderContext, renderData);
+
+    // Set shader constants
+    auto var = mpComputePass->getRootVar();
+    var["gReverseRayDirection"] = mReverseRayDirection;
+    var["gIntensityScale"] = mIntensityScale;
+    var["gInputRayInfo"] = pInputRayInfo;
+    var["gOutputIrradiance"] = renderData.getTexture(kOutputIrradiance);
+
+    // Execute compute pass
+    uint32_t width = pInputRayInfo->getWidth();
+    uint32_t height = pInputRayInfo->getHeight();
+    mpComputePass->execute(pRenderContext, { (width + 15) / 16, (height + 15) / 16, 1 });
+}
+
+void IrradiancePass::renderUI(Gui::Widgets& widget)
+{
+    widget.checkbox("Enabled", mEnabled);
+    widget.checkbox("Reverse Ray Direction", mReverseRayDirection);
+    widget.tooltip("When enabled, inverts the ray direction to calculate irradiance.\n"
+                   "This is usually required because ray directions in path tracing typically\n"
+                   "point from camera/surface to the light source, but irradiance calculations\n"
+                   "need directions pointing toward the receiving surface.");
+
+    widget.var("Intensity Scale", mIntensityScale, 0.0f, 10.0f, 0.1f);
+    widget.tooltip("Scaling factor applied to the calculated irradiance value.");
+}
+
+void IrradiancePass::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) {}
+
+void IrradiancePass::prepareProgram()
+{
+    // Create compute pass
+    ProgramDesc desc;
+    desc.addShaderLibrary(kShaderFile).csEntry("main");
+    mpComputePass = ComputePass::create(mpDevice, desc);
+}
+
+void IrradiancePass::prepareResources(RenderContext* pRenderContext, const RenderData& renderData)
+{
+    // Nothing to prepare as resources are passed directly in execute()
+}
+
+extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
+{
+    registry.registerClass<RenderPass, IrradiancePass>();
+}
