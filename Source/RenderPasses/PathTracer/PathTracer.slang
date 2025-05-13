@@ -306,6 +306,9 @@ struct PathTracer
         path.origin = cameraRay.origin;
         path.dir = cameraRay.dir;
 
+        // Store initial direction for irradiance calculation
+        path.initialDir = cameraRay.dir;
+
         // Create sample generator.
         const uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
         path.sg = SampleGenerator(pixel, params.seed * maxSpp + path.getSampleIdx());
