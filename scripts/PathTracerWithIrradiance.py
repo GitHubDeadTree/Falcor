@@ -13,7 +13,7 @@ def render_graph_PathTracerWithIrradiance():
     g.addPass(PathTracer, "PathTracer")
 
     # 添加IrradiancePass通道
-    IrradiancePass = createPass("IrradiancePass", {'enabled': True, 'reverseRayDirection': True, 'intensityScale': 1.0})
+    IrradiancePass = createPass("IrradiancePass", {'enabled': True, 'reverseRayDirection': True, 'intensityScale': 1.0, 'useActualNormals': False})
     g.addPass(IrradiancePass, "IrradiancePass")
 
     # 为颜色和辐照度添加累积通道

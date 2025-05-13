@@ -13,6 +13,7 @@ namespace
     const std::string kPerFrameCB = "PerFrameCB";           // cbuffer name
     const std::string kReverseRayDirection = "gReverseRayDirection";
     const std::string kIntensityScale = "gIntensityScale";
+    const std::string kDebugNormalView = "gDebugNormalView"; // Debug view for normal visualization
 }
 
 IrradiancePass::IrradiancePass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
@@ -23,6 +24,7 @@ IrradiancePass::IrradiancePass(ref<Device> pDevice, const Properties& props) : R
         if (key == "enabled") mEnabled = value;
         else if (key == "reverseRayDirection") mReverseRayDirection = value;
         else if (key == "intensityScale") mIntensityScale = value;
+        else if (key == "debugNormalView") mDebugNormalView = value;
         else logWarning("Unknown property '{}' in IrradiancePass properties.", key);
     }
 
@@ -36,6 +38,7 @@ Properties IrradiancePass::getProperties() const
     props["enabled"] = mEnabled;
     props["reverseRayDirection"] = mReverseRayDirection;
     props["intensityScale"] = mIntensityScale;
+    props["debugNormalView"] = mDebugNormalView;
     return props;
 }
 
@@ -78,6 +81,7 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     // 通过cbuffer名称路径访问变量
     var[kPerFrameCB][kReverseRayDirection] = mReverseRayDirection;
     var[kPerFrameCB][kIntensityScale] = mIntensityScale;
+    var[kPerFrameCB][kDebugNormalView] = mDebugNormalView;
 
     // 全局纹理资源绑定保持不变
     var["gInputRayInfo"] = pInputRayInfo;
@@ -100,6 +104,9 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
 
     widget.var("Intensity Scale", mIntensityScale, 0.0f, 10.0f, 0.1f);
     widget.tooltip("Scaling factor applied to the calculated irradiance value.");
+
+    widget.checkbox("Debug Normal View", mDebugNormalView);
+    widget.tooltip("When enabled, visualizes the normal directions as colors for debugging.");
 }
 
 void IrradiancePass::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) {}

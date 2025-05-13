@@ -51,6 +51,9 @@ cbuffer PerFrameCB
 {
     bool gReverseRayDirection;          ///< Whether to reverse ray direction when calculating irradiance
     float gIntensityScale;              ///< Scaling factor for the irradiance
+    bool gDebugNormalView;              ///< When enabled, visualizes normal directions as colors
+    bool gUseActualNormals;             ///< Whether to use actual surface normals
+    float3 gFixedNormal;                ///< The fixed normal direction to use when not using actual normals
 }
 
 [numthreads(16, 16, 1)]
@@ -76,9 +79,19 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         rayDir = -rayDir;
     }
 
-    // We assume the receiving surface normal is (0,0,1) for simplicity
-    // This can be modified to use an actual normal if needed
-    float3 normal = float3(0, 0, 1);
+    // Determine which normal to use
+    float3 normal;
+    if (gUseActualNormals)
+    {
+        // Will be implemented in a later task
+        // For now, just use the fixed normal
+        normal = float3(0, 0, 1);
+    }
+    else
+    {
+        // Use the fixed normal direction provided from the UI
+        normal = normalize(gFixedNormal);
+    }
 
     // Calculate cosine term (N·ω)
     float cosTheta = max(0.0f, dot(normal, rayDir));
@@ -87,7 +100,15 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     float irradiance = cosTheta * intensity * gIntensityScale;
 
     // Output irradiance (xyz) and number of samples (w)
-    // For Monte Carlo integration, we need to sum all contributions
-    // The w component can be used to normalize the result if needed (not used in this implementation)
-    gOutputIrradiance[pixel] = float4(irradiance, irradiance, irradiance, 1.0f);
+    if (gDebugNormalView)
+    {
+        // Map normal from [-1,1] range to [0,1] range for visualization
+        float3 normalColor = (normal + 1.0f) * 0.5f;
+        gOutputIrradiance[pixel] = float4(normalColor, 1.0f);
+    }
+    else
+    {
+        // Regular irradiance output
+        gOutputIrradiance[pixel] = float4(irradiance, irradiance, irradiance, 1.0f);
+    }
 }
