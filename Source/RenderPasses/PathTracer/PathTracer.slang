@@ -82,6 +82,7 @@ struct PathTracer
     // Outputs
     RWStructuredBuffer<ColorType> sampleColor;      ///< Output per-sample color if kSamplesPerPixel != 1.
     RWStructuredBuffer<GuideData> sampleGuideData;  ///< Output per-sample guide data.
+    RWStructuredBuffer<float4> sampleInitialRayInfo; ///< Output per-sample initial ray direction and intensity data.
     NRDBuffers outputNRD;                           ///< Output NRD data.
 
     RWTexture2D<float4> outputColor;                ///< Output color buffer if kSamplesPerPixel == 1.
@@ -100,6 +101,7 @@ struct PathTracer
 
     // Additional specialization.
     static const bool kOutputGuideData = OUTPUT_GUIDE_DATA;
+    static const bool kOutputInitialRayInfo = OUTPUT_INITIAL_RAY_INFO;
 
     /** Types of samplable lights.
     */
@@ -1214,6 +1216,12 @@ struct PathTracer
         if (kOutputGuideData)
         {
             sampleGuideData[outIdx] = path.guideData;
+        }
+
+        // 保存初始光线方向和强度到输出缓冲区
+        if (kOutputInitialRayInfo)
+        {
+            sampleInitialRayInfo[outIdx] = float4(path.initialDir, luminance(path.L));
         }
 
         if (kOutputNRDData)

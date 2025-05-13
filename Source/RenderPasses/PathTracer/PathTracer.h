@@ -187,6 +187,7 @@ private:
     bool                            mOutputGuideData = false;   ///< True if guide data should be generated as outputs.
     bool                            mOutputNRDData = false;     ///< True if NRD diffuse/specular data should be generated as outputs.
     bool                            mOutputNRDAdditionalData = false;   ///< True if NRD data from delta and residual paths should be generated as designated outputs rather than being included in specular NRD outputs.
+    bool                            mOutputInitialRayInfo = false; ///< True if initial ray direction and intensity data should be generated as outputs.
 
     ref<ComputePass>                mpGeneratePaths;            ///< Fullscreen compute pass generating paths starting at primary hits.
     ref<ComputePass>                mpResolvePass;              ///< Sample resolve pass.
@@ -204,4 +205,5 @@ private:
     ref<Buffer>                     mpSampleNRDPrimaryHitNeeOnDelta;///< Compact per-sample NEE on delta primary vertices data.
     ref<Buffer>                     mpSampleNRDEmission;        ///< Compact per-sample NRD emission data.
     ref<Buffer>                     mpSampleNRDReflectance;     ///< Compact per-sample NRD reflectance data.
+    ref<Buffer>                     mpSampleInitialRayInfo;     ///< Per-sample initial ray direction and intensity buffer.
 };

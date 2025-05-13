@@ -60,6 +60,7 @@ namespace
     const std::string kOutputReflectionPosW = "reflectionPosW";
     const std::string kOutputRayCount = "rayCount";
     const std::string kOutputPathLength = "pathLength";
+    const std::string kOutputInitialRayInfo = "initialRayInfo"; // 新增: 初始光线信息输出通道
     const std::string kOutputNRDDiffuseRadianceHitDist = "nrdDiffuseRadianceHitDist";
     const std::string kOutputNRDSpecularRadianceHitDist = "nrdSpecularRadianceHitDist";
     const std::string kOutputNRDEmission = "nrdEmission";
@@ -89,6 +90,7 @@ namespace
         { kOutputReflectionPosW,                            "",     "Output reflection pos (world space)", true /* optional */, ResourceFormat::RGBA32Float },
         { kOutputRayCount,                                  "",     "Per-pixel ray count", true /* optional */, ResourceFormat::R32Uint },
         { kOutputPathLength,                                "",     "Per-pixel path length", true /* optional */, ResourceFormat::R32Uint },
+        { kOutputInitialRayInfo,                            "",     "Initial ray direction and intensity", true /* optional */, ResourceFormat::RGBA32Float }, // 新增: 初始光线信息输出通道
         // NRD outputs
         { kOutputNRDDiffuseRadianceHitDist,                 "",     "Output demodulated diffuse color (linear) and hit distance", true /* optional */, ResourceFormat::RGBA32Float },
         { kOutputNRDSpecularRadianceHitDist,                "",     "Output demodulated specular color (linear) and hit distance", true /* optional */, ResourceFormat::RGBA32Float },
@@ -904,6 +906,13 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
         mpSampleNRDReflectance = mpDevice->createStructuredBuffer(var["sampleNRDReflectance"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
         mVarsChanged = true;
     }
+
+    // 为初始光线信息创建缓冲区
+    if (mOutputInitialRayInfo && (!mpSampleInitialRayInfo || mpSampleInitialRayInfo->getElementCount() < sampleCount || mVarsChanged))
+    {
+        mpSampleInitialRayInfo = mpDevice->createStructuredBuffer(var["sampleInitialRayInfo"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+        mVarsChanged = true;
+    }
 }
 
 void PathTracer::preparePathTracer(const RenderData& renderData)
@@ -1097,6 +1106,7 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         var["sampleOffset"] = mpSampleOffset; // Can be nullptr
         var["sampleColor"] = mpSampleColor;
         var["sampleGuideData"] = mpSampleGuideData;
+        var["sampleInitialRayInfo"] = mpSampleInitialRayInfo; // 新增: 绑定初始光线信息缓冲区
     }
 
     // Bind runtime data.
@@ -1236,6 +1246,11 @@ bool PathTracer::beginFrame(RenderContext* pRenderContext, const RenderData& ren
         || renderData[kOutputNRDDeltaTransmissionPosW] != nullptr;
     if (mOutputNRDAdditionalData != prevOutputNRDAdditionalData) mRecompile = true;
 
+    // Check if initial ray info should be generated.
+    bool prevOutputInitialRayInfo = mOutputInitialRayInfo;
+    mOutputInitialRayInfo = renderData[kOutputInitialRayInfo] != nullptr;
+    if (mOutputInitialRayInfo != prevOutputInitialRayInfo) mRecompile = true;
+
     // Enable pixel stats if rayCount or pathLength outputs are connected.
     if (renderData[kOutputRayCount] != nullptr || renderData[kOutputPathLength] != nullptr)
     {
@@ -1373,6 +1388,7 @@ void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& re
     var["outputNRDDeltaReflectionRadianceHitDist"] = renderData.getTexture(kOutputNRDDeltaReflectionRadianceHitDist);
     var["outputNRDDeltaTransmissionRadianceHitDist"] = renderData.getTexture(kOutputNRDDeltaTransmissionRadianceHitDist);
     var["outputNRDResidualRadianceHitDist"] = renderData.getTexture(kOutputNRDResidualRadianceHitDist);
+    var["outputInitialRayInfo"] = renderData.getTexture(kOutputInitialRayInfo); // 新增：绑定初始光线信息输出纹理
 
     if (mVarsChanged)
     {
@@ -1383,6 +1399,7 @@ void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& re
         var["sampleNRDHitDist"] = mpSampleNRDHitDist;
         var["sampleNRDEmission"] = mpSampleNRDEmission;
         var["sampleNRDReflectance"] = mpSampleNRDReflectance;
+        var["sampleInitialRayInfo"] = mpSampleInitialRayInfo; // 新增：绑定初始光线信息样本缓冲区
 
         var["sampleNRDPrimaryHitNeeOnDelta"] = mpSampleNRDPrimaryHitNeeOnDelta;
         var["primaryHitDiffuseReflectance"] = renderData.getTexture(kOutputNRDDiffuseReflectance);
@@ -1417,6 +1434,12 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("COLOR_FORMAT", std::to_string((uint32_t)colorFormat));
     defines.add("MIS_HEURISTIC", std::to_string((uint32_t)misHeuristic));
     defines.add("MIS_POWER_EXPONENT", std::to_string(misPowerExponent));
+
+    // 输出通道相关宏
+    defines.add("OUTPUT_GUIDE_DATA", owner.mOutputGuideData ? "1" : "0");
+    defines.add("OUTPUT_NRD_DATA", owner.mOutputNRDData ? "1" : "0");
+    defines.add("OUTPUT_NRD_ADDITIONAL_DATA", owner.mOutputNRDAdditionalData ? "1" : "0");
+    defines.add("OUTPUT_INITIAL_RAY_INFO", owner.mOutputInitialRayInfo ? "1" : "0"); // 新增宏定义
 
     // Sampling utilities configuration.
     FALCOR_ASSERT(owner.mpSampleGenerator);

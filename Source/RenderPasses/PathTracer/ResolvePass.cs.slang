@@ -48,6 +48,7 @@ struct ResolvePass
     StructuredBuffer<float>       sampleNRDHitDist;         ///< Input per-sample NRD hit distance data. Only valid if kOutputNRDData == true.
     StructuredBuffer<float4>      sampleNRDEmission;        ///< Input per-sample NRD emission data. Only valid if kOutputNRDData == true.
     StructuredBuffer<float4>      sampleNRDReflectance;     ///< Input per-sample NRD reflectance data. Only valid if kOutputNRDData == true.
+    StructuredBuffer<float4>      sampleInitialRayInfo;     ///< Input per-sample initial ray direction and intensity data. Only valid if kOutputInitialRayInfo == true.
 
     StructuredBuffer<float4> sampleNRDPrimaryHitNeeOnDelta; ///< Output per-sample NEE on paths classified as delta, from delta+diffuse materials. Only valid if kOutputNRDData == true.
     Texture2D<float4> primaryHitDiffuseReflectance;         ///< Output per-pixel primary hit diffuse reflectance. Only valid if kOutputNRDData == true.
@@ -61,6 +62,7 @@ struct ResolvePass
     RWTexture2D<float4> outputIndirectAlbedo;               ///< Output resolved indirect albedo. Only valid if kOutputGuideData == true.
     RWTexture2D<float4> outputGuideNormal;                  ///< Output resolved guide normal. Only valid if kOutputGuideData == true.
     RWTexture2D<float4> outputReflectionPosW;               ///< Output resolved reflection pos. Only valid if kOutputGuideData == true.
+    RWTexture2D<float4> outputInitialRayInfo;               ///< Output resolved initial ray direction and intensity. Only valid if kOutputInitialRayInfo == true.
 
     RWTexture2D<float4> outputNRDDiffuseRadianceHitDist;            ///< Output resolved diffuse radiance in .rgb and hit distance in .a for NRD. Only valid if kOutputNRDData == true.
     RWTexture2D<float4> outputNRDSpecularRadianceHitDist;           ///< Output resolved specular radiance in .rgb and hit distance in .a for NRD. Only valid if kOutputNRDData == true.
@@ -70,6 +72,7 @@ struct ResolvePass
 
     static const bool kOutputGuideData = OUTPUT_GUIDE_DATA;
     static const bool kOutputNRDData = OUTPUT_NRD_DATA;
+    static const bool kOutputInitialRayInfo = OUTPUT_INITIAL_RAY_INFO;
 
     /** Entry point for resolve pass.
         \param[in] pixel Pixel coordinates.
@@ -126,6 +129,20 @@ struct ResolvePass
             outputIndirectAlbedo[pixel] = float4(invSpp * indirectAlbedo, 0.f);
             outputGuideNormal[pixel] = float4(invSpp * guideNormal, 0.f);
             outputReflectionPosW[pixel] = float4(invSpp * reflectionPosW, 0.f);
+        }
+
+        // 处理初始光线信息通道
+        if (kOutputInitialRayInfo)
+        {
+            float4 initialRayInfo = float4(0.f);
+
+            for (uint sampleIdx = 0; sampleIdx < spp; sampleIdx++)
+            {
+                uint idx = offset + sampleIdx;
+                initialRayInfo += sampleInitialRayInfo[idx];
+            }
+
+            outputInitialRayInfo[pixel] = float4(invSpp * initialRayInfo.xyz, initialRayInfo.w * invSpp);
         }
 
         // NRD data is always written per-sample and needs to be resolved.

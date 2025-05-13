@@ -74,6 +74,7 @@ struct PathGenerator
 
     RWStructuredBuffer<ColorType> sampleColor;      ///< Output per-sample color if kSamplesPerPixel != 1.
     RWStructuredBuffer<GuideData> sampleGuideData;  ///< Output per-sample guide data.
+    RWStructuredBuffer<float4> sampleInitialRayInfo; ///< Output per-sample initial ray direction and intensity. Only valid if kOutputInitialRayInfo == true.
     NRDBuffers outputNRD;                           ///< Output NRD data.
 
     RWTexture2D<float4> outputColor;                ///< Output color buffer if kSamplesPerPixel == 1.
@@ -85,6 +86,7 @@ struct PathGenerator
 
     // Additional specialization.
     static const bool kOutputGuideData = OUTPUT_GUIDE_DATA;
+    static const bool kOutputInitialRayInfo = OUTPUT_INITIAL_RAY_INFO;
 
     /** Entry point for path generator.
         \param[in] tileID Tile ID in x and y on screen.
@@ -238,6 +240,11 @@ struct PathGenerator
                 outputNRD.sampleHitDist[outIdx + i] = kNRDInvalidPathLength;
                 outputNRD.sampleEmission[outIdx + i] = 0.f;
                 outputNRD.sampleReflectance[outIdx + i] = 1.f;
+            }
+
+            if (kOutputInitialRayInfo)
+            {
+                sampleInitialRayInfo[outIdx + i] = float4(dir, luminance(color));
             }
         }
 
