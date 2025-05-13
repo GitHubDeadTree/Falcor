@@ -26,50 +26,68 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 
-/**
- * Compute shader for calculating irradiance from initial ray direction and intensity.
- */
+/** Compute shader for calculating irradiance from ray direction and intensity data.
 
-import Scene.Shading;
+    Irradiance (E) is calculated as:
+    E = L * cos(θ) = L * (N·ω)
 
-cbuffer CB
+    where:
+    - L is the radiance (intensity)
+    - θ is the angle between the ray direction and the surface normal
+    - N is the surface normal (we assume (0,0,1) for simplicity)
+    - ω is the ray direction (negated if reverseRayDirection is enabled)
+
+    For Monte Carlo integration, we sum all irradiance contributions across all paths.
+*/
+
+// Input data
+Texture2D<float4> gInputRayInfo;        ///< Input ray direction (xyz) and intensity (w)
+
+// Output data
+RWTexture2D<float4> gOutputIrradiance;  ///< Output irradiance (xyz) and total cos-weighted samples count (w)
+
+// Parameters
+cbuffer PerFrameCB
 {
-    bool gReverseRayDirection;  // 是否反转光线方向
-    float gIntensityScale;      // 强度缩放系数
+    bool gReverseRayDirection;          ///< Whether to reverse ray direction when calculating irradiance
+    float gIntensityScale;              ///< Scaling factor for the irradiance
 }
-
-// 输入纹理
-Texture2D<float4> gInputRayInfo;       // 初始光线方向(xyz)和强度(w)
-
-// 输出纹理
-RWTexture2D<float4> gOutputIrradiance; // 辐照度输出
 
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    uint2 pixelPos = dispatchThreadId.xy;
+    const uint2 pixel = dispatchThreadId.xy;
 
-    // 读取输入的光线方向和强度
-    float4 rayInfo = gInputRayInfo[pixelPos];
+    // Skip if out of bounds
+    uint width, height;
+    gInputRayInfo.GetDimensions(width, height);
+    if (any(pixel >= uint2(width, height))) return;
+
+    // Read ray direction and intensity from input
+    float4 rayInfo = gInputRayInfo[pixel];
     float3 rayDir = rayInfo.xyz;
     float intensity = rayInfo.w;
 
-    // 如果需要，反转光线方向
-    // 注：光线方向通常是从相机指向场景点，但辐照度计算需要的是光线到达表面的方向
+    // For irradiance calculation, we need the ray direction to be pointing toward the receiving surface
+    // In path tracing, ray directions typically point from camera/surface to the light source
+    // If reverseRayDirection is true, we flip the direction
     if (gReverseRayDirection)
     {
         rayDir = -rayDir;
     }
 
-    // 计算辐照度：光线强度在法线方向上的投影
-    // 在这个简化模型中，我们假设表面法线与反转后的光线方向相同
-    // 完整的模型应考虑实际表面法线
-    float3 normal = normalize(rayDir);
+    // We assume the receiving surface normal is (0,0,1) for simplicity
+    // This can be modified to use an actual normal if needed
+    float3 normal = float3(0, 0, 1);
 
-    // 辐照度 = 光线强度 * cos(入射角)
-    // 由于我们假设法线与光线方向平行，cos(入射角) = 1
-    float3 irradiance = float3(intensity, intensity, intensity) * gIntensityScale;
+    // Calculate cosine term (N·ω)
+    float cosTheta = max(0.0f, dot(normal, rayDir));
 
-    // 存储辐照度和光线方向
-    gOutputIrradiance[pixelPos] = float4(irradiance, 1.0f);
+    // Calculate irradiance contribution: L * cosθ
+    float irradiance = cosTheta * intensity * gIntensityScale;
+
+    // Output irradiance (xyz) and number of samples (w)
+    // For Monte Carlo integration, we need to sum all contributions
+    // The w component can be used to normalize the result if needed (not used in this implementation)
+    gOutputIrradiance[pixel] = float4(irradiance, irradiance, irradiance, 1.0f);
 }

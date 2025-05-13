@@ -8,6 +8,7 @@ def render_graph_PathTracerWithIrradiance():
     g.addPass(VBufferRT, "VBufferRT")
 
     # 添加PathTracer通道
+    # 注意: PathTracer不需要显式设置outputInitialRayInfo，它会自动检测连接到initialRayInfo输出的通道
     PathTracer = createPass("PathTracer", {'samplesPerPixel': 1})
     g.addPass(PathTracer, "PathTracer")
 
