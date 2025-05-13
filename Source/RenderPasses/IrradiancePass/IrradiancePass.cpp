@@ -10,8 +10,9 @@ namespace
     const std::string kOutputIrradiance = "irradiance";      // Output texture with irradiance values
 
     // Shader constants
-    const std::string kReverseRayDirection = "reverseRayDirection";
-    const std::string kIntensityScale = "intensityScale";
+    const std::string kPerFrameCB = "PerFrameCB";           // cbuffer name
+    const std::string kReverseRayDirection = "gReverseRayDirection";
+    const std::string kIntensityScale = "gIntensityScale";
 }
 
 IrradiancePass::IrradiancePass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
@@ -73,8 +74,12 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
 
     // Set shader constants
     auto var = mpComputePass->getRootVar();
-    var["gReverseRayDirection"] = mReverseRayDirection;
-    var["gIntensityScale"] = mIntensityScale;
+
+    // 通过cbuffer名称路径访问变量
+    var[kPerFrameCB][kReverseRayDirection] = mReverseRayDirection;
+    var[kPerFrameCB][kIntensityScale] = mIntensityScale;
+
+    // 全局纹理资源绑定保持不变
     var["gInputRayInfo"] = pInputRayInfo;
     var["gOutputIrradiance"] = renderData.getTexture(kOutputIrradiance);
 

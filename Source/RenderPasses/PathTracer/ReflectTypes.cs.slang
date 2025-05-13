@@ -46,5 +46,6 @@ StructuredBuffer<float> sampleNRDHitDist;
 StructuredBuffer<float4> sampleNRDPrimaryHitNeeOnDelta;
 StructuredBuffer<float4> sampleNRDEmission;
 StructuredBuffer<float4> sampleNRDReflectance;
+StructuredBuffer<float4> sampleInitialRayInfo;
 
 void main() {}

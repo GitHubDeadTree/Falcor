@@ -47,8 +47,8 @@ def render_graph_PathTracerWithIrradiance():
     g.addEdge("IrradianceAccumulatePass.output", "IrradianceToneMapper.src")
 
     # 标记输出
-    g.markOutput("ToneMapper.dst", "Color")
-    g.markOutput("IrradianceToneMapper.dst", "Irradiance")
+    g.markOutput("ToneMapper.dst")
+    g.markOutput("IrradianceToneMapper.dst")
 
     return g
 
