@@ -191,7 +191,8 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     // Execute compute pass (dispatch based on the output resolution)
     uint32_t width = mOutputResolution.x;
     uint32_t height = mOutputResolution.y;
-    mpComputePass->execute(pRenderContext, { (width + 15) / 16, (height + 15) / 16, 1 });
+    logInfo("IrradiancePass::execute() - Dispatching compute with dimensions {}x{}", width, height);
+    mpComputePass->execute(pRenderContext, width, height, 1);
 }
 
 void IrradiancePass::renderUI(Gui::Widgets& widget)
