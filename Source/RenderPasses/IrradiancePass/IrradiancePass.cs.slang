@@ -40,6 +40,11 @@
     For Monte Carlo integration, we sum all irradiance contributions across all paths.
 */
 
+// Scene imports for accessing geometry data
+// Only import HitInfo without requiring full Scene module
+// In a future version, we'll add proper scene geometry support
+import Scene.HitInfo;
+
 // Input data
 Texture2D<float4> gInputRayInfo;        ///< Input ray direction (xyz) and intensity (w)
 Texture2D<uint> gVBuffer;               ///< Visibility buffer for surface identification (optional)
@@ -56,6 +61,10 @@ cbuffer PerFrameCB
     bool gUseActualNormals;             ///< Whether to use actual normals from VBuffer
     float3 gFixedNormal;                ///< Fixed normal direction when not using actual normals
 }
+
+// Scene data (will be bound by the host code)
+// 在任务5中，我们不直接声明和使用场景变量
+// 在任务6中，我们会正确配置场景访问
 
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
@@ -87,17 +96,18 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         // Start with a default value
         normal = float3(0, 0, 1);
 
-        // Get VBuffer data - This is just a placeholder in this stage
-        // In Task 5-6, we will add the proper Scene integration and normal access
+        // Get VBuffer data
         uint hitInfo = gVBuffer[pixel];
 
-        // At this stage, we don't fully interpret the VBuffer data
-        // Just check if we have valid data (non-zero) for debugging
+        // Check if we have valid hit info
         bool hasValidHit = (hitInfo != 0);
 
-        // In this task (Task 4), we're just setting up the framework
-        // We'll continue using the default normal even if UseActualNormals is true
-        // The real normal access will be implemented in later tasks
+        // In Task 5, we're just setting up dependencies
+        // No actual normal extraction yet, will be implemented in Task 6
+        // The real normal access requires these scene dependencies to be properly configured
+
+        // Note: In Task 6, we'll add code here to extract real normals from the scene
+        // using HitInfo, VertexData, and the scene interface
     }
     else
     {

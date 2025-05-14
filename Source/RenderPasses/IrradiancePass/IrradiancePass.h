@@ -8,6 +8,9 @@ using namespace Falcor;
 /** Irradiance calculation render pass.
     This pass takes the initial ray direction and radiance data from the path tracer
     and calculates the irradiance (flux per unit area) for each direction.
+
+    Note: Scene dependencies are only required when useActualNormals is enabled.
+    Otherwise, the pass can run without scene access.
 */
 class IrradiancePass : public RenderPass
 {
@@ -34,6 +37,8 @@ private:
     bool mReverseRayDirection = true;  ///< Whether to reverse ray direction when calculating irradiance
     uint2 mInputResolution = {0, 0};   ///< Current input resolution for debug display
     uint2 mOutputResolution = {0, 0};  ///< Current output resolution for debug display
+    ref<Scene> mpScene;                ///< Scene reference for accessing geometry data
+    bool mNeedRecompile = false;       ///< Flag indicating if shader program needs to be recompiled
 
     // UI variables
     bool mEnabled = true;              ///< Enable/disable the pass

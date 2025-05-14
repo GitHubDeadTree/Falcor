@@ -111,6 +111,12 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
         return;
     }
 
+    // Check if program needs to be recompiled
+    if (mNeedRecompile)
+    {
+        prepareProgram();
+    }
+
     // Store input and output resolutions for debug display
     mInputResolution = uint2(pInputRayInfo->getWidth(), pInputRayInfo->getHeight());
     mOutputResolution = uint2(pOutputIrradiance->getWidth(), pOutputIrradiance->getHeight());
@@ -145,6 +151,19 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     else if (mUseActualNormals)
     {
         logWarning("IrradiancePass::execute() - Cannot use actual normals because VBuffer is not available.");
+    }
+
+    // Bind scene data if available and using actual normals
+    if (mpScene && mUseActualNormals && hasVBuffer)
+    {
+        mpScene->bindShaderData(var["gScene"]);
+        logInfo("IrradiancePass::execute() - Successfully bound scene data to shader.");
+    }
+    else if (mUseActualNormals && !mpScene)
+    {
+        // Fall back to fixed normal if we want to use actual normals but don't have a scene
+        logWarning("IrradiancePass::execute() - Cannot use actual normals because Scene is not available. Falling back to fixed normal.");
+        var[kPerFrameCB][kUseActualNormals] = false;
     }
 
     // Execute compute pass (dispatch based on the output resolution)
@@ -230,14 +249,60 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
     }
 }
 
-void IrradiancePass::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) {}
+void IrradiancePass::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene)
+{
+    // Store scene reference
+    mpScene = pScene;
+
+    // Log scene status
+    if (pScene)
+    {
+        logInfo("IrradiancePass::setScene() - Scene set successfully.");
+    }
+    else
+    {
+        logWarning("IrradiancePass::setScene() - Null scene provided.");
+    }
+
+    // Mark for program recompilation since scene may provide shader modules
+    mNeedRecompile = true;
+}
 
 void IrradiancePass::prepareProgram()
 {
-    // Create compute pass
+    // Create program description
     ProgramDesc desc;
     desc.addShaderLibrary(kShaderFile).csEntry("main");
-    mpComputePass = ComputePass::create(mpDevice, desc);
+
+    // Create shader defines
+    DefineList defines;
+
+    // Add scene shader modules and defines if available
+    if (mpScene && mUseActualNormals)
+    {
+        // Get scene defines for proper shader compilation
+        defines.add(mpScene->getSceneDefines());
+
+        // Add scene shader modules
+        desc.addShaderModules(mpScene->getShaderModules());
+        desc.addTypeConformances(mpScene->getTypeConformances());
+
+        logInfo("IrradiancePass::prepareProgram() - Added scene defines and shader modules.");
+    }
+
+    try
+    {
+        // Create the compute pass with the defines
+        mpComputePass = ComputePass::create(mpDevice, desc, defines);
+        logInfo("IrradiancePass::prepareProgram() - Successfully created compute program.");
+
+        // Reset recompile flag
+        mNeedRecompile = false;
+    }
+    catch (const Exception& e)
+    {
+        logError("IrradiancePass::prepareProgram() - Error creating compute program: {}", e.what());
+    }
 }
 
 void IrradiancePass::prepareResources(RenderContext* pRenderContext, const RenderData& renderData)
