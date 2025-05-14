@@ -164,8 +164,15 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     // Bind scene data if available and using actual normals
     if (useActualNormals)
     {
-        mpScene->bindShaderData(var["gScene"]);
-        logInfo("IrradiancePass::execute() - Successfully bound scene data to shader for normal extraction.");
+        if (var.findMember("gScene").isValid())
+        {
+            mpScene->bindShaderData(var["gScene"]);
+            logInfo("IrradiancePass::execute() - Successfully bound scene data to shader for normal extraction.");
+        }
+        else
+        {
+            logWarning("IrradiancePass::execute() - Cannot find gScene in shader. Check if USE_ACTUAL_NORMALS is correctly defined.");
+        }
     }
     else if (mUseActualNormals && !mpScene)
     {
@@ -193,11 +200,21 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
     widget.checkbox("Debug Normal View", mDebugNormalView);
     widget.tooltip("When enabled, visualizes the normal directions as colors for debugging.");
 
+    // 保存之前的useActualNormals值用于检测变化
+    bool prevUseActualNormals = mUseActualNormals;
     widget.checkbox("Use Actual Normals", mUseActualNormals);
     widget.tooltip("When enabled, uses the actual surface normals from VBuffer and Scene data\n"
                   "instead of assuming a fixed normal direction.\n"
                   "This provides accurate irradiance calculation on curved surfaces.\n"
                   "Requires a valid VBuffer input and Scene connection.");
+
+    // 检测是否需要重新编译
+    if (prevUseActualNormals != mUseActualNormals)
+    {
+        logInfo("IrradiancePass::renderUI() - Use Actual Normals changed to {}. Marking for shader recompilation.",
+                mUseActualNormals ? "enabled" : "disabled");
+        mNeedRecompile = true;
+    }
 
     if (!mUseActualNormals)
     {
@@ -285,6 +302,7 @@ void IrradiancePass::prepareProgram()
     // Create shader defines
     DefineList defines;
 
+    // 确保正确设置USE_ACTUAL_NORMALS宏
     defines.add("USE_ACTUAL_NORMALS", mUseActualNormals ? "1" : "0");
 
     // Add scene shader modules and defines if available and we need them

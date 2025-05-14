@@ -2216,3 +2216,110 @@ var[kPerFrameCB][kUseActualNormals] = useActualNormals;
 4. 当编译器给出含糊的错误信息时，考虑重构代码以消除潜在的复杂性
 
 通过这次修复，解决了变量定义不可见的问题，使IrradiancePass能够正常编译和运行。
+
+## 第16阶段：修复条件编译导致的着色器变量不可见问题
+
+实现时间：2024-08-21
+
+### 1. 问题描述
+
+在启用"Use Actual Normals"选项后，程序出现以下错误：
+
+```
+(Error) Caught an exception:
+
+No member named 'gScene' found.
+
+D:\Campus\KY\Light\Falcor3\Falcor\Source\Falcor\Core\Program\ShaderVar.cpp:47 (operator [])
+```
+
+这个错误发生在IrradiancePass.cpp文件的第167行，当代码尝试访问着色器变量`gScene`时。
+
+### 2. 原因分析
+
+通过分析代码，发现问题的根本原因是着色器文件中使用了条件编译预处理器指令，而C++代码没有相应的条件检查：
+
+在着色器文件(IrradiancePass.cs.slang)中：
+```hlsl
+#if USE_ACTUAL_NORMALS
+ParameterBlock<Scene> gScene;           ///< Scene data for accessing geometry information
+#endif
+```
+
+这意味着只有在`USE_ACTUAL_NORMALS`被定义为1时，`gScene`变量才会被包含在编译后的着色器中。
+
+而在C++代码中，我们无条件地尝试访问这个变量：
+```cpp
+if (useActualNormals)
+{
+    mpScene->bindShaderData(var["gScene"]);  // 错误发生在这里
+    logInfo("IrradiancePass::execute() - Successfully bound scene data to shader for normal extraction.");
+}
+```
+
+这导致当着色器编译时`USE_ACTUAL_NORMALS`为0，但运行时我们尝试访问`gScene`变量时出现错误。
+
+### 3. 解决方案
+
+#### 3.1 确保预处理器宏定义正确
+
+首先，确保在创建着色器程序时正确设置了`USE_ACTUAL_NORMALS`宏：
+
+```cpp
+// 创建着色器定义
+DefineList defines;
+
+// 确保正确设置USE_ACTUAL_NORMALS宏
+defines.add("USE_ACTUAL_NORMALS", mUseActualNormals ? "1" : "0");
+```
+
+#### 3.2 在运行时检查变量是否存在
+
+修改execute方法中的场景数据绑定部分，添加变量存在性检查：
+
+```cpp
+// Bind scene data if available and using actual normals
+if (useActualNormals)
+{
+    // 只有当USE_ACTUAL_NORMALS宏被定义为1时，gScene才会存在
+    // 因此我们需要检查变量是否存在
+    if (var.findMember("gScene").isValid())
+    {
+        mpScene->bindShaderData(var["gScene"]);
+        logInfo("IrradiancePass::execute() - Successfully bound scene data to shader for normal extraction.");
+    }
+    else
+    {
+        logWarning("IrradiancePass::execute() - Cannot find gScene in shader. Check if USE_ACTUAL_NORMALS is correctly defined.");
+    }
+}
+```
+
+#### 3.3 添加UI变更触发重编译的功能
+
+当用户在UI中切换"Use Actual Normals"选项时，需要重新编译着色器以确保正确的条件编译：
+
+```cpp
+// 保存之前的useActualNormals值用于检测变化
+bool prevUseActualNormals = mUseActualNormals;
+widget.checkbox("Use Actual Normals", mUseActualNormals);
+// 其他UI代码...
+
+// 检测是否需要重新编译
+if (prevUseActualNormals != mUseActualNormals)
+{
+    logInfo("IrradiancePass::renderUI() - Use Actual Normals changed to {}. Marking for shader recompilation.",
+            mUseActualNormals ? "enabled" : "disabled");
+    mNeedRecompile = true;
+}
+```
+
+### 4. 总结
+
+这个问题的根本原因是着色器中的条件编译与C++代码中的变量访问不一致。解决方案包括：
+
+1. 确保正确设置预处理器宏定义
+2. 在运行时检查变量是否存在，避免访问不存在的变量
+3. 当相关设置变化时触发着色器重新编译
+
+此修复确保了在使用实际法线时，场景数据能够正确绑定到着色器，同时避免了条件编译导致的变量不可见问题。
