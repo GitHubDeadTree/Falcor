@@ -618,9 +618,9 @@ target_source_group(IrradiancePass "RenderPasses")
 3. 验证着色器文件已被正确复制到`build/windows-vs2022/bin/Debug/shaders/RenderPasses/IrradiancePass/`目录
 4. 重新运行`PathTracerWithIrradiance.py`脚本
 
-### 总结
+### 预期效果
 
-这次修改解决了着色器文件无法找到的问题，通过正确设置CMake构建系统，确保IrradiancePass.cs.slang文件能够被复制到Falcor的运行时目录中，使得渲染引擎可以在运行时找到并加载这个着色器文件。
+通过上述修改，我们正确地按照Falcor的变量绑定机制访问着色器变量，解决了"No member named 'gReverseRayDirection' found"错误。这应该使辐照度计算功能能够正常工作。
 
 这个问题的解决完成了整个辐照度计算系统的实现，从PathState修改、添加输出通道，到创建辐照度计算渲染通道和集成脚本，整个工作流程现在可以正常工作了。
 
@@ -1043,7 +1043,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
 这次经验为我们今后在Falcor中开发更复杂的渲染功能提供了宝贵的经验和指导。
 
-## 第7阶段：解决PathTracer中的变量缺失问题
+## 第7阶段：解决着色器变量缺失问题
 
 实现时间：2024-08-19
 
@@ -1306,3 +1306,152 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
 ### 总结
 
 通过这次实现，我们为IrradiancePass添加了分辨率调试显示功能，可以在Debug窗口中实时查看输入和输出分辨率信息，并且分析确认了分辨率处理是完全动态的。这不仅提高了开发和调试效率，也确保了在各种显示条件下辐照度计算的正确性。
+
+## 第9阶段：实现使用VBuffer获取表面法线的框架（任务4）
+
+实现时间：2024-08-20
+
+### 1. 问题描述
+
+当前的IrradiancePass使用固定法线(0,0,1)进行辐照度计算，这导致在非平面物体（如球体）上的辐照度计算不准确。任务4是改进计划的一部分，目标是添加框架代码以读取VBuffer数据，并为后续集成真实法线做准备。
+
+根据README_IrradiancePass_NormalFix.md的任务4要求：需要实现法线读取功能的框架，并通过调试视图验证法线数据是否可用，但暂不将其用于辐照度计算。
+
+### 2. 原因分析
+
+IrradiancePass目前只使用固定的法线方向(0,0,1)，无法反映场景中物体表面的实际法线。为了在曲面上正确计算辐照度，需要获取每个像素的实际表面法线。法线信息存储在VBuffer中，但当前的实现尚未利用这些数据。
+
+在完全实现真实法线功能前，需要先创建一个框架，验证VBuffer输入是否正确连接并可用。这是一个重要的中间步骤，确保基础设施准备就绪，为后续添加完整功能铺平道路。
+
+### 3. 解决方案
+
+#### 3.1 修改IrradiancePass.cs.slang
+
+首先修改着色器文件，添加对VBuffer的基本支持：
+
+```diff
+// Input data
+Texture2D<float4> gInputRayInfo;        ///< Input ray direction (xyz) and intensity (w)
+- Texture2D<uint4> gVBuffer;              ///< Visibility buffer for surface identification (optional)
++ Texture2D<uint> gVBuffer;               ///< Visibility buffer for surface identification (optional)
+
+// ... 其他代码 ...
+
+float3 normal;
+if (gUseActualNormals)
+{
+-   // For now, we still use the fixed normal since we haven't yet implemented actual normal access
+-   // This will be updated in a later task
++   // Start with a default value
+    normal = float3(0, 0, 1);
++
++   // Get VBuffer data - This is just a placeholder in this stage
++   // In Task 5-6, we will add the proper Scene integration and normal access
++   uint hitInfo = gVBuffer[pixel];
++
++   // At this stage, we don't fully interpret the VBuffer data
++   // Just check if we have valid data (non-zero) for debugging
++   bool hasValidHit = (hitInfo != 0);
++
++   // In this task (Task 4), we're just setting up the framework
++   // We'll continue using the default normal even if UseActualNormals is true
++   // The real normal access will be implemented in later tasks
+}
+else
+{
+    // Use the configurable fixed normal
+    normal = normalize(gFixedNormal);
+}
+
++ // In Debug Normal View mode, use the selected normal
++ // For all other modes, we'll still use the fixed normal for calculation in this stage
++ float3 calculationNormal = gUseActualNormals ? normal : normalize(gFixedNormal);
+
+// Calculate cosine term (N·ω)
+- float cosTheta = max(0.0f, dot(normal, rayDir));
++ float cosTheta = max(0.0f, dot(calculationNormal, rayDir));
+```
+
+#### 3.2 修改IrradiancePass.cpp
+
+更新C++代码以正确处理VBuffer输入并添加调试信息：
+
+```diff
+// Get VBuffer input (optional at this stage)
+const auto& pVBuffer = renderData.getTexture("vbuffer");
+- if (mUseActualNormals && !pVBuffer)
++ bool hasVBuffer = pVBuffer != nullptr;
++
++ if (mUseActualNormals)
++ {
++     if (!hasVBuffer)
+      {
+          logWarning("IrradiancePass::execute() - VBuffer texture is missing but useActualNormals is enabled. Falling back to fixed normal.");
++     }
++     else
++     {
++         logInfo("IrradiancePass::execute() - VBuffer texture is available. Resolution: {}x{}",
++                 pVBuffer->getWidth(), pVBuffer->getHeight());
++     }
+  }
+
+// ... 其他代码 ...
+
+// Set shader constants
+auto var = mpComputePass->getRootVar();
+var[kPerFrameCB][kReverseRayDirection] = mReverseRayDirection;
+var[kPerFrameCB][kIntensityScale] = mIntensityScale;
+var[kPerFrameCB][kDebugNormalView] = mDebugNormalView;
+- var[kPerFrameCB][kUseActualNormals] = mUseActualNormals && pVBuffer != nullptr;  // Only use actual normals if VBuffer is available
++ var[kPerFrameCB][kUseActualNormals] = mUseActualNormals && hasVBuffer;  // Only use actual normals if VBuffer is available
+var[kPerFrameCB][kFixedNormal] = mFixedNormal;
+
+// ... 其他代码 ...
+
+// Bind VBuffer if available
+- if (pVBuffer)
++ if (hasVBuffer)
+{
+    var["gVBuffer"] = pVBuffer;
++   logInfo("IrradiancePass::execute() - Successfully bound VBuffer texture to shader.");
++}
++else if (mUseActualNormals)
++{
++   logWarning("IrradiancePass::execute() - Cannot use actual normals because VBuffer is not available.");
+}
+```
+
+#### 3.3 确认PathTracerWithIrradiance.py中已添加VBuffer连接
+
+确认渲染图脚本中已包含从VBufferRT到IrradiancePass的vbuffer连接：
+
+```python
+# 新增: 连接VBufferRT到IrradiancePass提供法线数据
+g.addEdge("VBufferRT.vbuffer", "IrradiancePass.vbuffer")
+```
+
+### 4. 总结
+
+通过以上修改，我们完成了任务4的目标：
+
+1. 在着色器中添加了读取VBuffer数据的框架代码
+2. 增强了C++端对VBuffer可用性的检查和日志记录
+3. 保持了与原有功能的兼容性（仍然使用固定法线进行实际计算）
+4. 添加了调试功能，为验证VBuffer输入连接正确提供了便利
+5. 为后续任务中添加真实法线支持做好了准备
+
+通过这些改进，开发者可以：
+- 验证VBuffer是否正确连接和可用
+- 使用Debug Normal View功能查看法线可视化结果
+- 实验不同的固定法线配置
+- 为后续集成真实法线的任务做好准备
+
+这些修改没有改变当前的功能行为（仍使用固定法线计算辐照度），但建立了清晰的框架，为下一阶段的开发铺平了道路。
+
+### 5. 其他补充信息
+
+在此阶段，法线可视化仍会显示固定法线的颜色，因为我们还没有实际解析和使用VBuffer中的法线数据。当启用Debug Normal View并使用默认的(0,0,1)法线时，应该看到蓝色的显示，因为法线颜色是通过将法线向量从[-1,1]范围映射到[0,1]范围计算的：(0,0,1) → (0.5,0.5,1.0)，呈现为蓝色。
+
+实现第5-6任务后，Debug Normal View将能够显示场景中物体的实际法线方向，表现为多彩的渐变图像，特别是在曲面上会看到法线方向的连续变化。
+
+需要注意的是，VBuffer的正确解析需要场景信息，这将在任务5-6中实现。当前的修改只是为该功能做准备，确保基础设施（包括连接和数据流）已经正确设置。

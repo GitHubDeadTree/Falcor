@@ -42,7 +42,7 @@
 
 // Input data
 Texture2D<float4> gInputRayInfo;        ///< Input ray direction (xyz) and intensity (w)
-Texture2D<uint4> gVBuffer;              ///< Visibility buffer for surface identification (optional)
+Texture2D<uint> gVBuffer;               ///< Visibility buffer for surface identification (optional)
 
 // Output data
 RWTexture2D<float4> gOutputIrradiance;  ///< Output irradiance (xyz) and total cos-weighted samples count (w)
@@ -84,9 +84,20 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     float3 normal;
     if (gUseActualNormals)
     {
-        // For now, we still use the fixed normal since we haven't yet implemented actual normal access
-        // This will be updated in a later task
+        // Start with a default value
         normal = float3(0, 0, 1);
+
+        // Get VBuffer data - This is just a placeholder in this stage
+        // In Task 5-6, we will add the proper Scene integration and normal access
+        uint hitInfo = gVBuffer[pixel];
+
+        // At this stage, we don't fully interpret the VBuffer data
+        // Just check if we have valid data (non-zero) for debugging
+        bool hasValidHit = (hitInfo != 0);
+
+        // In this task (Task 4), we're just setting up the framework
+        // We'll continue using the default normal even if UseActualNormals is true
+        // The real normal access will be implemented in later tasks
     }
     else
     {
@@ -94,8 +105,12 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         normal = normalize(gFixedNormal);
     }
 
+    // In Debug Normal View mode, use the selected normal
+    // For all other modes, we'll still use the fixed normal for calculation in this stage
+    float3 calculationNormal = gUseActualNormals ? normal : normalize(gFixedNormal);
+
     // Calculate cosine term (N·ω)
-    float cosTheta = max(0.0f, dot(normal, rayDir));
+    float cosTheta = max(0.0f, dot(calculationNormal, rayDir));
 
     // Calculate irradiance contribution: L * cosθ
     float irradiance = cosTheta * intensity * gIntensityScale;

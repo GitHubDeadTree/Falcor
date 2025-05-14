@@ -89,9 +89,19 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
 
     // Get VBuffer input (optional at this stage)
     const auto& pVBuffer = renderData.getTexture("vbuffer");
-    if (mUseActualNormals && !pVBuffer)
+    bool hasVBuffer = pVBuffer != nullptr;
+
+    if (mUseActualNormals)
     {
-        logWarning("IrradiancePass::execute() - VBuffer texture is missing but useActualNormals is enabled. Falling back to fixed normal.");
+        if (!hasVBuffer)
+        {
+            logWarning("IrradiancePass::execute() - VBuffer texture is missing but useActualNormals is enabled. Falling back to fixed normal.");
+        }
+        else
+        {
+            logInfo("IrradiancePass::execute() - VBuffer texture is available. Resolution: {}x{}",
+                    pVBuffer->getWidth(), pVBuffer->getHeight());
+        }
     }
 
     // If disabled, clear output and return
@@ -119,7 +129,7 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     var[kPerFrameCB][kReverseRayDirection] = mReverseRayDirection;
     var[kPerFrameCB][kIntensityScale] = mIntensityScale;
     var[kPerFrameCB][kDebugNormalView] = mDebugNormalView;
-    var[kPerFrameCB][kUseActualNormals] = mUseActualNormals && pVBuffer != nullptr;  // Only use actual normals if VBuffer is available
+    var[kPerFrameCB][kUseActualNormals] = mUseActualNormals && hasVBuffer;  // Only use actual normals if VBuffer is available
     var[kPerFrameCB][kFixedNormal] = mFixedNormal;
 
     // 全局纹理资源绑定保持不变
@@ -127,9 +137,14 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     var["gOutputIrradiance"] = pOutputIrradiance;
 
     // Bind VBuffer if available
-    if (pVBuffer)
+    if (hasVBuffer)
     {
         var["gVBuffer"] = pVBuffer;
+        logInfo("IrradiancePass::execute() - Successfully bound VBuffer texture to shader.");
+    }
+    else if (mUseActualNormals)
+    {
+        logWarning("IrradiancePass::execute() - Cannot use actual normals because VBuffer is not available.");
     }
 
     // Execute compute pass (dispatch based on the output resolution)
