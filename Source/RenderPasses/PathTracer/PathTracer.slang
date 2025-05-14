@@ -949,9 +949,6 @@ struct PathTracer
             return;
         }
 
-        // 此处继续复制完整版handleHit的剩余代码，直到函数结束
-
-        // 以下是创建PathVertex对象的代码，用于后续的光源采样
         PathVertex pathVertex = PathVertex(path.getVertexIndex(), sd.posW, sd.faceN, sd.frontFacing);
 
         // Compute origin for rays traced from this path vertex.

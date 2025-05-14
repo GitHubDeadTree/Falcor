@@ -16,6 +16,7 @@ namespace
     const std::string kDebugNormalView = "gDebugNormalView"; // Debug view for normal visualization
     const std::string kUseActualNormals = "gUseActualNormals"; // Whether to use actual normals
     const std::string kFixedNormal = "gFixedNormal";         // Fixed normal direction
+    const std::string kPassthrough = "gPassthrough";         // When enabled, directly outputs input rayinfo
 }
 
 IrradiancePass::IrradiancePass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
@@ -29,6 +30,7 @@ IrradiancePass::IrradiancePass(ref<Device> pDevice, const Properties& props) : R
         else if (key == "debugNormalView") mDebugNormalView = value;
         else if (key == "useActualNormals") mUseActualNormals = value;
         else if (key == "fixedNormal") mFixedNormal = float3(value);
+        else if (key == "passthrough") mPassthrough = value;
         else logWarning("Unknown property '{}' in IrradiancePass properties.", key);
     }
 
@@ -45,6 +47,7 @@ Properties IrradiancePass::getProperties() const
     props["debugNormalView"] = mDebugNormalView;
     props["useActualNormals"] = mUseActualNormals;
     props["fixedNormal"] = mFixedNormal;
+    props["passthrough"] = mPassthrough;
     return props;
 }
 
@@ -134,7 +137,13 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     var[kPerFrameCB][kReverseRayDirection] = mReverseRayDirection;
     var[kPerFrameCB][kIntensityScale] = mIntensityScale;
     var[kPerFrameCB][kDebugNormalView] = mDebugNormalView;
+    var[kPerFrameCB][kPassthrough] = mPassthrough;
 
+    // Add passthrough mode log information
+    if (mPassthrough)
+    {
+        logInfo("IrradiancePass::execute() - Running in PASSTHROUGH mode: directly outputting input rayinfo");
+    }
 
     bool useActualNormals = mUseActualNormals && hasVBuffer && mpScene;
 
@@ -188,39 +197,56 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
 void IrradiancePass::renderUI(Gui::Widgets& widget)
 {
     widget.checkbox("Enabled", mEnabled);
-    widget.checkbox("Reverse Ray Direction", mReverseRayDirection);
-    widget.tooltip("When enabled, inverts the ray direction to calculate irradiance.\n"
-                   "This is usually required because ray directions in path tracing typically\n"
-                   "point from camera/surface to the light source, but irradiance calculations\n"
-                   "need directions pointing toward the receiving surface.");
 
-    widget.var("Intensity Scale", mIntensityScale, 0.0f, 10.0f, 0.1f);
-    widget.tooltip("Scaling factor applied to the calculated irradiance value.");
+    // Add passthrough mode controls
+    bool prevPassthrough = mPassthrough;
+    widget.checkbox("Passthrough Mode", mPassthrough);
+    widget.tooltip("When enabled, directly outputs the input rayinfo texture without any calculations.\n"
+                   "Useful for debugging to verify if the problem is in the input data or the calculation.");
 
-    widget.checkbox("Debug Normal View", mDebugNormalView);
-    widget.tooltip("When enabled, visualizes the normal directions as colors for debugging.");
-
-    // 保存之前的useActualNormals值用于检测变化
-    bool prevUseActualNormals = mUseActualNormals;
-    widget.checkbox("Use Actual Normals", mUseActualNormals);
-    widget.tooltip("When enabled, uses the actual surface normals from VBuffer and Scene data\n"
-                  "instead of assuming a fixed normal direction.\n"
-                  "This provides accurate irradiance calculation on curved surfaces.\n"
-                  "Requires a valid VBuffer input and Scene connection.");
-
-    // 检测是否需要重新编译
-    if (prevUseActualNormals != mUseActualNormals)
+    if (prevPassthrough != mPassthrough)
     {
-        logInfo("IrradiancePass::renderUI() - Use Actual Normals changed to {}. Marking for shader recompilation.",
-                mUseActualNormals ? "enabled" : "disabled");
-        mNeedRecompile = true;
+        logInfo("IrradiancePass::renderUI() - Passthrough mode changed to {}. Calculations are {}.",
+                mPassthrough ? "enabled" : "disabled",
+                mPassthrough ? "bypassed" : "active");
     }
 
-    if (!mUseActualNormals)
+    // Only show other settings in non-passthrough mode
+    if (!mPassthrough)
     {
+        widget.checkbox("Reverse Ray Direction", mReverseRayDirection);
+        widget.tooltip("When enabled, inverts the ray direction to calculate irradiance.\n"
+                      "This is usually required because ray directions in path tracing typically\n"
+                      "point from camera/surface to the light source, but irradiance calculations\n"
+                      "need directions pointing toward the receiving surface.");
 
-        widget.var("Fixed Normal", mFixedNormal, -1.0f, 1.0f, 0.01f);
-        widget.tooltip("The fixed normal direction to use when not using actual normals.");
+        widget.var("Intensity Scale", mIntensityScale, 0.0f, 10.0f, 0.1f);
+        widget.tooltip("Scaling factor applied to the calculated irradiance value.");
+
+        widget.checkbox("Debug Normal View", mDebugNormalView);
+        widget.tooltip("When enabled, visualizes the normal directions as colors for debugging.");
+
+        // Save previous useActualNormals value to detect changes
+        bool prevUseActualNormals = mUseActualNormals;
+        widget.checkbox("Use Actual Normals", mUseActualNormals);
+        widget.tooltip("When enabled, uses the actual surface normals from VBuffer and Scene data\n"
+                      "instead of assuming a fixed normal direction.\n"
+                      "This provides accurate irradiance calculation on curved surfaces.\n"
+                      "Requires a valid VBuffer input and Scene connection.");
+
+        // Check if shader recompilation is needed
+        if (prevUseActualNormals != mUseActualNormals)
+        {
+            logInfo("IrradiancePass::renderUI() - Use Actual Normals changed to {}. Marking for shader recompilation.",
+                    mUseActualNormals ? "enabled" : "disabled");
+            mNeedRecompile = true;
+        }
+
+        if (!mUseActualNormals)
+        {
+            widget.var("Fixed Normal", mFixedNormal, -1.0f, 1.0f, 0.01f);
+            widget.tooltip("The fixed normal direction to use when not using actual normals.");
+        }
     }
 
     // Display resolution information

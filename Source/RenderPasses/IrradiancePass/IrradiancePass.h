@@ -47,6 +47,7 @@ private:
     bool mDebugNormalView = false;     ///< When enabled, visualizes normal directions as colors for debugging
     bool mUseActualNormals = false;    ///< Whether to use actual normals from VBuffer instead of a fixed normal
     float3 mFixedNormal = float3(0, 0, 1);  ///< The fixed normal direction to use when not using actual normals
+    bool mPassthrough = false;         ///< When enabled, directly outputs the input rayinfo without any calculations
 
     void prepareResources(RenderContext* pRenderContext, const RenderData& renderData);
     void prepareProgram();

@@ -63,6 +63,7 @@ cbuffer PerFrameCB
     bool gDebugNormalView;              ///< When enabled, visualizes normal directions as colors
     bool gUseActualNormals;             ///< Whether to use actual normals from VBuffer
     float3 gFixedNormal;                ///< Fixed normal direction when not using actual normals
+    bool gPassthrough;                  ///< When enabled, directly outputs the input rayinfo without calculations
 }
 
 // Scene data (bound by the host code)
@@ -82,6 +83,14 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     // Read ray direction and intensity from input
     float4 rayInfo = gInputRayInfo[pixel];
+
+    // Passthrough mode - directly output the input rayinfo
+    if (gPassthrough)
+    {
+        gOutputIrradiance[pixel] = rayInfo;
+        return;
+    }
+
     float3 rayDir = rayInfo.xyz;
     float intensity = rayInfo.w;
 
@@ -109,14 +118,14 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         #if USE_ACTUAL_NORMALS
         if (hit.isValid())
         {
-            // 从VBuffer获取表面法线
+            // Extract surface normal from VBuffer
             VertexData v = {};
             const GeometryInstanceID instanceID = hit.getInstanceID();
             const uint primitiveIndex = hit.getPrimitiveIndex();
             const float2 barycentrics = hit.getBarycentrics();
             v = gScene.getVertexData(instanceID, primitiveIndex, barycentrics);
 
-            // 使用法线作为接收表面的方向
+            // Use normal as the receiving surface direction
             normal = normalize(v.normalW);
         }
         #endif
