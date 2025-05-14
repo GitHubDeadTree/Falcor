@@ -2436,3 +2436,239 @@ D:\Campus\KY\Light\Falcor3\Falcor\build\windows-vs2022\bin\Debug\shaders\RenderP
 4. **错误信息分析**：详细分析编译器错误信息，找出根本原因，而不是仅仅尝试修改症状
 
 经过这次修复，我们更好地理解了Falcor中Scene系统和HitInfo API的工作方式，为今后开发更复杂的渲染功能积累了宝贵经验。
+
+## 第18阶段：为IrradiancePass添加计算间隔优化
+
+实现时间：2024-08-23
+
+### 1. 问题描述
+
+当前的IrradiancePass在每一帧都执行完整的辐照度计算，随着光线数量的增加，这会导致性能降低。为了提高效率，我们需要添加一种机制，使辐照度计算可以按照一定的时间或帧间隔执行，而不是每帧都计算，从而减轻GPU负担并提高整体应用性能。
+
+### 2. 原因分析
+
+辐照度计算是一个计算密集型的操作，特别是当场景中的光线数量很大时。对于许多应用场景，例如可视化或实时预览，不需要每一帧都更新辐照度结果，因为：
+
+1. 辐照度值通常不会在相邻帧之间发生显著变化（除非场景或光照条件快速变化）
+2. 人眼对辐照度值的微小变化不敏感
+3. 在静态场景中，辐照度值几乎保持不变
+
+通过间隔计算辐照度，可以显著减少GPU负荷，同时保持视觉质量。这种优化对于复杂场景或高分辨率渲染尤为重要。
+
+### 3. 解决方案
+
+我实现了一个灵活的计算间隔系统，支持两种模式：基于时间的间隔和基于帧数的间隔。
+
+#### 3.1 添加到IrradiancePass.h的新成员变量
+
+```cpp
+// Computation interval control
+float mComputeInterval = 1.0f;     ///< Time interval between computations (in seconds)
+uint32_t mFrameInterval = 0;       ///< Frame interval between computations (0 means use time-based interval)
+float mTimeSinceLastCompute = 0.0f; ///< Time elapsed since last computation
+uint32_t mFrameCount = 0;          ///< Frame counter for interval tracking
+bool mUseLastResult = true;        ///< Whether to use the last result when skipping computation
+ref<Texture> mpLastIrradianceResult; ///< Texture to store the last irradiance result
+```
+
+这些变量控制计算间隔和结果缓存：
+- `mComputeInterval`：基于时间的计算间隔（秒）
+- `mFrameInterval`：基于帧数的计算间隔（0表示使用基于时间的间隔）
+- `mTimeSinceLastCompute`和`mFrameCount`：跟踪距离上次计算的时间和帧数
+- `mUseLastResult`：是否在跳过计算的帧中使用上次的结果
+- `mpLastIrradianceResult`：存储上次计算结果的纹理
+
+#### 3.2 添加到IrradiancePass.h的新方法
+
+```cpp
+bool shouldCompute(RenderContext* pRenderContext); ///< Determines if computation should be performed this frame
+void copyLastResultToOutput(RenderContext* pRenderContext, const ref<Texture>& pOutputIrradiance); ///< Copies last result to output
+```
+
+这些方法负责决定是否应该在当前帧计算辐照度，以及如何重用之前的结果。
+
+#### 3.3 修改IrradiancePass.cpp中的构造函数和getProperties方法
+
+添加对新属性的支持：
+
+```cpp
+// 构造函数中
+else if (key == "computeInterval") mComputeInterval = value;
+else if (key == "frameInterval") mFrameInterval = value;
+else if (key == "useLastResult") mUseLastResult = value;
+
+// getProperties方法中
+props["computeInterval"] = mComputeInterval;
+props["frameInterval"] = mFrameInterval;
+props["useLastResult"] = mUseLastResult;
+```
+
+#### 3.4 修改execute方法实现计算间隔逻辑
+
+```cpp
+// Store resolutions for debug display and texture management
+mInputResolution = uint2(pInputRayInfo->getWidth(), pInputRayInfo->getHeight());
+mOutputResolution = uint2(pOutputIrradiance->getWidth(), pOutputIrradiance->getHeight());
+
+// Check if we should perform computation this frame
+bool computeThisFrame = shouldCompute(pRenderContext);
+
+// If we should reuse last result, check if we have one and if it matches current output dimensions
+if (!computeThisFrame && mUseLastResult && mpLastIrradianceResult)
+{
+    // If dimensions match, copy last result to output
+    if (mpLastIrradianceResult->getWidth() == mOutputResolution.x &&
+        mpLastIrradianceResult->getHeight() == mOutputResolution.y)
+    {
+        copyLastResultToOutput(pRenderContext, pOutputIrradiance);
+        return;
+    }
+    else
+    {
+        // Dimensions don't match, we need to recompute
+        logInfo("IrradiancePass::execute() - Output dimensions changed, forcing recomputation");
+        computeThisFrame = true;
+    }
+}
+else if (!computeThisFrame && !mUseLastResult)
+{
+    // If we don't want to use last result, just skip processing
+    return;
+}
+else if (!computeThisFrame)
+{
+    // No last result available but we should skip, clear output
+    pRenderContext->clearUAV(pOutputIrradiance->getUAV().get(), float4(0.f));
+    return;
+}
+
+// If we get here, we're computing this frame
+logInfo("IrradiancePass::execute() - Computing irradiance this frame");
+```
+
+在计算完成后，存储结果以供后续帧使用：
+
+```cpp
+// Store the result for future frames
+if (mUseLastResult)
+{
+    // Create texture if it doesn't exist or if dimensions don't match
+    if (!mpLastIrradianceResult ||
+        mpLastIrradianceResult->getWidth() != width ||
+        mpLastIrradianceResult->getHeight() != height)
+    {
+        mpLastIrradianceResult = Texture::create2D(
+            mpDevice,
+            width, height,
+            pOutputIrradiance->getFormat(),
+            1, 1,
+            nullptr,
+            ResourceBindFlags::ShaderResource | ResourceBindFlags::CopyDest | ResourceBindFlags::CopySource
+        );
+    }
+
+    // Copy current result to storage texture
+    pRenderContext->copyResource(mpLastIrradianceResult.get(), pOutputIrradiance.get());
+}
+```
+
+#### 3.5 实现shouldCompute方法
+
+```cpp
+bool IrradiancePass::shouldCompute(RenderContext* pRenderContext)
+{
+    // Always compute on the first frame
+    if (mFrameCount == 0)
+    {
+        mTimeSinceLastCompute = 0.0f;
+        mFrameCount = 1;
+        return true;
+    }
+
+    // Increment counters
+    mFrameCount++;
+    float frameTime = pRenderContext->getFrameStats().frameTime;
+    mTimeSinceLastCompute += frameTime;
+
+    // Check if we should compute based on specified interval
+    if (mFrameInterval > 0)
+    {
+        // Using frame-based interval
+        bool shouldCompute = ((mFrameCount - 1) % mFrameInterval) == 0;
+        if (shouldCompute)
+        {
+            logInfo("IrradiancePass::shouldCompute() - Computing on frame {} (every {} frames)",
+                    mFrameCount, mFrameInterval);
+        }
+        return shouldCompute;
+    }
+    else
+    {
+        // Using time-based interval
+        bool shouldCompute = mTimeSinceLastCompute >= mComputeInterval;
+        if (shouldCompute)
+        {
+            logInfo("IrradiancePass::shouldCompute() - Computing after {} seconds (interval: {} seconds)",
+                   mTimeSinceLastCompute, mComputeInterval);
+            mTimeSinceLastCompute = 0.0f;
+        }
+        return shouldCompute;
+    }
+}
+```
+
+#### 3.6 实现copyLastResultToOutput方法
+
+```cpp
+void IrradiancePass::copyLastResultToOutput(RenderContext* pRenderContext, const ref<Texture>& pOutputIrradiance)
+{
+    if (!mpLastIrradianceResult)
+    {
+        logWarning("IrradiancePass::copyLastResultToOutput() - No last result available");
+        return;
+    }
+
+    logInfo("IrradiancePass::copyLastResultToOutput() - Reusing last computed result");
+    pRenderContext->copyResource(pOutputIrradiance.get(), mpLastIrradianceResult.get());
+}
+```
+
+#### 3.7 添加到UI的计算间隔控制
+
+```cpp
+// Add computation interval controls
+widget.separator();
+widget.text("--- Computation Interval ---");
+
+bool useFrameInterval = mFrameInterval > 0;
+if (widget.checkbox("Use Frame Interval", useFrameInterval))
+{
+    if (useFrameInterval && mFrameInterval == 0)
+    {
+        mFrameInterval = 60; // Default to every 60 frames if switching from time-based
+    }
+    else if (!useFrameInterval)
+    {
+        mFrameInterval = 0; // Disable frame interval
+    }
+}
+widget.tooltip("When checked, the computation interval is specified in frames.\n"
+               "Otherwise, it's specified in seconds.");
+
+if (useFrameInterval)
+{
+    widget.var("Frame Interval", mFrameInterval, 1u, 1000u, 1u);
+    widget.tooltip("Number of frames between computations.\n"
+                  "Higher values improve performance but reduce temporal responsiveness.");
+}
+else
+{
+    widget.var("Time Interval (s)", mComputeInterval, 0.01f, 10.0f, 0.01f);
+    widget.tooltip("Time in seconds between computations.\n"
+                  "Higher values improve performance but reduce temporal responsiveness.");
+}
+
+widget.checkbox("Use Last Result", mUseLastResult);
+widget.tooltip("When enabled, uses the last computed result when skipping computation.\n"
+              "When disabled, the output is unchanged during skipped frames.");
+```

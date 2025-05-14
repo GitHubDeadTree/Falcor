@@ -31,6 +31,9 @@ IrradiancePass::IrradiancePass(ref<Device> pDevice, const Properties& props) : R
         else if (key == "useActualNormals") mUseActualNormals = value;
         else if (key == "fixedNormal") mFixedNormal = float3(value);
         else if (key == "passthrough") mPassthrough = value;
+        else if (key == "computeInterval") mComputeInterval = value;
+        else if (key == "frameInterval") mFrameInterval = value;
+        else if (key == "useLastResult") mUseLastResult = value;
         else logWarning("Unknown property '{}' in IrradiancePass properties.", key);
     }
 
@@ -48,6 +51,9 @@ Properties IrradiancePass::getProperties() const
     props["useActualNormals"] = mUseActualNormals;
     props["fixedNormal"] = mFixedNormal;
     props["passthrough"] = mPassthrough;
+    props["computeInterval"] = mComputeInterval;
+    props["frameInterval"] = mFrameInterval;
+    props["useLastResult"] = mUseLastResult;
     return props;
 }
 
@@ -114,19 +120,50 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
         return;
     }
 
+    // Store resolutions for debug display and texture management
+    mInputResolution = uint2(pInputRayInfo->getWidth(), pInputRayInfo->getHeight());
+    mOutputResolution = uint2(pOutputIrradiance->getWidth(), pOutputIrradiance->getHeight());
+
+    // Check if we should perform computation this frame
+    bool computeThisFrame = shouldCompute(pRenderContext);
+
+    // If we should reuse last result, check if we have one and if it matches current output dimensions
+    if (!computeThisFrame && mUseLastResult && mpLastIrradianceResult)
+    {
+        // If dimensions match, copy last result to output
+        if (mpLastIrradianceResult->getWidth() == mOutputResolution.x &&
+            mpLastIrradianceResult->getHeight() == mOutputResolution.y)
+        {
+            copyLastResultToOutput(pRenderContext, pOutputIrradiance);
+            return;
+        }
+        else
+        {
+            // Dimensions don't match, we need to recompute
+            logInfo("IrradiancePass::execute() - Output dimensions changed, forcing recomputation");
+            computeThisFrame = true;
+        }
+    }
+    else if (!computeThisFrame && !mUseLastResult)
+    {
+        // If we don't want to use last result, just skip processing
+        return;
+    }
+    else if (!computeThisFrame)
+    {
+        // No last result available but we should skip, clear output
+        pRenderContext->clearUAV(pOutputIrradiance->getUAV().get(), float4(0.f));
+        return;
+    }
+
+    // If we get here, we're computing this frame
+    logInfo("IrradiancePass::execute() - Computing irradiance this frame");
+
     // Check if program needs to be recompiled
     if (mNeedRecompile)
     {
         prepareProgram();
     }
-
-    // Store input and output resolutions for debug display
-    mInputResolution = uint2(pInputRayInfo->getWidth(), pInputRayInfo->getHeight());
-    mOutputResolution = uint2(pOutputIrradiance->getWidth(), pOutputIrradiance->getHeight());
-
-    // Log resolutions to help with debugging
-    logInfo("IrradiancePass - Input Resolution: {}x{}", mInputResolution.x, mInputResolution.y);
-    logInfo("IrradiancePass - Output Resolution: {}x{}", mOutputResolution.x, mOutputResolution.y);
 
     // Prepare resources and ensure shader program is updated
     prepareResources(pRenderContext, renderData);
@@ -193,13 +230,71 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     uint32_t height = mOutputResolution.y;
     logInfo("IrradiancePass::execute() - Dispatching compute with dimensions {}x{}", width, height);
     mpComputePass->execute(pRenderContext, width, height, 1);
+
+    // Store the result for future frames
+    if (mUseLastResult)
+    {
+        // Create texture if it doesn't exist or if dimensions don't match
+        if (!mpLastIrradianceResult ||
+            mpLastIrradianceResult->getWidth() != width ||
+            mpLastIrradianceResult->getHeight() != height)
+        {
+            mpLastIrradianceResult = mpDevice->createTexture2D(
+                width, height,
+                pOutputIrradiance->getFormat(),
+                1, 1,
+                nullptr,
+                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
+            );
+        }
+
+        // Copy current result to storage texture
+        pRenderContext->copyResource(mpLastIrradianceResult.get(), pOutputIrradiance.get());
+    }
 }
 
 void IrradiancePass::renderUI(Gui::Widgets& widget)
 {
     widget.checkbox("Enabled", mEnabled);
 
+    // Add computation interval controls
+    widget.separator();
+    widget.text("--- Computation Interval ---");
+
+    bool useFrameInterval = mFrameInterval > 0;
+    if (widget.checkbox("Use Frame Interval", useFrameInterval))
+    {
+        if (useFrameInterval && mFrameInterval == 0)
+        {
+            mFrameInterval = 60; // Default to every 60 frames if switching from time-based
+        }
+        else if (!useFrameInterval)
+        {
+            mFrameInterval = 0; // Disable frame interval
+        }
+    }
+    widget.tooltip("When checked, the computation interval is specified in frames.\n"
+                  "Otherwise, it's specified in seconds.");
+
+    if (useFrameInterval)
+    {
+        widget.var("Frame Interval", mFrameInterval, 1u, 1000u, 1u);
+        widget.tooltip("Number of frames between computations.\n"
+                      "Higher values improve performance but reduce temporal responsiveness.");
+    }
+    else
+    {
+        widget.var("Time Interval (s)", mComputeInterval, 0.01f, 10.0f, 0.01f);
+        widget.tooltip("Time in seconds between computations.\n"
+                      "Higher values improve performance but reduce temporal responsiveness.");
+    }
+
+    widget.checkbox("Use Last Result", mUseLastResult);
+    widget.tooltip("When enabled, uses the last computed result when skipping computation.\n"
+                  "When disabled, the output is unchanged during skipped frames.");
+
     // Add passthrough mode controls
+    widget.separator();
     bool prevPassthrough = mPassthrough;
     widget.checkbox("Passthrough Mode", mPassthrough);
     widget.tooltip("When enabled, directly outputs the input rayinfo texture without any calculations.\n"
@@ -369,6 +464,62 @@ void IrradiancePass::prepareProgram()
 void IrradiancePass::prepareResources(RenderContext* pRenderContext, const RenderData& renderData)
 {
     // Nothing to prepare as resources are passed directly in execute()
+}
+
+bool IrradiancePass::shouldCompute(RenderContext* pRenderContext)
+{
+    // Always compute on the first frame
+    if (mFrameCount == 0)
+    {
+        mTimeSinceLastCompute = 0.0f;
+        mFrameCount = 1;
+        return true;
+    }
+
+    // Increment counters
+    mFrameCount++;
+
+    // Get time between frames - we'll use a fixed estimate of 16.7ms (60 FPS)
+    // since RenderContext doesn't have a direct way to get frame time
+    float frameTime = 0.0167f; // 16.7ms = ~60 FPS
+    mTimeSinceLastCompute += frameTime;
+
+    // Check if we should compute based on specified interval
+    if (mFrameInterval > 0)
+    {
+        // Using frame-based interval
+        bool shouldCompute = ((mFrameCount - 1) % mFrameInterval) == 0;
+        if (shouldCompute)
+        {
+            logInfo("IrradiancePass::shouldCompute() - Computing on frame {} (every {} frames)",
+                    mFrameCount, mFrameInterval);
+        }
+        return shouldCompute;
+    }
+    else
+    {
+        // Using time-based interval
+        bool shouldCompute = mTimeSinceLastCompute >= mComputeInterval;
+        if (shouldCompute)
+        {
+            logInfo("IrradiancePass::shouldCompute() - Computing after {} seconds (interval: {} seconds)",
+                   mTimeSinceLastCompute, mComputeInterval);
+            mTimeSinceLastCompute = 0.0f;
+        }
+        return shouldCompute;
+    }
+}
+
+void IrradiancePass::copyLastResultToOutput(RenderContext* pRenderContext, const ref<Texture>& pOutputIrradiance)
+{
+    if (!mpLastIrradianceResult)
+    {
+        logWarning("IrradiancePass::copyLastResultToOutput() - No last result available");
+        return;
+    }
+
+    logInfo("IrradiancePass::copyLastResultToOutput() - Reusing last computed result");
+    pRenderContext->copyResource(pOutputIrradiance.get(), mpLastIrradianceResult.get());
 }
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)

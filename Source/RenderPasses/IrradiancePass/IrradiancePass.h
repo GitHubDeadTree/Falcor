@@ -40,6 +40,14 @@ private:
     ref<Scene> mpScene;                ///< Scene reference for accessing geometry data
     bool mNeedRecompile = false;       ///< Flag indicating if shader program needs to be recompiled
 
+    // Computation interval control
+    float mComputeInterval = 1.0f;     ///< Time interval between computations (in seconds)
+    uint32_t mFrameInterval = 0;       ///< Frame interval between computations (0 means use time-based interval)
+    float mTimeSinceLastCompute = 0.0f; ///< Time elapsed since last computation
+    uint32_t mFrameCount = 0;          ///< Frame counter for interval tracking
+    bool mUseLastResult = true;        ///< Whether to use the last result when skipping computation
+    ref<Texture> mpLastIrradianceResult; ///< Texture to store the last irradiance result
+
     // UI variables
     bool mEnabled = true;              ///< Enable/disable the pass
     std::string mOutputTexName = "irradiance"; ///< Name of the output texture
@@ -51,4 +59,6 @@ private:
 
     void prepareResources(RenderContext* pRenderContext, const RenderData& renderData);
     void prepareProgram();
+    bool shouldCompute(RenderContext* pRenderContext); ///< Determines if computation should be performed this frame
+    void copyLastResultToOutput(RenderContext* pRenderContext, const ref<Texture>& pOutputIrradiance); ///< Copies last result to output
 };
