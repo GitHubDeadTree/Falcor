@@ -79,6 +79,14 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
         return;
     }
 
+    // Get output texture
+    const auto& pOutputIrradiance = renderData.getTexture(kOutputIrradiance);
+    if (!pOutputIrradiance)
+    {
+        logWarning("IrradiancePass::execute() - Output irradiance texture is missing.");
+        return;
+    }
+
     // Get VBuffer input (optional at this stage)
     const auto& pVBuffer = renderData.getTexture("vbuffer");
     if (mUseActualNormals && !pVBuffer)
@@ -89,9 +97,17 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     // If disabled, clear output and return
     if (!mEnabled)
     {
-        pRenderContext->clearUAV(renderData.getTexture(kOutputIrradiance)->getUAV().get(), float4(0.f));
+        pRenderContext->clearUAV(pOutputIrradiance->getUAV().get(), float4(0.f));
         return;
     }
+
+    // Store input and output resolutions for debug display
+    mInputResolution = uint2(pInputRayInfo->getWidth(), pInputRayInfo->getHeight());
+    mOutputResolution = uint2(pOutputIrradiance->getWidth(), pOutputIrradiance->getHeight());
+
+    // Log resolutions to help with debugging
+    logInfo("IrradiancePass - Input Resolution: {}x{}", mInputResolution.x, mInputResolution.y);
+    logInfo("IrradiancePass - Output Resolution: {}x{}", mOutputResolution.x, mOutputResolution.y);
 
     // Prepare resources and ensure shader program is updated
     prepareResources(pRenderContext, renderData);
@@ -108,7 +124,7 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
 
     // 全局纹理资源绑定保持不变
     var["gInputRayInfo"] = pInputRayInfo;
-    var["gOutputIrradiance"] = renderData.getTexture(kOutputIrradiance);
+    var["gOutputIrradiance"] = pOutputIrradiance;
 
     // Bind VBuffer if available
     if (pVBuffer)
@@ -116,12 +132,9 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
         var["gVBuffer"] = pVBuffer;
     }
 
-    // Store output resolution for debug display
-    uint32_t width = pInputRayInfo->getWidth();
-    uint32_t height = pInputRayInfo->getHeight();
-    mOutputResolution = uint2(width, height);
-
-    // Execute compute pass
+    // Execute compute pass (dispatch based on the output resolution)
+    uint32_t width = mOutputResolution.x;
+    uint32_t height = mOutputResolution.y;
     mpComputePass->execute(pRenderContext, { (width + 15) / 16, (height + 15) / 16, 1 });
 }
 
@@ -151,17 +164,54 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
         widget.tooltip("The fixed normal direction to use when not using actual normals.");
     }
 
-    // Display output resolution information
+    // Display resolution information
     widget.separator();
-    widget.text("--- Output Information ---");
-    std::string resText = "Resolution: " + std::to_string(mOutputResolution.x) + " x " + std::to_string(mOutputResolution.y);
-    widget.text(resText);
+    widget.text("--- Resolution Information ---");
 
-    const uint32_t totalPixels = mOutputResolution.x * mOutputResolution.y;
-    if (totalPixels > 0)
+    // Input resolution
+    if (mInputResolution.x > 0 && mInputResolution.y > 0)
     {
-        std::string pixelCountText = "Total Pixels: " + std::to_string(totalPixels);
-        widget.text(pixelCountText);
+        std::string inputResText = "Input Resolution: " + std::to_string(mInputResolution.x) + " x " + std::to_string(mInputResolution.y);
+        widget.text(inputResText);
+        uint32_t inputPixels = mInputResolution.x * mInputResolution.y;
+        std::string inputPixelCountText = "Input Pixels: " + std::to_string(inputPixels);
+        widget.text(inputPixelCountText);
+    }
+    else
+    {
+        widget.text("Input Resolution: Not available");
+    }
+
+    // Output resolution
+    if (mOutputResolution.x > 0 && mOutputResolution.y > 0)
+    {
+        std::string outputResText = "Output Resolution: " + std::to_string(mOutputResolution.x) + " x " + std::to_string(mOutputResolution.y);
+        widget.text(outputResText);
+        uint32_t outputPixels = mOutputResolution.x * mOutputResolution.y;
+        std::string outputPixelCountText = "Output Pixels: " + std::to_string(outputPixels);
+        widget.text(outputPixelCountText);
+    }
+    else
+    {
+        widget.text("Output Resolution: Not available");
+    }
+
+    // Check if resolutions match
+    if (mInputResolution.x > 0 && mInputResolution.y > 0 &&
+        mOutputResolution.x > 0 && mOutputResolution.y > 0)
+    {
+        bool resolutionsMatch = (mInputResolution.x == mOutputResolution.x) &&
+                               (mInputResolution.y == mOutputResolution.y);
+
+        if (resolutionsMatch)
+        {
+            widget.text("Resolution Status: Input and Output match", true);
+        }
+        else
+        {
+            widget.text("Resolution Status: Input and Output DO NOT match", false);
+            widget.tooltip("Different input and output resolutions may cause scaling or sampling issues.");
+        }
     }
 }
 

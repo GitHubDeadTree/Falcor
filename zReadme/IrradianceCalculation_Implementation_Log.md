@@ -921,14 +921,56 @@ const std::string kIntensityScale = "gIntensityScale";
 // 在execute函数中
 void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
-    // ...
-    auto var = mpComputePass->getRootVar();
+    // Get input texture
+    const auto& pInputRayInfo = renderData.getTexture(kInputRayInfo);
+    if (!pInputRayInfo)
+    {
+        logWarning("IrradiancePass::execute() - Input ray info texture is missing. Make sure the PathTracer is outputting initialRayInfo data.");
+        return;
+    }
 
-    // 修改变量访问方式
-    var[kPerFrameCB][kReverseRayDirection] = mReverseRayDirection;
-    var[kPerFrameCB][kIntensityScale] = mIntensityScale;
+    // Get output texture
+    const auto& pOutputIrradiance = renderData.getTexture(kOutputIrradiance);
+    if (!pOutputIrradiance)
+    {
+        logWarning("IrradiancePass::execute() - Output irradiance texture is missing.");
+        return;
+    }
 
-    // ...
+    // Get VBuffer input (optional at this stage)
+    const auto& pVBuffer = renderData.getTexture("vbuffer");
+    if (mUseActualNormals && !pVBuffer)
+    {
+        logWarning("IrradiancePass::execute() - VBuffer texture is missing but useActualNormals is enabled. Falling back to fixed normal.");
+    }
+
+    // If disabled, clear output and return
+    if (!mEnabled)
+    {
+        pRenderContext->clearUAV(pOutputIrradiance->getUAV().get(), float4(0.f));
+        return;
+    }
+
+    // Store input and output resolutions for debug display
+    mInputResolution = uint2(pInputRayInfo->getWidth(), pInputRayInfo->getHeight());
+    mOutputResolution = uint2(pOutputIrradiance->getWidth(), pOutputIrradiance->getHeight());
+
+    // Log resolutions to help with debugging
+    logInfo("IrradiancePass - Input Resolution: {}x{}", mInputResolution.x, mInputResolution.y);
+    logInfo("IrradiancePass - Output Resolution: {}x{}", mOutputResolution.x, mOutputResolution.y);
+
+    // ... 其他代码 ...
+
+    // 全局纹理资源绑定保持不变
+    var["gInputRayInfo"] = pInputRayInfo;
+    var["gOutputIrradiance"] = pOutputIrradiance;
+
+    // ... 其他代码 ...
+
+    // Execute compute pass (dispatch based on the output resolution)
+    uint32_t width = mOutputResolution.x;
+    uint32_t height = mOutputResolution.y;
+    mpComputePass->execute(pRenderContext, { (width + 15) / 16, (height + 15) / 16, 1 });
 }
 ```
 
@@ -1066,3 +1108,201 @@ void main() {}
 4. 错误消息"No member named 'xxx' found"通常表示在尝试访问不存在或未通过反射声明的成员
 
 这个问题的解决进一步完善了我们在Falcor中实现辐照度计算的工作，让我们对Falcor的反射机制有了更深的理解。
+
+## 第8阶段：添加分辨率调试显示功能
+
+实现时间：2024-08-20
+
+### 问题描述
+
+在开发辐照度计算系统的过程中，需要确保输入和输出纹理的分辨率正确匹配，以避免可能出现的采样问题。然而，当前系统缺乏一种简便的方式来查看和比较这些分辨率信息。
+
+### 需求分析
+
+1. 在Debug窗口中显示输入和输出纹理的分辨率信息
+2. 记录并比较两者的分辨率，确保它们匹配
+3. 在每次渲染帧时输出日志，记录当前使用的分辨率
+4. 判断分辨率是否为动态计算的
+
+### 实现方案
+
+#### 1. 添加输入分辨率存储变量
+
+在`IrradiancePass`类中添加一个新的成员变量`mInputResolution`来存储输入纹理的分辨率信息：
+
+**文件路径**：`Source/RenderPasses/IrradiancePass/IrradiancePass.h`
+
+**修改内容**：
+```diff
+private:
+    // Internal state
+    ref<ComputePass> mpComputePass;    ///< Compute pass that calculates irradiance
+    bool mReverseRayDirection = true;  ///< Whether to reverse ray direction when calculating irradiance
+    uint2 mInputResolution = {0, 0};   ///< Current input resolution for debug display
+    uint2 mOutputResolution = {0, 0};  ///< Current output resolution for debug display
+```
+
+#### 2. 更新execute方法，获取和记录分辨率
+
+在`execute`方法中，获取输入和输出纹理的分辨率，并通过日志输出这些信息：
+
+**文件路径**：`Source/RenderPasses/IrradiancePass/IrradiancePass.cpp`
+
+**修改内容**：
+```diff
+void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& renderData)
+{
+    // Get input texture
+    const auto& pInputRayInfo = renderData.getTexture(kInputRayInfo);
+    if (!pInputRayInfo)
+    {
+        logWarning("IrradiancePass::execute() - Input ray info texture is missing. Make sure the PathTracer is outputting initialRayInfo data.");
+        return;
+    }
+
+    // Get output texture
+    const auto& pOutputIrradiance = renderData.getTexture(kOutputIrradiance);
+    if (!pOutputIrradiance)
+    {
+        logWarning("IrradiancePass::execute() - Output irradiance texture is missing.");
+        return;
+    }
+
+    // Get VBuffer input (optional at this stage)
+    const auto& pVBuffer = renderData.getTexture("vbuffer");
+    if (mUseActualNormals && !pVBuffer)
+    {
+        logWarning("IrradiancePass::execute() - VBuffer texture is missing but useActualNormals is enabled. Falling back to fixed normal.");
+    }
+
+    // If disabled, clear output and return
+    if (!mEnabled)
+    {
+        pRenderContext->clearUAV(pOutputIrradiance->getUAV().get(), float4(0.f));
+        return;
+    }
+
+    // Store input and output resolutions for debug display
+    mInputResolution = uint2(pInputRayInfo->getWidth(), pInputRayInfo->getHeight());
+    mOutputResolution = uint2(pOutputIrradiance->getWidth(), pOutputIrradiance->getHeight());
+
+    // Log resolutions to help with debugging
+    logInfo("IrradiancePass - Input Resolution: {}x{}", mInputResolution.x, mInputResolution.y);
+    logInfo("IrradiancePass - Output Resolution: {}x{}", mOutputResolution.x, mOutputResolution.y);
+
+    // ... 其他代码 ...
+
+    // 全局纹理资源绑定保持不变
+    var["gInputRayInfo"] = pInputRayInfo;
+    var["gOutputIrradiance"] = pOutputIrradiance;
+
+    // ... 其他代码 ...
+
+    // Execute compute pass (dispatch based on the output resolution)
+    uint32_t width = mOutputResolution.x;
+    uint32_t height = mOutputResolution.y;
+    mpComputePass->execute(pRenderContext, { (width + 15) / 16, (height + 15) / 16, 1 });
+}
+```
+
+#### 3. 增强renderUI方法，显示分辨率信息
+
+扩展`renderUI`方法，显示详细的输入和输出分辨率信息，并提供分辨率匹配状态：
+
+**文件路径**：`Source/RenderPasses/IrradiancePass/IrradiancePass.cpp`
+
+**修改内容**：
+```diff
+void IrradiancePass::renderUI(Gui::Widgets& widget)
+{
+    // ... 其他UI元素 ...
+
+    // Display resolution information
+    widget.separator();
+    widget.text("--- Resolution Information ---");
+
+    // Input resolution
+    if (mInputResolution.x > 0 && mInputResolution.y > 0)
+    {
+        std::string inputResText = "Input Resolution: " + std::to_string(mInputResolution.x) + " x " + std::to_string(mInputResolution.y);
+        widget.text(inputResText);
+        uint32_t inputPixels = mInputResolution.x * mInputResolution.y;
+        std::string inputPixelCountText = "Input Pixels: " + std::to_string(inputPixels);
+        widget.text(inputPixelCountText);
+    }
+    else
+    {
+        widget.text("Input Resolution: Not available");
+    }
+
+    // Output resolution
+    if (mOutputResolution.x > 0 && mOutputResolution.y > 0)
+    {
+        std::string outputResText = "Output Resolution: " + std::to_string(mOutputResolution.x) + " x " + std::to_string(mOutputResolution.y);
+        widget.text(outputResText);
+        uint32_t outputPixels = mOutputResolution.x * mOutputResolution.y;
+        std::string outputPixelCountText = "Output Pixels: " + std::to_string(outputPixels);
+        widget.text(outputPixelCountText);
+    }
+    else
+    {
+        widget.text("Output Resolution: Not available");
+    }
+
+    // Check if resolutions match
+    if (mInputResolution.x > 0 && mInputResolution.y > 0 &&
+        mOutputResolution.x > 0 && mOutputResolution.y > 0)
+    {
+        bool resolutionsMatch = (mInputResolution.x == mOutputResolution.x) &&
+                                (mInputResolution.y == mOutputResolution.y);
+
+        if (resolutionsMatch)
+        {
+            widget.text("Resolution Status: Input and Output match", true);
+        }
+        else
+        {
+            widget.text("Resolution Status: Input and Output DO NOT match", false);
+            widget.tooltip("Different input and output resolutions may cause scaling or sampling issues.");
+        }
+    }
+}
+```
+
+### 分辨率动态性分析
+
+通过分析代码实现，可以确认输入和输出分辨率的确是动态计算的，原因如下：
+
+1. **输入分辨率自动适配**：在每次`execute`调用中，代码从输入纹理`pInputRayInfo`动态获取当前分辨率：
+   ```cpp
+   mInputResolution = uint2(pInputRayInfo->getWidth(), pInputRayInfo->getHeight());
+   ```
+   该分辨率取决于PathTracer的输出，会根据窗口大小、渲染设置等动态变化。
+
+2. **输出分辨率自动适配**：同样，输出分辨率也是从输出纹理`pOutputIrradiance`动态获取：
+   ```cpp
+   mOutputResolution = uint2(pOutputIrradiance->getWidth(), pOutputIrradiance->getHeight());
+   ```
+   这确保了输出分辨率能够适应RenderGraph的变化。
+
+3. **计算着色器调度动态适应**：在调用compute shader时，线程组数量是基于当前输出分辨率动态计算的：
+   ```cpp
+   uint32_t width = mOutputResolution.x;
+   uint32_t height = mOutputResolution.y;
+   mpComputePass->execute(pRenderContext, { (width + 15) / 16, (height + 15) / 16, 1 });
+   ```
+   这确保了无论分辨率如何变化，计算着色器始终能够处理整个输出区域。
+
+4. **RenderPassReflection自动处理**：在`reflect`方法中，我们没有硬编码任何分辨率，而是使用默认的Falcor机制:
+   ```cpp
+   reflector.addOutput(kOutputIrradiance, "Calculated irradiance per pixel")
+       .bindFlags(ResourceBindFlags::UnorderedAccess)
+       .format(ResourceFormat::RGBA32Float);
+   ```
+   这允许Falcor的RenderGraph自动处理分辨率变化。
+
+综上所述，IrradiancePass中的分辨率处理是完全动态的，可以自动适应各种显示设置和窗口尺寸，无需手动调整。
+
+### 总结
+
+通过这次实现，我们为IrradiancePass添加了分辨率调试显示功能，可以在Debug窗口中实时查看输入和输出分辨率信息，并且分析确认了分辨率处理是完全动态的。这不仅提高了开发和调试效率，也确保了在各种显示条件下辐照度计算的正确性。
