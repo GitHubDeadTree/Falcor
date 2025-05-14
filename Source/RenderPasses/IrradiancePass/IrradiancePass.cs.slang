@@ -52,8 +52,8 @@ cbuffer PerFrameCB
     bool gReverseRayDirection;          ///< Whether to reverse ray direction when calculating irradiance
     float gIntensityScale;              ///< Scaling factor for the irradiance
     bool gDebugNormalView;              ///< When enabled, visualizes normal directions as colors
-    bool gUseActualNormals;             ///< Whether to use actual surface normals
-    float3 gFixedNormal;                ///< The fixed normal direction to use when not using actual normals
+    bool gUseActualNormals;             ///< Whether to use actual normals from VBuffer
+    float3 gFixedNormal;                ///< Fixed normal direction when not using actual normals
 }
 
 [numthreads(16, 16, 1)]
@@ -79,17 +79,17 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         rayDir = -rayDir;
     }
 
-    // Determine which normal to use
+    // Determine the normal to use (actual or fixed)
     float3 normal;
     if (gUseActualNormals)
     {
-        // Will be implemented in a later task
-        // For now, just use the fixed normal
+        // For now, we still use the fixed normal since we haven't yet implemented actual normal access
+        // This will be updated in a later task
         normal = float3(0, 0, 1);
     }
     else
     {
-        // Use the fixed normal direction provided from the UI
+        // Use the configurable fixed normal
         normal = normalize(gFixedNormal);
     }
 

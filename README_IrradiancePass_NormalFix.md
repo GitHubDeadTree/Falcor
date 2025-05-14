@@ -4,7 +4,7 @@
 
 当前的IrradiancePass实现使用了固定法线(0,0,1)进行辐照度计算，这导致在非平面物体（如球体）上的辐照度计算不准确。辐照度计算应该基于每个像素的实际表面法线，而不是假设一个统一的法线方向。
 
-目前的计算在 `IrradiancePass.cs.slang`中是这样的：
+目前的计算在`IrradiancePass.cs.slang`中是这样的：
 
 ```cpp
 // 我们假设接收表面的法线是(0,0,1)以简化计算
@@ -24,14 +24,12 @@ float cosTheta = max(0.0f, dot(normal, rayDir));
 在开始修改之前，先添加一个简单的调试功能，可以可视化法线方向，帮助验证法线数据是否正确。
 
 1. 修改IrradiancePass.h
-
 ```cpp
 // 在private部分添加：
 bool mDebugNormalView = false;  ///< 当启用时，直接输出法线作为颜色进行调试
 ```
 
 2. 修改IrradiancePass.cpp中的renderUI方法
-
 ```cpp
 void IrradiancePass::renderUI(Gui::Widgets& widget)
 {
@@ -44,7 +42,6 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
 ```
 
 3. 简单修改IrradiancePass.cs.slang（仍使用固定法线）
-
 ```cpp
 // 在最后的输出部分
 if (gDebugNormalView)
@@ -70,7 +67,6 @@ else
 先添加UI选项来控制是否使用实际法线，但不改变着色器内部逻辑，只在CPU端预留接口。
 
 1. 修改IrradiancePass.h
-
 ```cpp
 // 在private部分添加：
 bool mUseActualNormals = false;  ///< 是否使用实际法线而非固定法线
@@ -78,7 +74,6 @@ float3 mFixedNormal = float3(0, 0, 1);  ///< 当不使用实际法线时的固�
 ```
 
 2. 修改IrradiancePass.cpp中的构造函数和getProperties()
-
 ```cpp
 // 在构造函数解析选项部分
 else if (key == "useActualNormals") mUseActualNormals = value;
@@ -88,7 +83,6 @@ props["useActualNormals"] = mUseActualNormals;
 ```
 
 3. 修改renderUI方法
-
 ```cpp
 void IrradiancePass::renderUI(Gui::Widgets& widget)
 {
@@ -120,7 +114,6 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
 修改反射API请求VBuffer输入，但暂时不使用它，只验证连接是否正确。
 
 1. 修改IrradiancePass.cpp中的reflect方法
-
 ```cpp
 RenderPassReflection IrradiancePass::reflect(const CompileData& compileData)
 {
@@ -145,7 +138,6 @@ RenderPassReflection IrradiancePass::reflect(const CompileData& compileData)
 ```
 
 2. 修改PathTracerWithIrradiance.py脚本添加连接
-
 ```python
 # 新增: 连接VBufferRT到IrradiancePass提供法线数据
 g.addEdge("VBufferRT.vbuffer", "IrradiancePass.vbuffer")
@@ -163,7 +155,6 @@ g.addEdge("VBufferRT.vbuffer", "IrradiancePass.vbuffer")
 在这一步，我们实现法线读取功能，并通过调试视图验证法线数据是否正确，但暂不用于辐照度计算。
 
 1. 修改IrradiancePass.cpp中的execute方法
-
 ```cpp
 void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
@@ -196,7 +187,6 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
 ```
 
 2. 更新IrradiancePass.cs.slang（只读取法线，暂不用于计算）
-
 ```cpp
 // 添加输入
 Texture2D<PackedHitInfo> gVBuffer;
@@ -257,7 +247,6 @@ else
 为了能够从VBuffer中正确解析几何数据，需要添加对场景的依赖。
 
 1. 修改IrradiancePass.h添加场景引用
-
 ```cpp
 private:
     // 添加场景引用
@@ -266,7 +255,6 @@ private:
 ```
 
 2. 实现setScene方法
-
 ```cpp
 void IrradiancePass::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene)
 {
@@ -277,7 +265,6 @@ void IrradiancePass::setScene(RenderContext* pRenderContext, const ref<Scene>& p
 ```
 
 3. 修改prepareProgram方法，添加场景shader模块
-
 ```cpp
 void IrradiancePass::prepareProgram()
 {
@@ -301,7 +288,6 @@ void IrradiancePass::prepareProgram()
 ```
 
 4. 修改execute方法检查是否需要重新编译
-
 ```cpp
 void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
@@ -330,13 +316,11 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
 最后实现完整的法线获取和辐照度计算。
 
 1. 更新IrradiancePass.cs.slang导入场景相关模块
-
 ```cpp
 import Scene.Shading;  // 导入场景着色模块
 ```
 
 2. 实现完整的法线获取逻辑
-
 ```cpp
 float3 normal;
 if (gUseActualNormals)
@@ -371,7 +355,6 @@ float irradiance = cosTheta * intensity * gIntensityScale;
 ```
 
 3. 在execute方法中绑定场景数据
-
 ```cpp
 // 如果使用实际法线，绑定场景数据
 if (mUseActualNormals && hasVBuffer && mpScene)
@@ -390,190 +373,6 @@ if (mUseActualNormals && hasVBuffer && mpScene)
 - ✓ 改变观察角度，辐照度显示应该相应变化，特别是曲面上的辐照度分布
 - ✓ 性能没有明显下降，渲染速度和之前相近
 
-## 任务7 辐照度显示UI问题分析与修复方案
-
-### 问题描述
-
-在IrradianceToneMapper的debug窗口中，只显示了实际画面中左上角的一小块区域（红框标出的部分），这一区域之外是Debug Windows的底纹，而不是显示的图像。其他渲染通道的画面都没有这个问题，只有IrradianceToneMapper的显示有问题。
-
-### 问题分析
-
-通过对Falcor渲染管线代码的分析，我发现这个问题是由两个因素共同导致的：
-
-1. **图像尺寸不匹配**: IrradiancePass输出的纹理尺寸与Debug窗口期望的尺寸不匹配。在 `IrradiancePass.cpp`的 `execute`方法中，计算着色器的调度维度是基于输入纹理的维度而不是输出纹理的维度：
-
-```cpp
-// 获取输入纹理尺寸
-uint32_t width = pInputRayInfo->getWidth();
-uint32_t height = pInputRayInfo->getHeight();
-// 使用输入纹理尺寸执行计算着色器
-mpComputePass->execute(pRenderContext, { (width + 15) / 16, (height + 15) / 16, 1 });
-```
-
-如果输入纹理（PathTracer.initialRayInfo）的尺寸小于预期，那么IrradiancePass只会计算并写入输出纹理的一小部分区域，导致只有左上角显示有效内容。
-
-2. **纹理尺寸选择**: 在渲染图配置中，各个Pass的输出尺寸由 `RenderPassHelpers::IOSize`控制。不同的Pass可能使用不同的尺寸设置：
-
-```cpp
-RenderPassHelpers::IOSize mOutputSizeSelection = RenderPassHelpers::IOSize::Default;
-```
-
-`IOSize`有三种选择：Default、From Input、Fixed。如果PathTracer和IrradiancePass使用不同的尺寸选择策略，就会导致不匹配。
-
-此外，调试窗口只显示实际渲染的内容，而不会自动缩放或拉伸图像，因此只有真正有像素数据的区域会显示，导致只能看到左上角的一小部分。
-
-### 解决方案
-
-有三种解决方案：
-
-#### 方案1：修改IrradiancePass计算着色器的调度方式
-
-在 `IrradiancePass.cpp`的 `execute`方法中，使用输出纹理的尺寸而不是输入纹理的尺寸来调度计算着色器：
-
-```cpp
-// 获取输出纹理
-const auto& pOutputIrradiance = renderData.getTexture(kOutputIrradiance);
-
-// 使用输出纹理尺寸执行计算着色器
-uint32_t width = pOutputIrradiance->getWidth();
-uint32_t height = pOutputIrradiance->getHeight();
-mpComputePass->execute(pRenderContext, { (width + 15) / 16, (height + 15) / 16, 1 });
-```
-
-这样可以确保IrradiancePass处理整个输出纹理，而不仅仅是左上角的一小部分。
-
-#### 方案2：在渲染图中明确设置IrradiancePass的输出尺寸
-
-修改 `PathTracerWithIrradiance.py`，明确指定IrradiancePass和IrradianceToneMapper的输出大小：
-
-```python
-# 添加IrradiancePass通道，指定输出尺寸
-IrradiancePass = createPass("IrradiancePass", {
-    'enabled': True,
-    'reverseRayDirection': True,
-    'intensityScale': 1.0,
-    'useActualNormals': False,
-    'outputSize': 'Default'  # 明确设置输出尺寸
-})
-
-# 添加IrradianceToneMapper，确保使用相同的输出尺寸设置
-IrradianceToneMapper = createPass("ToneMapper", {
-    'autoExposure': False,
-    'exposureCompensation': 0.0,
-    'outputSize': 'Default'
-})
-```
-
-这样可以确保整个渲染管线使用一致的输出尺寸。
-
-#### 方案3：在IrradiancePass的着色器中处理纹理尺寸不匹配
-
-修改 `IrradiancePass.cs.slang`中的计算着色器代码，确保它能处理输入和输出纹理尺寸不匹配的情况：
-
-```cpp
-[numthreads(16, 16, 1)]
-void main(uint3 dispatchThreadId : SV_DispatchThreadID)
-{
-    const uint2 pixel = dispatchThreadId.xy;
-
-    // 获取输入和输出纹理的尺寸
-    uint input_width, input_height;
-    uint output_width, output_height;
-    gInputRayInfo.GetDimensions(input_width, input_height);
-    gOutputIrradiance.GetDimensions(output_width, output_height);
-
-    // 检查是否超出输出边界
-    if (any(pixel >= uint2(output_width, output_height))) return;
-
-    // 计算对应的输入纹理坐标（使用比例缩放）
-    float2 input_uv = float2(pixel) / float2(output_width, output_height);
-    uint2 input_pixel = min(uint2(input_uv * float2(input_width, input_height)), uint2(input_width-1, input_height-1));
-
-    // 从输入纹理采样
-    float4 rayInfo = gInputRayInfo[input_pixel];
-
-    // ... 后续计算和输出代码 ...
-}
-```
-
-这种方法允许IrradiancePass在输入和输出纹理尺寸不匹配时进行适当的插值。
-
-### 推荐方案
-
-推荐使用**方案1**，因为它是最简单直接的解决方案，不需要修改渲染图配置或着色器代码的主要逻辑。只需修改IrradiancePass的execute方法，使用输出纹理的尺寸来调度计算着色器，就可以确保整个输出纹理都得到处理。
-
-### 实施步骤（方案1）
-
-1. 修改 `Source/RenderPasses/IrradiancePass/IrradiancePass.cpp`文件中的 `execute`方法：
-
-```cpp
-void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& renderData)
-{
-    // 获取输入纹理
-    const auto& pInputRayInfo = renderData.getTexture(kInputRayInfo);
-    if (!pInputRayInfo)
-    {
-        logWarning("IrradiancePass::execute() - Input ray info texture is missing. Make sure the PathTracer is outputting initialRayInfo data.");
-        return;
-    }
-
-    // 获取输出纹理
-    const auto& pOutputIrradiance = renderData.getTexture(kOutputIrradiance);
-
-    // If disabled, clear output and return
-    if (!mEnabled)
-    {
-        pRenderContext->clearUAV(pOutputIrradiance->getUAV().get(), float4(0.f));
-        return;
-    }
-
-    // Prepare resources and ensure shader program is updated
-    prepareResources(pRenderContext, renderData);
-
-    // Set shader constants
-    auto var = mpComputePass->getRootVar();
-
-    // 通过cbuffer名称路径访问变量
-    var[kPerFrameCB][kReverseRayDirection] = mReverseRayDirection;
-    var[kPerFrameCB][kIntensityScale] = mIntensityScale;
-    var[kPerFrameCB][kDebugNormalView] = mDebugNormalView;
-
-    // 全局纹理资源绑定保持不变
-    var["gInputRayInfo"] = pInputRayInfo;
-    var["gOutputIrradiance"] = pOutputIrradiance;
-
-    // 使用输出纹理的尺寸执行计算着色器（而不是输入纹理的尺寸）
-    uint32_t width = pOutputIrradiance->getWidth();
-    uint32_t height = pOutputIrradiance->getHeight();
-    mpComputePass->execute(pRenderContext, { (width + 15) / 16, (height + 15) / 16, 1 });
-}
-```
-
-2. 另外，还需要在 `IrradiancePass.cs.slang`中确保处理好输入纹理坐标的映射：
-
-```cpp
-// 在main函数中修改输入坐标的获取方式
-uint input_width, input_height, output_width, output_height;
-gInputRayInfo.GetDimensions(input_width, input_height);
-gOutputIrradiance.GetDimensions(output_width, output_height);
-
-// 检查是否超出输入边界
-if (any(pixel >= uint2(input_width, input_height)))
-{
-    // 对于超出输入范围的像素，使用边界或进行采样插值
-    float2 uv = float2(pixel) / float2(output_width, output_height);
-    uint2 input_pixel = min(uint2(uv * float2(input_width, input_height)), uint2(input_width-1, input_height-1));
-    rayInfo = gInputRayInfo[input_pixel];
-}
-else
-{
-    // 直接读取输入值
-    rayInfo = gInputRayInfo[pixel];
-}
-```
-
-通过以上修改，IrradiancePass将能够处理整个输出纹理，而不仅仅是左上角的一小部分，从而解决只显示小区域的问题。
-
 ## 实现顺序和调试建议
 
 按照上述任务顺序实现，每完成一个任务后可以测试和验证：
@@ -588,9 +387,13 @@ else
 ## 调试提示
 
 1. **法线可视化**: 开启法线可视化功能，看是否显示多彩的法线图，验证法线数据读取是否正确。
+
 2. **渐进式启用**: 先在简单场景（如单个平面或球体）上测试，确认基本功能正常后再尝试复杂场景。
+
 3. **对比测试**: 添加一个快捷键或UI选项，快速切换使用固定法线和实际法线，观察差异。
+
 4. **检查连接**: 如果遇到问题，首先检查渲染图中的连接是否正确，VBuffer是否正确传递给IrradiancePass。
+
 5. **增量修改**: 对于每项修改，先检查是否能编译通过，再检查是否能运行，最后检查结果是否符合预期。
 
 通过分步实现和验证，可以更容易地找出和修复问题，确保最终解决方案的正确性。

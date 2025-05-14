@@ -14,6 +14,8 @@ namespace
     const std::string kReverseRayDirection = "gReverseRayDirection";
     const std::string kIntensityScale = "gIntensityScale";
     const std::string kDebugNormalView = "gDebugNormalView"; // Debug view for normal visualization
+    const std::string kUseActualNormals = "gUseActualNormals"; // Whether to use actual normals
+    const std::string kFixedNormal = "gFixedNormal";         // Fixed normal direction
 }
 
 IrradiancePass::IrradiancePass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
@@ -25,6 +27,8 @@ IrradiancePass::IrradiancePass(ref<Device> pDevice, const Properties& props) : R
         else if (key == "reverseRayDirection") mReverseRayDirection = value;
         else if (key == "intensityScale") mIntensityScale = value;
         else if (key == "debugNormalView") mDebugNormalView = value;
+        else if (key == "useActualNormals") mUseActualNormals = value;
+        else if (key == "fixedNormal") mFixedNormal = float3(value);
         else logWarning("Unknown property '{}' in IrradiancePass properties.", key);
     }
 
@@ -39,6 +43,8 @@ Properties IrradiancePass::getProperties() const
     props["reverseRayDirection"] = mReverseRayDirection;
     props["intensityScale"] = mIntensityScale;
     props["debugNormalView"] = mDebugNormalView;
+    props["useActualNormals"] = mUseActualNormals;
+    props["fixedNormal"] = mFixedNormal;
     return props;
 }
 
@@ -82,6 +88,8 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     var[kPerFrameCB][kReverseRayDirection] = mReverseRayDirection;
     var[kPerFrameCB][kIntensityScale] = mIntensityScale;
     var[kPerFrameCB][kDebugNormalView] = mDebugNormalView;
+    var[kPerFrameCB][kUseActualNormals] = mUseActualNormals;
+    var[kPerFrameCB][kFixedNormal] = mFixedNormal;
 
     // 全局纹理资源绑定保持不变
     var["gInputRayInfo"] = pInputRayInfo;
@@ -107,6 +115,17 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
 
     widget.checkbox("Debug Normal View", mDebugNormalView);
     widget.tooltip("When enabled, visualizes the normal directions as colors for debugging.");
+
+    widget.checkbox("Use Actual Normals", mUseActualNormals);
+    widget.tooltip("When enabled, uses the actual surface normals from VBuffer\n"
+                  "instead of assuming a fixed normal direction.");
+
+    if (!mUseActualNormals)
+    {
+        // 只有在使用固定法线时显示方向控制
+        widget.var("Fixed Normal", mFixedNormal, -1.0f, 1.0f, 0.01f);
+        widget.tooltip("The fixed normal direction to use when not using actual normals.");
+    }
 }
 
 void IrradiancePass::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) {}
