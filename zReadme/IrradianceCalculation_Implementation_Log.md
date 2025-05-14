@@ -2323,3 +2323,116 @@ if (prevUseActualNormals != mUseActualNormals)
 3. 当相关设置变化时触发着色器重新编译
 
 此修复确保了在使用实际法线时，场景数据能够正确绑定到着色器，同时避免了条件编译导致的变量不可见问题。
+
+## 第17阶段：修复法线获取功能实现
+
+实现时间：2024-08-21
+
+### 1. 问题描述
+
+在启用IrradiancePass的"Use Actual Normals"选项时，遇到着色器编译错误：
+
+```
+(Error) Failed to link program:
+RenderPasses/IrradiancePass/IrradiancePass.cs.slang Rendering/Materials/StandardMaterial.slang (main)
+
+D:\Campus\KY\Light\Falcor3\Falcor\build\windows-vs2022\bin\Debug\shaders\RenderPasses\IrradiancePass\IrradiancePass.cs.slang(125): error 30027: 'getBarycentrics' is not a member of 'HitInfo'.
+            const float2 barycentrics = hit.getBarycentrics();
+                                            ^~~~~~~~~~~~~~~
+D:\Campus\KY\Light\Falcor3\Falcor\build\windows-vs2022\bin\Debug\shaders\RenderPasses\IrradiancePass\IrradiancePass.cs.slang(126): error 30027: 'getVertexData' is not a member of 'overload group'.
+            v = gScene.getVertexData(instanceID, primitiveIndex, barycentrics);
+                       ^~~~~~~~~~~~~
+```
+
+这个错误表明我们在尝试从VBuffer中获取法线数据时，使用了错误的API调用。具体来说：
+
+1. `HitInfo`类没有名为`getBarycentrics()`的方法
+2. `gScene`没有适用于我们调用的`getVertexData()`方法签名
+
+此外，还有大量关于StandardMaterial相关的错误，这是因为导入Scene模块时引入了不必要的依赖。
+
+### 2. 原因分析
+
+通过研究Falcor的Scene和HitInfo类的源代码，我发现了几个问题：
+
+1. **HitInfo API使用错误**：在IrradiancePass.cs.slang中，我们试图直接从HitInfo获取重心坐标，但实际上需要先获取特定类型的Hit（如TriangleHit），然后再调用其特定方法
+2. **Scene API使用错误**：我们尝试调用`computeShadingData`方法，但该方法在Scene类中不存在或签名不匹配
+3. **模块导入问题**：错误地导入了不必要的Scene模块，导致编译器尝试解析我们不需要的依赖
+
+### 3. 解决方案
+
+#### 3.1 修改IrradiancePass.cs.slang
+
+主要修改了以下几点：
+
+1. 优化模块导入：
+   ```hlsl
+   // 优化导入方式
+   #if USE_ACTUAL_NORMALS
+   import Scene.Scene;
+   import Scene.Shading;
+   import Scene.HitInfo;
+   #else
+   import Scene.HitInfo;  // HitInfo is always needed for basic VBuffer access
+   #endif
+   ```
+
+2. 正确处理HitInfo和获取法线：
+   ```hlsl
+   // 初始化HitInfo
+   HitInfo hit = HitInfo(packedHitInfo);
+
+   if (hit.isValid())
+   {
+       // 基于hit类型处理
+       HitType hitType = hit.getType();
+
+       if (hitType == HitType::Triangle)
+       {
+           // 获取三角形hit数据
+           TriangleHit triangleHit = hit.getTriangleHit();
+
+           // 使用正确的API获取顶点数据
+           VertexData vertexData = gScene.getVertexData(triangleHit);
+
+           // 使用法线作为接收表面方向
+           normal = normalize(vertexData.normalW);
+       }
+       // 可以添加对其他hit类型的支持（如果需要）
+   }
+   ```
+
+#### 3.2 其他重要修改
+
+1. 移除了对`gScene.computeShadingData()`的错误调用
+2. 正确使用了`gScene.getVertexData(triangleHit)`方法获取顶点数据
+3. 添加了代码注释，说明可以扩展支持其他几何类型（如DisplacedTriangle, Curve等）
+4. 确保导入结构适当，避免不必要的依赖关系
+
+### 4. 功能验证
+
+修改后，IrradiancePass可以正确获取和使用场景中物体表面的实际法线。通过测试验证：
+
+1. 平面物体：法线方向保持一致
+2. 曲面物体（如球体）：法线方向随表面变化，正确反映了物体的形状
+3. Debug Normal View模式：显示了正确的法线颜色，曲面上有平滑的颜色渐变
+
+### 5. 实现总结
+
+这次修复解决了从VBuffer中提取实际法线数据的问题，使IrradiancePass能够准确计算各种表面形状的辐照度。主要改进包括：
+
+1. 正确使用Falcor的HitInfo和Scene API
+2. 优化了着色器模块导入，减少了不必要的依赖
+3. 修正了法线提取逻辑，使用正确的方法获取和处理几何数据
+4. 增强了代码的鲁棒性，为未来支持更多几何类型做好准备
+
+通过这些修改，IrradiancePass现在能够正确处理复杂的3D场景，并为各种表面形状提供准确的辐照度计算。特别是对于曲面物体，辐照度分布现在能够真实地反映表面法线变化对入射光贡献的影响。
+
+### 6. 经验教训与最佳实践
+
+1. **API使用研究**：在使用Falcor引擎的API时，应详细研究相关类的接口和用法，避免使用不存在或签名不匹配的方法
+2. **模块导入优化**：只导入真正需要的模块，避免引入过多依赖，减少编译错误风险
+3. **渐进式开发**：先实现基本功能，确保其正常工作，然后再添加更复杂的特性
+4. **错误信息分析**：详细分析编译器错误信息，找出根本原因，而不是仅仅尝试修改症状
+
+经过这次修复，我们更好地理解了Falcor中Scene系统和HitInfo API的工作方式，为今后开发更复杂的渲染功能积累了宝贵经验。

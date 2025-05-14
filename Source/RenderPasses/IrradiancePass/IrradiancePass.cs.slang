@@ -41,12 +41,14 @@
 */
 
 // Scene imports for accessing geometry data
-// Only import Scene.Scene and Scene.Shading when needed to avoid preprocessor errors
+// Only import Scene.HitInfo when not using actual normals to avoid preprocessor errors
 #if USE_ACTUAL_NORMALS
 import Scene.Scene;
 import Scene.Shading;
-#endif
+import Scene.HitInfo;
+#else
 import Scene.HitInfo;  // HitInfo is always needed for basic VBuffer access
+#endif
 
 // Input data
 Texture2D<float4> gInputRayInfo;        ///< Input ray direction (xyz) and intensity (w)
@@ -110,23 +112,33 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         normal = float3(0, 0, 1);
 
         // Get VBuffer data
-        uint hitInfo = gVBuffer[pixel];
-
-        // Check if we have valid hit info
-        HitInfo hit = HitInfo(hitInfo);
+        uint packedHitInfo = gVBuffer[pixel];
 
         #if USE_ACTUAL_NORMALS
+        // Initialize HitInfo from packed data
+        HitInfo hit = HitInfo(packedHitInfo);
+
         if (hit.isValid())
         {
-            // Extract surface normal from VBuffer
-            VertexData v = {};
-            const GeometryInstanceID instanceID = hit.getInstanceID();
-            const uint primitiveIndex = hit.getPrimitiveIndex();
-            const float2 barycentrics = hit.getBarycentrics();
-            v = gScene.getVertexData(instanceID, primitiveIndex, barycentrics);
+            // Process based on hit type
+            HitType hitType = hit.getType();
 
-            // Use normal as the receiving surface direction
-            normal = normalize(v.normalW);
+            if (hitType == HitType::Triangle)
+            {
+                // Get triangle hit data
+                TriangleHit triangleHit = hit.getTriangleHit();
+
+                // Extract vertex data from the triangle
+                GeometryInstanceID instanceID = triangleHit.instanceID;
+                uint primitiveIndex = triangleHit.primitiveIndex;
+
+                // Get vertex data from the scene
+                VertexData vertexData = gScene.getVertexData(triangleHit);
+
+                // Use the normal as the receiving surface direction
+                normal = normalize(vertexData.normalW);
+            }
+            // Can add support for other hit types (DisplacedTriangle, Curve, etc.) if needed
         }
         #endif
     }
