@@ -35,6 +35,9 @@ def render_graph_PathTracerWithIrradiance():
     g.addEdge("VBufferRT.viewW", "PathTracer.viewW")
     g.addEdge("VBufferRT.mvec", "PathTracer.mvec")
 
+    # 新增: 连接VBufferRT到IrradiancePass提供法线数据
+    g.addEdge("VBufferRT.vbuffer", "IrradiancePass.vbuffer")
+
     # 连接PathTracer的输出
     g.addEdge("PathTracer.color", "AccumulatePass.input")
     g.addEdge("PathTracer.initialRayInfo", "IrradiancePass.initialRayInfo")

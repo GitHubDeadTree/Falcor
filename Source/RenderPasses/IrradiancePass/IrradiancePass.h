@@ -32,6 +32,7 @@ private:
     // Internal state
     ref<ComputePass> mpComputePass;    ///< Compute pass that calculates irradiance
     bool mReverseRayDirection = true;  ///< Whether to reverse ray direction when calculating irradiance
+    uint2 mOutputResolution = {0, 0};  ///< Current output resolution for debug display
 
     // UI variables
     bool mEnabled = true;              ///< Enable/disable the pass

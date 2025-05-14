@@ -53,10 +53,18 @@ RenderPassReflection IrradiancePass::reflect(const CompileData& compileData)
     RenderPassReflection reflector;
 
     // Input: Initial ray direction and intensity
-    reflector.addInput(kInputRayInfo, "Initial ray direction (xyz) and intensity (w)").bindFlags(ResourceBindFlags::ShaderResource);
+    reflector.addInput(kInputRayInfo, "Initial ray direction (xyz) and intensity (w)")
+        .bindFlags(ResourceBindFlags::ShaderResource);
+
+    // Add VBuffer input, mark as optional for now
+    reflector.addInput("vbuffer", "Visibility buffer for surface identification")
+        .bindFlags(ResourceBindFlags::ShaderResource)
+        .flags(RenderPassReflection::Field::Flags::Optional);
 
     // Output: Irradiance
-    reflector.addOutput(kOutputIrradiance, "Calculated irradiance per pixel").bindFlags(ResourceBindFlags::UnorderedAccess).format(ResourceFormat::RGBA32Float);
+    reflector.addOutput(kOutputIrradiance, "Calculated irradiance per pixel")
+        .bindFlags(ResourceBindFlags::UnorderedAccess)
+        .format(ResourceFormat::RGBA32Float);
 
     return reflector;
 }
@@ -69,6 +77,13 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     {
         logWarning("IrradiancePass::execute() - Input ray info texture is missing. Make sure the PathTracer is outputting initialRayInfo data.");
         return;
+    }
+
+    // Get VBuffer input (optional at this stage)
+    const auto& pVBuffer = renderData.getTexture("vbuffer");
+    if (mUseActualNormals && !pVBuffer)
+    {
+        logWarning("IrradiancePass::execute() - VBuffer texture is missing but useActualNormals is enabled. Falling back to fixed normal.");
     }
 
     // If disabled, clear output and return
@@ -88,16 +103,25 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     var[kPerFrameCB][kReverseRayDirection] = mReverseRayDirection;
     var[kPerFrameCB][kIntensityScale] = mIntensityScale;
     var[kPerFrameCB][kDebugNormalView] = mDebugNormalView;
-    var[kPerFrameCB][kUseActualNormals] = mUseActualNormals;
+    var[kPerFrameCB][kUseActualNormals] = mUseActualNormals && pVBuffer != nullptr;  // Only use actual normals if VBuffer is available
     var[kPerFrameCB][kFixedNormal] = mFixedNormal;
 
     // 全局纹理资源绑定保持不变
     var["gInputRayInfo"] = pInputRayInfo;
     var["gOutputIrradiance"] = renderData.getTexture(kOutputIrradiance);
 
-    // Execute compute pass
+    // Bind VBuffer if available
+    if (pVBuffer)
+    {
+        var["gVBuffer"] = pVBuffer;
+    }
+
+    // Store output resolution for debug display
     uint32_t width = pInputRayInfo->getWidth();
     uint32_t height = pInputRayInfo->getHeight();
+    mOutputResolution = uint2(width, height);
+
+    // Execute compute pass
     mpComputePass->execute(pRenderContext, { (width + 15) / 16, (height + 15) / 16, 1 });
 }
 
@@ -125,6 +149,19 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
         // 只有在使用固定法线时显示方向控制
         widget.var("Fixed Normal", mFixedNormal, -1.0f, 1.0f, 0.01f);
         widget.tooltip("The fixed normal direction to use when not using actual normals.");
+    }
+
+    // Display output resolution information
+    widget.separator();
+    widget.text("--- Output Information ---");
+    std::string resText = "Resolution: " + std::to_string(mOutputResolution.x) + " x " + std::to_string(mOutputResolution.y);
+    widget.text(resText);
+
+    const uint32_t totalPixels = mOutputResolution.x * mOutputResolution.y;
+    if (totalPixels > 0)
+    {
+        std::string pixelCountText = "Total Pixels: " + std::to_string(totalPixels);
+        widget.text(pixelCountText);
     }
 }
 

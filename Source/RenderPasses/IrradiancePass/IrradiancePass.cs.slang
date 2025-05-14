@@ -42,6 +42,7 @@
 
 // Input data
 Texture2D<float4> gInputRayInfo;        ///< Input ray direction (xyz) and intensity (w)
+Texture2D<uint4> gVBuffer;              ///< Visibility buffer for surface identification (optional)
 
 // Output data
 RWTexture2D<float4> gOutputIrradiance;  ///< Output irradiance (xyz) and total cos-weighted samples count (w)
