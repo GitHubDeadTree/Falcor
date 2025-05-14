@@ -131,14 +131,22 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     // Set shader constants
     auto var = mpComputePass->getRootVar();
 
-    // 通过cbuffer名称路径访问变量
     var[kPerFrameCB][kReverseRayDirection] = mReverseRayDirection;
     var[kPerFrameCB][kIntensityScale] = mIntensityScale;
     var[kPerFrameCB][kDebugNormalView] = mDebugNormalView;
-    var[kPerFrameCB][kUseActualNormals] = mUseActualNormals && hasVBuffer;  // Only use actual normals if VBuffer is available
+
+
+    bool useActualNormals = mUseActualNormals && hasVBuffer && mpScene;
+
+    var[kPerFrameCB][kUseActualNormals] = useActualNormals;
+    logInfo("IrradiancePass::execute() - UseActualNormals setting: {} (UI: {}, HasVBuffer: {}, HasScene: {})",
+            useActualNormals ? "Enabled" : "Disabled",
+            mUseActualNormals ? "True" : "False",
+            hasVBuffer ? "True" : "False",
+            mpScene ? "True" : "False");
+
     var[kPerFrameCB][kFixedNormal] = mFixedNormal;
 
-    // 全局纹理资源绑定保持不变
     var["gInputRayInfo"] = pInputRayInfo;
     var["gOutputIrradiance"] = pOutputIrradiance;
 
@@ -154,16 +162,14 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     }
 
     // Bind scene data if available and using actual normals
-    if (mpScene && mUseActualNormals && hasVBuffer)
+    if (useActualNormals)
     {
         mpScene->bindShaderData(var["gScene"]);
-        logInfo("IrradiancePass::execute() - Successfully bound scene data to shader.");
+        logInfo("IrradiancePass::execute() - Successfully bound scene data to shader for normal extraction.");
     }
     else if (mUseActualNormals && !mpScene)
     {
-        // Fall back to fixed normal if we want to use actual normals but don't have a scene
-        logWarning("IrradiancePass::execute() - Cannot use actual normals because Scene is not available. Falling back to fixed normal.");
-        var[kPerFrameCB][kUseActualNormals] = false;
+        logWarning("IrradiancePass::execute() - Cannot use actual normals because Scene is not available.");
     }
 
     // Execute compute pass (dispatch based on the output resolution)
@@ -188,12 +194,14 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
     widget.tooltip("When enabled, visualizes the normal directions as colors for debugging.");
 
     widget.checkbox("Use Actual Normals", mUseActualNormals);
-    widget.tooltip("When enabled, uses the actual surface normals from VBuffer\n"
-                  "instead of assuming a fixed normal direction.");
+    widget.tooltip("When enabled, uses the actual surface normals from VBuffer and Scene data\n"
+                  "instead of assuming a fixed normal direction.\n"
+                  "This provides accurate irradiance calculation on curved surfaces.\n"
+                  "Requires a valid VBuffer input and Scene connection.");
 
     if (!mUseActualNormals)
     {
-        // 只有在使用固定法线时显示方向控制
+
         widget.var("Fixed Normal", mFixedNormal, -1.0f, 1.0f, 0.01f);
         widget.tooltip("The fixed normal direction to use when not using actual normals.");
     }
@@ -277,7 +285,9 @@ void IrradiancePass::prepareProgram()
     // Create shader defines
     DefineList defines;
 
-    // Add scene shader modules and defines if available
+    defines.add("USE_ACTUAL_NORMALS", mUseActualNormals ? "1" : "0");
+
+    // Add scene shader modules and defines if available and we need them
     if (mpScene && mUseActualNormals)
     {
         // Get scene defines for proper shader compilation
@@ -287,7 +297,13 @@ void IrradiancePass::prepareProgram()
         desc.addShaderModules(mpScene->getShaderModules());
         desc.addTypeConformances(mpScene->getTypeConformances());
 
-        logInfo("IrradiancePass::prepareProgram() - Added scene defines and shader modules.");
+        logInfo("IrradiancePass::prepareProgram() - Added scene defines and shader modules for normal extraction.");
+
+        auto sceneDefines = mpScene->getSceneDefines();
+        if (sceneDefines.find("SCENE_GEOMETRY_TYPES") != sceneDefines.end())
+        {
+            logInfo("IrradiancePass::prepareProgram() - SCENE_GEOMETRY_TYPES = {}", sceneDefines["SCENE_GEOMETRY_TYPES"]);
+        }
     }
 
     try

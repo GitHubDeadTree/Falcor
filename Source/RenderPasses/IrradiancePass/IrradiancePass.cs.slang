@@ -41,9 +41,12 @@
 */
 
 // Scene imports for accessing geometry data
-// Only import HitInfo without requiring full Scene module
-// In a future version, we'll add proper scene geometry support
-import Scene.HitInfo;
+// Only import Scene.Scene and Scene.Shading when needed to avoid preprocessor errors
+#if USE_ACTUAL_NORMALS
+import Scene.Scene;
+import Scene.Shading;
+#endif
+import Scene.HitInfo;  // HitInfo is always needed for basic VBuffer access
 
 // Input data
 Texture2D<float4> gInputRayInfo;        ///< Input ray direction (xyz) and intensity (w)
@@ -62,9 +65,10 @@ cbuffer PerFrameCB
     float3 gFixedNormal;                ///< Fixed normal direction when not using actual normals
 }
 
-// Scene data (will be bound by the host code)
-// 在任务5中，我们不直接声明和使用场景变量
-// 在任务6中，我们会正确配置场景访问
+// Scene data (bound by the host code)
+#if USE_ACTUAL_NORMALS
+ParameterBlock<Scene> gScene;           ///< Scene data for accessing geometry information
+#endif
 
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
@@ -100,14 +104,22 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         uint hitInfo = gVBuffer[pixel];
 
         // Check if we have valid hit info
-        bool hasValidHit = (hitInfo != 0);
+        HitInfo hit = HitInfo(hitInfo);
 
-        // In Task 5, we're just setting up dependencies
-        // No actual normal extraction yet, will be implemented in Task 6
-        // The real normal access requires these scene dependencies to be properly configured
+        #if USE_ACTUAL_NORMALS
+        if (hit.isValid())
+        {
+            // 从VBuffer获取表面法线
+            VertexData v = {};
+            const GeometryInstanceID instanceID = hit.getInstanceID();
+            const uint primitiveIndex = hit.getPrimitiveIndex();
+            const float2 barycentrics = hit.getBarycentrics();
+            v = gScene.getVertexData(instanceID, primitiveIndex, barycentrics);
 
-        // Note: In Task 6, we'll add code here to extract real normals from the scene
-        // using HitInfo, VertexData, and the scene interface
+            // 使用法线作为接收表面的方向
+            normal = normalize(v.normalW);
+        }
+        #endif
     }
     else
     {
@@ -115,12 +127,8 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         normal = normalize(gFixedNormal);
     }
 
-    // In Debug Normal View mode, use the selected normal
-    // For all other modes, we'll still use the fixed normal for calculation in this stage
-    float3 calculationNormal = gUseActualNormals ? normal : normalize(gFixedNormal);
-
     // Calculate cosine term (N·ω)
-    float cosTheta = max(0.0f, dot(calculationNormal, rayDir));
+    float cosTheta = max(0.0f, dot(normal, rayDir));
 
     // Calculate irradiance contribution: L * cosθ
     float irradiance = cosTheta * intensity * gIntensityScale;
