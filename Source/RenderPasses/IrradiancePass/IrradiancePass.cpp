@@ -208,12 +208,14 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     }
 
     // Bind scene data if available and using actual normals
+    bool sceneDataBound = false;
     if (useActualNormals)
     {
         if (var.findMember("gScene").isValid())
         {
             mpScene->bindShaderData(var["gScene"]);
             logInfo("IrradiancePass::execute() - Successfully bound scene data to shader for normal extraction.");
+            sceneDataBound = true;
         }
         else
         {
@@ -224,6 +226,9 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     {
         logWarning("IrradiancePass::execute() - Cannot use actual normals because Scene is not available.");
     }
+
+    // Update normals extraction status based on all required conditions
+    mNormalsSuccessfullyExtracted = useActualNormals && sceneDataBound;
 
     // Execute compute pass (dispatch based on the output resolution)
     uint32_t width = mOutputResolution.x;
@@ -329,6 +334,33 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
                       "instead of assuming a fixed normal direction.\n"
                       "This provides accurate irradiance calculation on curved surfaces.\n"
                       "Requires a valid VBuffer input and Scene connection.");
+
+
+        if (mUseActualNormals)
+        {
+
+            bool success = mNormalsSuccessfullyExtracted;
+            std::string statusText = success ?
+                "Actual Normals Status: ACTIVE (using real surface normals)" :
+                "Actual Normals Status: INACTIVE (using fixed normal)";
+
+            widget.text(statusText, success);
+
+            if (!success)
+            {
+                widget.tooltip("Normal extraction is not active. Possible causes:\n"
+                              "1. VBuffer is not available (check connections)\n"
+                              "2. Scene data is not available (check scene loading)\n"
+                              "3. Shader compilation issues with USE_ACTUAL_NORMALS\n\n"
+                              "The pass is currently using the fixed normal instead.");
+            }
+            else
+            {
+                widget.tooltip("Normal extraction is active.\n"
+                              "The pass is using actual surface normals from the geometry.\n"
+                              "You can verify this by enabling 'Debug Normal View'.");
+            }
+        }
 
         // Check if shader recompilation is needed
         if (prevUseActualNormals != mUseActualNormals)

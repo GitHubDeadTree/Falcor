@@ -39,6 +39,7 @@ private:
     uint2 mOutputResolution = {0, 0};  ///< Current output resolution for debug display
     ref<Scene> mpScene;                ///< Scene reference for accessing geometry data
     bool mNeedRecompile = false;       ///< Flag indicating if shader program needs to be recompiled
+    bool mNormalsSuccessfullyExtracted = false; ///< Whether actual normals were successfully extracted in the last execution
 
     // Computation interval control
     float mComputeInterval = 1.0f;     ///< Time interval between computations (in seconds)
