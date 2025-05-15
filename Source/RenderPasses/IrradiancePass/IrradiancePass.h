@@ -48,10 +48,12 @@ private:
     uint32_t mFrameCount = 0;          ///< Frame counter for interval tracking
     bool mUseLastResult = true;        ///< Whether to use the last result when skipping computation
     ref<Texture> mpLastIrradianceResult; ///< Texture to store the last irradiance result
+    ref<Texture> mpLastIrradianceScalarResult; ///< Texture to store the last scalar irradiance result
 
     // UI variables
     bool mEnabled = true;              ///< Enable/disable the pass
     std::string mOutputTexName = "irradiance"; ///< Name of the output texture
+    std::string mOutputScalarTexName = "irradianceScalar"; ///< Name of the single-channel output texture
     float mIntensityScale = 1.0f;      ///< Scaling factor for the irradiance intensity
     bool mDebugNormalView = false;     ///< When enabled, visualizes normal directions as colors for debugging
     bool mUseActualNormals = false;    ///< Whether to use actual normals from VBuffer instead of a fixed normal
@@ -62,4 +64,5 @@ private:
     void prepareProgram();
     bool shouldCompute(RenderContext* pRenderContext); ///< Determines if computation should be performed this frame
     void copyLastResultToOutput(RenderContext* pRenderContext, const ref<Texture>& pOutputIrradiance); ///< Copies last result to output
+    void copyLastScalarResultToOutput(RenderContext* pRenderContext, const ref<Texture>& pOutputScalarIrradiance); ///< Copies last scalar result to output
 };

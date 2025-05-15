@@ -56,6 +56,7 @@ Texture2D<uint> gVBuffer;               ///< Visibility buffer for surface ident
 
 // Output data
 RWTexture2D<float4> gOutputIrradiance;  ///< Output irradiance (xyz) and total cos-weighted samples count (w)
+RWTexture2D<float> gOutputIrradianceScalar; ///< Output scalar irradiance (single-channel)
 
 // Parameters
 cbuffer PerFrameCB
@@ -90,6 +91,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     if (gPassthrough)
     {
         gOutputIrradiance[pixel] = rayInfo;
+        gOutputIrradianceScalar[pixel] = rayInfo.w; // 在直通模式下输出原始强度
         return;
     }
 
@@ -160,10 +162,14 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         // Map normal from [-1,1] range to [0,1] range for visualization
         float3 normalColor = (normal + 1.0f) * 0.5f;
         gOutputIrradiance[pixel] = float4(normalColor, 1.0f);
+        gOutputIrradianceScalar[pixel] = 0.0f; // Debug模式下，标量输出不包含任何有用信息
     }
     else
     {
         // Regular irradiance output
         gOutputIrradiance[pixel] = float4(irradiance, irradiance, irradiance, 1.0f);
+
+        // 单通道辐射度输出
+        gOutputIrradianceScalar[pixel] = irradiance;
     }
 }

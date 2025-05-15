@@ -8,6 +8,7 @@ namespace
     // Input/output channels
     const std::string kInputRayInfo = "initialRayInfo";      // Input texture with ray direction and intensity
     const std::string kOutputIrradiance = "irradiance";      // Output texture with irradiance values
+    const std::string kOutputIrradianceScalar = "irradianceScalar"; // Output texture with scalar irradiance values
 
     // Shader constants
     const std::string kPerFrameCB = "PerFrameCB";           // cbuffer name
@@ -70,10 +71,15 @@ RenderPassReflection IrradiancePass::reflect(const CompileData& compileData)
         .bindFlags(ResourceBindFlags::ShaderResource)
         .flags(RenderPassReflection::Field::Flags::Optional);
 
-    // Output: Irradiance
+    // Output: Irradiance (RGB)
     reflector.addOutput(kOutputIrradiance, "Calculated irradiance per pixel")
         .bindFlags(ResourceBindFlags::UnorderedAccess)
         .format(ResourceFormat::RGBA32Float);
+
+    // Output: Scalar Irradiance (单通道)
+    reflector.addOutput(kOutputIrradianceScalar, "Calculated scalar irradiance per pixel")
+        .bindFlags(ResourceBindFlags::UnorderedAccess)
+        .format(ResourceFormat::R32Float);
 
     return reflector;
 }
@@ -93,6 +99,14 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     if (!pOutputIrradiance)
     {
         logWarning("IrradiancePass::execute() - Output irradiance texture is missing.");
+        return;
+    }
+
+    // Get scalar output texture
+    const auto& pOutputScalarIrradiance = renderData.getTexture(kOutputIrradianceScalar);
+    if (!pOutputScalarIrradiance)
+    {
+        logWarning("IrradiancePass::execute() - Output scalar irradiance texture is missing.");
         return;
     }
 
@@ -117,6 +131,7 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     if (!mEnabled)
     {
         pRenderContext->clearUAV(pOutputIrradiance->getUAV().get(), float4(0.f));
+        pRenderContext->clearUAV(pOutputScalarIrradiance->getUAV().get(), float4(0.f));
         return;
     }
 
@@ -128,13 +143,16 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     bool computeThisFrame = shouldCompute(pRenderContext);
 
     // If we should reuse last result, check if we have one and if it matches current output dimensions
-    if (!computeThisFrame && mUseLastResult && mpLastIrradianceResult)
+    if (!computeThisFrame && mUseLastResult && mpLastIrradianceResult && mpLastIrradianceScalarResult)
     {
         // If dimensions match, copy last result to output
         if (mpLastIrradianceResult->getWidth() == mOutputResolution.x &&
-            mpLastIrradianceResult->getHeight() == mOutputResolution.y)
+            mpLastIrradianceResult->getHeight() == mOutputResolution.y &&
+            mpLastIrradianceScalarResult->getWidth() == mOutputResolution.x &&
+            mpLastIrradianceScalarResult->getHeight() == mOutputResolution.y)
         {
             copyLastResultToOutput(pRenderContext, pOutputIrradiance);
+            copyLastScalarResultToOutput(pRenderContext, pOutputScalarIrradiance);
             return;
         }
         else
@@ -153,6 +171,7 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     {
         // No last result available but we should skip, clear output
         pRenderContext->clearUAV(pOutputIrradiance->getUAV().get(), float4(0.f));
+        pRenderContext->clearUAV(pOutputScalarIrradiance->getUAV().get(), float4(0.f));
         return;
     }
 
@@ -195,6 +214,7 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
 
     var["gInputRayInfo"] = pInputRayInfo;
     var["gOutputIrradiance"] = pOutputIrradiance;
+    var["gOutputIrradianceScalar"] = pOutputScalarIrradiance;
 
     // Bind VBuffer if available
     if (hasVBuffer)
@@ -253,8 +273,23 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
             );
         }
 
+        // Create scalar texture if it doesn't exist or if dimensions don't match
+        if (!mpLastIrradianceScalarResult ||
+            mpLastIrradianceScalarResult->getWidth() != width ||
+            mpLastIrradianceScalarResult->getHeight() != height)
+        {
+            mpLastIrradianceScalarResult = mpDevice->createTexture2D(
+                width, height,
+                pOutputScalarIrradiance->getFormat(),
+                1, 1,
+                nullptr,
+                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
+            );
+        }
+
         // Copy current result to storage texture
         pRenderContext->copyResource(mpLastIrradianceResult.get(), pOutputIrradiance.get());
+        pRenderContext->copyResource(mpLastIrradianceScalarResult.get(), pOutputScalarIrradiance.get());
     }
 }
 
@@ -312,9 +347,18 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
                 mPassthrough ? "bypassed" : "active");
     }
 
+    // 添加关于单通道辐射度输出的信息
+    widget.separator();
+    widget.text("--- 输出通道 ---");
+    widget.text("RGB 辐射度: " + std::string(kOutputIrradiance));
+    widget.tooltip("RGB 辐射度输出 (RGBA32Float 格式)");
+    widget.text("单通道辐射度: " + std::string(kOutputIrradianceScalar));
+    widget.tooltip("单通道浮点数辐射度输出 (R32Float 格式)");
+
     // Only show other settings in non-passthrough mode
     if (!mPassthrough)
     {
+        widget.separator();
         widget.checkbox("Reverse Ray Direction", mReverseRayDirection);
         widget.tooltip("When enabled, inverts the ray direction to calculate irradiance.\n"
                       "This is usually required because ray directions in path tracing typically\n"
@@ -552,6 +596,18 @@ void IrradiancePass::copyLastResultToOutput(RenderContext* pRenderContext, const
 
     logInfo("IrradiancePass::copyLastResultToOutput() - Reusing last computed result");
     pRenderContext->copyResource(pOutputIrradiance.get(), mpLastIrradianceResult.get());
+}
+
+void IrradiancePass::copyLastScalarResultToOutput(RenderContext* pRenderContext, const ref<Texture>& pOutputScalarIrradiance)
+{
+    if (!mpLastIrradianceScalarResult)
+    {
+        logWarning("IrradiancePass::copyLastScalarResultToOutput() - No last scalar result available");
+        return;
+    }
+
+    logInfo("IrradiancePass::copyLastScalarResultToOutput() - Reusing last computed scalar result");
+    pRenderContext->copyResource(pOutputScalarIrradiance.get(), mpLastIrradianceScalarResult.get());
 }
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
