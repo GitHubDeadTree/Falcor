@@ -60,14 +60,25 @@ typedef int4 InputDataType;
 #error "Invalid format"
 #endif
 
+// Standard RGBA input/output textures
 Texture2D<InputDataType> gCurFrame;
 RWTexture2D<float4> gOutputFrame;
+
+// Single-channel irradiance input/output textures
+Texture2D<float> gScalarCurFrame;
+RWTexture2D<float> gScalarOutputFrame;
 
 // Last frame data, format depends on accumulation mode.
 RWTexture2D<float4> gLastFrameSum;  // If mode is Single or SingleKahan
 RWTexture2D<float4> gLastFrameCorr; // If mode is SingleKahan
 RWTexture2D<uint4> gLastFrameSumLo; // If mode is Double
 RWTexture2D<uint4> gLastFrameSumHi; // If mode is Double
+
+// Last frame data for scalar channel
+RWTexture2D<float> gScalarLastFrameSum;   // If mode is Single or SingleKahan
+RWTexture2D<float> gScalarLastFrameCorr;  // If mode is SingleKahan
+RWTexture2D<uint> gScalarLastFrameSumLo;  // If mode is Double
+RWTexture2D<uint> gScalarLastFrameSumHi;  // If mode is Double
 
 /**
  * Single precision standard summation.
@@ -204,4 +215,132 @@ void accumulateDouble(uint3 dispatchThreadId: SV_DispatchThreadID)
     }
 
     gOutputFrame[pixelPos] = output;
+}
+
+/**
+ * Single precision standard summation for scalar irradiance.
+ */
+[numthreads(16, 16, 1)]
+void accumulateScalarSingle(uint3 dispatchThreadId: SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId.xy >= gResolution))
+        return;
+    const uint2 pixelPos = dispatchThreadId.xy;
+    const float curValue = gScalarCurFrame[pixelPos];
+
+    float output;
+    if (gAccumulate)
+    {
+        float curWeight = 1.0 / (gAccumCount + 1);
+
+        if (gMovingAverageMode)
+        {
+            // Exponential weighted moving average mode.
+            // Blend the accumulated frame with the current frame.
+            output = lerp(gScalarLastFrameSum[pixelPos], curValue, curWeight);
+
+            gScalarLastFrameSum[pixelPos] = output;
+        }
+        else
+        {
+            // High precision mode with no frame limit.
+            // Fetch previous sum and compute the new sum.
+            float sum = gScalarLastFrameSum[pixelPos] + curValue;
+            output = sum * curWeight;
+
+            gScalarLastFrameSum[pixelPos] = sum;
+        }
+    }
+    else
+    {
+        output = curValue;
+    }
+
+    gScalarOutputFrame[pixelPos] = output;
+}
+
+/**
+ * Single precision compensated summation for scalar irradiance.
+ */
+[numthreads(16, 16, 1)]
+void accumulateScalarSingleCompensated(uint3 dispatchThreadId: SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId.xy >= gResolution))
+        return;
+    const uint2 pixelPos = dispatchThreadId.xy;
+    const float curValue = gScalarCurFrame[pixelPos];
+
+    float output;
+    if (gAccumulate)
+    {
+        // Fetch the previous sum and running compensation term.
+        float sum = gScalarLastFrameSum[pixelPos];
+        // c measures how large (+) or small (-) the current sum is compared to what it should be.
+        float c = gScalarLastFrameCorr[pixelPos];
+
+        // Adjust current value to minimize the running error.
+        // Compute the new sum by adding the adjusted current value.
+        float y = curValue - c;
+        // The value we'll see in 'sum' on the next iteration.
+        float sumNext = sum + y;
+        output = sumNext / (gAccumCount + 1);
+
+        gScalarLastFrameSum[pixelPos] = sumNext;
+        // Store new correction term.
+        gScalarLastFrameCorr[pixelPos] = (sumNext - sum) - y;
+    }
+    else
+    {
+        output = curValue;
+    }
+
+    gScalarOutputFrame[pixelPos] = output;
+}
+
+/**
+ * Double precision standard summation for scalar irradiance.
+ */
+[numthreads(16, 16, 1)]
+void accumulateScalarDouble(uint3 dispatchThreadId: SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId.xy >= gResolution))
+        return;
+    const uint2 pixelPos = dispatchThreadId.xy;
+    const float curValue = gScalarCurFrame[pixelPos];
+
+    float output;
+    if (gAccumulate)
+    {
+        double curWeight = 1.0 / (gAccumCount + 1);
+
+        // Fetch the previous sum in double precision.
+        // There is no 'double' resource format, so the bits are stored in two uint textures.
+        uint sumLo = gScalarLastFrameSumLo[pixelPos];
+        uint sumHi = gScalarLastFrameSumHi[pixelPos];
+
+        double sum = asdouble(sumLo, sumHi);
+
+        if (gMovingAverageMode)
+        {
+            // Exponential weighted moving average mode.
+            sum = sum * (1.0 - curWeight) + (double)curValue * curWeight;
+            output = (float)sum;
+        }
+        else
+        {
+            // High precision mode with no frame limit.
+            sum += (double)curValue;
+            output = (float)(sum * curWeight);
+        }
+
+        asuint(sum, sumLo, sumHi);
+        gScalarLastFrameSumLo[pixelPos] = sumLo;
+        gScalarLastFrameSumHi[pixelPos] = sumHi;
+    }
+    else
+    {
+        output = curValue;
+    }
+
+    gScalarOutputFrame[pixelPos] = output;
 }

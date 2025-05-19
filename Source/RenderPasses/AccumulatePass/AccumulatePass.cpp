@@ -47,6 +47,8 @@ const char kShaderFile[] = "RenderPasses/AccumulatePass/Accumulate.cs.slang";
 
 const char kInputChannel[] = "input";
 const char kOutputChannel[] = "output";
+const char kInputScalarChannel[] = "inputScalar";
+const char kOutputScalarChannel[] = "outputScalar";
 
 // Serialized parameters
 const char kEnabled[] = "enabled";
@@ -115,12 +117,24 @@ RenderPassReflection AccumulatePass::reflect(const CompileData& compileData)
     RenderPassReflection reflector;
     const uint2 sz = RenderPassHelpers::calculateIOSize(mOutputSizeSelection, mFixedOutputSize, compileData.defaultTexDims);
     const auto fmt = mOutputFormat != ResourceFormat::Unknown ? mOutputFormat : ResourceFormat::RGBA32Float;
+    const auto scalarFmt = ResourceFormat::R32Float;
 
-    reflector.addInput(kInputChannel, "Input data to be temporally accumulated").bindFlags(ResourceBindFlags::ShaderResource);
+    reflector.addInput(kInputChannel, "Input data to be temporally accumulated")
+        .bindFlags(ResourceBindFlags::ShaderResource)
+        .flags(RenderPassReflection::Field::Flags::Optional);
     reflector.addOutput(kOutputChannel, "Output data that is temporally accumulated")
         .bindFlags(ResourceBindFlags::RenderTarget | ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource)
         .format(fmt)
         .texture2D(sz.x, sz.y);
+
+    reflector.addInput(kInputScalarChannel, "Single-channel input data to be temporally accumulated")
+        .bindFlags(ResourceBindFlags::ShaderResource)
+        .flags(RenderPassReflection::Field::Flags::Optional);
+    reflector.addOutput(kOutputScalarChannel, "Single-channel output data that is temporally accumulated")
+        .bindFlags(ResourceBindFlags::RenderTarget | ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource)
+        .format(scalarFmt)
+        .texture2D(sz.x, sz.y);
+
     return reflector;
 }
 
@@ -170,50 +184,94 @@ void AccumulatePass::execute(RenderContext* pRenderContext, const RenderData& re
         }
     }
 
-    // Grab our input/output buffers.
     ref<Texture> pSrc = renderData.getTexture(kInputChannel);
     ref<Texture> pDst = renderData.getTexture(kOutputChannel);
-    FALCOR_ASSERT(pSrc && pDst);
+    ref<Texture> pScalarSrc = renderData.getTexture(kInputScalarChannel);
+    ref<Texture> pScalarDst = renderData.getTexture(kOutputScalarChannel);
 
-    const uint2 resolution = uint2(pSrc->getWidth(), pSrc->getHeight());
-    const bool resolutionMatch = pDst->getWidth() == resolution.x && pDst->getHeight() == resolution.y;
+    bool hasStandardData = pSrc && pDst;
+    bool hasScalarData = pScalarSrc && pScalarDst;
 
-    // Reset accumulation when resolution changes.
-    if (any(resolution != mFrameDim))
+    if (!hasStandardData && !hasScalarData)
+    {
+        logWarning("AccumulatePass::execute() - No valid input/output combination found. Pass will be skipped.");
+        return;
+    }
+
+    uint2 resolution = {0, 0};
+    if (hasStandardData)
+    {
+        resolution = uint2(pSrc->getWidth(), pSrc->getHeight());
+    }
+    else if (hasScalarData)
+    {
+        resolution = uint2(pScalarSrc->getWidth(), pScalarSrc->getHeight());
+    }
+
+    if (any(resolution != mFrameDim) && resolution.x > 0 && resolution.y > 0)
     {
         mFrameDim = resolution;
         reset();
     }
 
-    // Verify that output is non-integer format. It shouldn't be since reflect() requests a floating-point format.
-    if (isIntegerFormat(pDst->getFormat()))
-        FALCOR_THROW("AccumulatePass: Output to integer format is not supported");
-
-    // Issue error and disable pass if unsupported I/O size. The user can hit continue and fix the config or abort.
-    if (mEnabled && !resolutionMatch)
+    if (hasStandardData)
     {
-        logError("AccumulatePass I/O sizes don't match. The pass will be disabled.");
-        mEnabled = false;
+        const bool resolutionMatch = pDst->getWidth() == mFrameDim.x && pDst->getHeight() == mFrameDim.y;
+
+        if (isIntegerFormat(pDst->getFormat()))
+        {
+            FALCOR_THROW("AccumulatePass: Output to integer format is not supported");
+        }
+
+        if (mEnabled && !resolutionMatch)
+        {
+            logError("AccumulatePass I/O sizes don't match for RGBA data. The pass will be disabled.");
+            mEnabled = false;
+        }
+
+        if (!mEnabled && !isIntegerFormat(pSrc->getFormat()))
+        {
+            pRenderContext->blit(pSrc->getSRV(0, 1, 0, 1), pDst->getRTV(0, 0, 1));
+        }
+        else if (resolutionMatch)
+        {
+            accumulate(pRenderContext, pSrc, pDst);
+        }
+        else
+        {
+            logWarning("AccumulatePass unsupported I/O configuration for RGBA data. The output will be cleared.");
+            pRenderContext->clearUAV(pDst->getUAV().get(), uint4(0));
+        }
     }
 
-    // Decide action based on current configuration:
-    // - The accumulation pass supports integer input but requires matching I/O size.
-    // - Blit supports mismatching size but requires non-integer format.
-    // - As a fallback, issue warning and clear the output.
+    if (hasScalarData)
+    {
+        const bool resolutionMatch = pScalarDst->getWidth() == mFrameDim.x && pScalarDst->getHeight() == mFrameDim.y;
 
-    if (!mEnabled && !isIntegerFormat(pSrc->getFormat()))
-    {
-        // Only blit mip 0 and array slice 0, because that's what the accumulation uses otherwise.
-        pRenderContext->blit(pSrc->getSRV(0, 1, 0, 1), pDst->getRTV(0, 0, 1));
-    }
-    else if (resolutionMatch)
-    {
-        accumulate(pRenderContext, pSrc, pDst);
-    }
-    else
-    {
-        logWarning("AccumulatePass unsupported I/O configuration. The output will be cleared.");
-        pRenderContext->clearUAV(pDst->getUAV().get(), uint4(0));
+        if (isIntegerFormat(pScalarDst->getFormat()))
+        {
+            FALCOR_THROW("AccumulatePass: Output to integer format is not supported for scalar data");
+        }
+
+        if (mEnabled && !resolutionMatch)
+        {
+            logError("AccumulatePass I/O sizes don't match for scalar data. The pass will be disabled.");
+            mEnabled = false;
+        }
+
+        if (!mEnabled && !isIntegerFormat(pScalarSrc->getFormat()))
+        {
+            pRenderContext->blit(pScalarSrc->getSRV(0, 1, 0, 1), pScalarDst->getRTV(0, 0, 1));
+        }
+        else if (resolutionMatch)
+        {
+            accumulateScalar(pRenderContext, pScalarSrc, pScalarDst);
+        }
+        else
+        {
+            logWarning("AccumulatePass unsupported I/O configuration for scalar data. The output will be cleared.");
+            pRenderContext->clearUAV(pScalarDst->getUAV().get(), uint4(0));
+        }
     }
 }
 
@@ -289,6 +347,86 @@ void AccumulatePass::accumulate(RenderContext* pRenderContext, const ref<Texture
     uint3 numGroups = div_round_up(uint3(mFrameDim.x, mFrameDim.y, 1u), pProgram->getReflector()->getThreadGroupSize());
     mpState->setProgram(pProgram);
     pRenderContext->dispatch(mpState.get(), mpVars.get(), numGroups);
+}
+
+void AccumulatePass::accumulateScalar(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst)
+{
+    FALCOR_ASSERT(pSrc && pDst);
+    FALCOR_ASSERT(pSrc->getWidth() == mFrameDim.x && pSrc->getHeight() == mFrameDim.y);
+    FALCOR_ASSERT(pDst->getWidth() == mFrameDim.x && pDst->getHeight() == mFrameDim.y);
+    const FormatType srcType = getFormatType(pSrc->getFormat());
+
+    // If for the first time, or if the input format type has changed, (re)compile the programs.
+    if (mpScalarProgram.empty() || srcType != mScalarSrcType)
+    {
+        DefineList defines;
+        switch (srcType)
+        {
+        case FormatType::Uint:
+            defines.add("_INPUT_FORMAT", "INPUT_FORMAT_UINT");
+            break;
+        case FormatType::Sint:
+            defines.add("_INPUT_FORMAT", "INPUT_FORMAT_SINT");
+            break;
+        default:
+            defines.add("_INPUT_FORMAT", "INPUT_FORMAT_FLOAT");
+            break;
+        }
+        // Add single-channel definition
+        defines.add("_SCALAR_MODE", "1");
+
+        // Create single-channel accumulation programs.
+        mpScalarProgram[Precision::Double] =
+            Program::createCompute(mpDevice, kShaderFile, "accumulateScalarDouble", defines, SlangCompilerFlags::TreatWarningsAsErrors);
+        mpScalarProgram[Precision::Single] =
+            Program::createCompute(mpDevice, kShaderFile, "accumulateScalarSingle", defines, SlangCompilerFlags::TreatWarningsAsErrors);
+        mpScalarProgram[Precision::SingleCompensated] = Program::createCompute(
+            mpDevice,
+            kShaderFile,
+            "accumulateScalarSingleCompensated",
+            defines,
+            SlangCompilerFlags::FloatingPointModePrecise | SlangCompilerFlags::TreatWarningsAsErrors
+        );
+        mpScalarVars = ProgramVars::create(mpDevice, mpScalarProgram[mPrecisionMode]->getReflector());
+
+        mScalarSrcType = srcType;
+    }
+
+    // Setup accumulation.
+    prepareAccumulation(pRenderContext, mFrameDim.x, mFrameDim.y);
+
+    // Set shader parameters.
+    auto var = mpScalarVars->getRootVar();
+    var["PerFrameCB"]["gResolution"] = mFrameDim;
+    var["PerFrameCB"]["gAccumCount"] = mFrameCount;
+    var["PerFrameCB"]["gAccumulate"] = mEnabled;
+    var["PerFrameCB"]["gMovingAverageMode"] = (mMaxFrameCount > 0);
+    var["gScalarCurFrame"] = pSrc;
+    var["gScalarOutputFrame"] = pDst;
+
+    // Bind accumulation buffers. Some of these may be nullptr's.
+    var["gScalarLastFrameSum"] = mpScalarLastFrameSum;
+    var["gScalarLastFrameCorr"] = mpScalarLastFrameCorr;
+    var["gScalarLastFrameSumLo"] = mpScalarLastFrameSumLo;
+    var["gScalarLastFrameSumHi"] = mpScalarLastFrameSumHi;
+
+    // Update the frame count.
+    // The accumulation limit (mMaxFrameCount) has a special value of 0 (no limit) and is not supported in the SingleCompensated mode.
+    if (mMaxFrameCount == 0 || mPrecisionMode == Precision::SingleCompensated || mFrameCount < mMaxFrameCount)
+    {
+        // Avoid duplicate counting, only increase frame count if there's no standard RGB channel
+        if (mpVars == nullptr)
+        {
+            mFrameCount++;
+        }
+    }
+
+    // Run the accumulation program.
+    auto pProgram = mpScalarProgram[mPrecisionMode];
+    FALCOR_ASSERT(pProgram);
+    uint3 numGroups = div_round_up(uint3(mFrameDim.x, mFrameDim.y, 1u), pProgram->getReflector()->getThreadGroupSize());
+    mpState->setProgram(pProgram);
+    pRenderContext->dispatch(mpState.get(), mpScalarVars.get(), numGroups);
 }
 
 void AccumulatePass::renderUI(Gui::Widgets& widget)
@@ -407,10 +545,19 @@ void AccumulatePass::prepareAccumulation(RenderContext* pRenderContext, uint32_t
         }
     };
 
+    // RGB channel buffers
     prepareBuffer(
         mpLastFrameSum, ResourceFormat::RGBA32Float, mPrecisionMode == Precision::Single || mPrecisionMode == Precision::SingleCompensated
     );
     prepareBuffer(mpLastFrameCorr, ResourceFormat::RGBA32Float, mPrecisionMode == Precision::SingleCompensated);
     prepareBuffer(mpLastFrameSumLo, ResourceFormat::RGBA32Uint, mPrecisionMode == Precision::Double);
     prepareBuffer(mpLastFrameSumHi, ResourceFormat::RGBA32Uint, mPrecisionMode == Precision::Double);
+
+    // Single-channel irradiance buffers
+    prepareBuffer(
+        mpScalarLastFrameSum, ResourceFormat::R32Float, mPrecisionMode == Precision::Single || mPrecisionMode == Precision::SingleCompensated
+    );
+    prepareBuffer(mpScalarLastFrameCorr, ResourceFormat::R32Float, mPrecisionMode == Precision::SingleCompensated);
+    prepareBuffer(mpScalarLastFrameSumLo, ResourceFormat::R32Uint, mPrecisionMode == Precision::Double);
+    prepareBuffer(mpScalarLastFrameSumHi, ResourceFormat::R32Uint, mPrecisionMode == Precision::Double);
 }

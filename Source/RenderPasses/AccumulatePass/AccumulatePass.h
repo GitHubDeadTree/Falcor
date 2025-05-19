@@ -102,6 +102,7 @@ public:
 protected:
     void prepareAccumulation(RenderContext* pRenderContext, uint32_t width, uint32_t height);
     void accumulate(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst);
+    void accumulateScalar(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst);
 
     // Internal state
 
@@ -110,11 +111,14 @@ protected:
 
     /// Accumulation programs, one per mode.
     std::map<Precision, ref<Program>> mpProgram;
+    std::map<Precision, ref<Program>> mpScalarProgram;
     ref<ProgramVars> mpVars;
+    ref<ProgramVars> mpScalarVars;
     ref<ComputeState> mpState;
 
     /// Format type of the source that gets accumulated.
     FormatType mSrcType;
+    FormatType mScalarSrcType;
 
     /// Number of accumulated frames. This is reset upon changes.
     uint32_t mFrameCount = 0;
@@ -128,6 +132,11 @@ protected:
     ref<Texture> mpLastFrameSumLo;
     /// Last frame running sum (hi bits). Used in Double mode.
     ref<Texture> mpLastFrameSumHi;
+
+    ref<Texture> mpScalarLastFrameSum;
+    ref<Texture> mpScalarLastFrameCorr;
+    ref<Texture> mpScalarLastFrameSumLo;
+    ref<Texture> mpScalarLastFrameSumHi;
 
     // UI variables
 

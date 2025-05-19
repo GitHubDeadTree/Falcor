@@ -23,12 +23,20 @@ def render_graph_PathTracerWithIrradiance():
     IrradianceAccumulatePass = createPass("AccumulatePass", {'enabled': True, 'precisionMode': 'Single'})
     g.addPass(IrradianceAccumulatePass, "IrradianceAccumulatePass")
 
+    # 新增：单通道辐照度累积通道
+    IrradianceScalarAccumulatePass = createPass("AccumulatePass", {'enabled': True, 'precisionMode': 'Single'})
+    g.addPass(IrradianceScalarAccumulatePass, "IrradianceScalarAccumulatePass")
+
     # 添加ToneMapper通道
     ToneMapper = createPass("ToneMapper", {'autoExposure': False, 'exposureCompensation': 0.0})
     g.addPass(ToneMapper, "ToneMapper")
 
     IrradianceToneMapper = createPass("ToneMapper", {'autoExposure': False, 'exposureCompensation': 0.0})
     g.addPass(IrradianceToneMapper, "IrradianceToneMapper")
+
+    # 新增：单通道辐照度色调映射器
+    IrradianceScalarToneMapper = createPass("ToneMapper", {'autoExposure': False, 'exposureCompensation': 0.0})
+    g.addPass(IrradianceScalarToneMapper, "IrradianceScalarToneMapper")
 
     # 连接VBufferRT到PathTracer
     g.addEdge("VBufferRT.vbuffer", "PathTracer.vbuffer")
@@ -44,14 +52,20 @@ def render_graph_PathTracerWithIrradiance():
 
     # 连接IrradiancePass到累积通道
     g.addEdge("IrradiancePass.irradiance", "IrradianceAccumulatePass.input")
+    # 新增：连接单通道辐照度输出到单通道累积通道
+    g.addEdge("IrradiancePass.irradianceScalar", "IrradianceScalarAccumulatePass.inputScalar")
 
     # 连接累积通道到色调映射器
     g.addEdge("AccumulatePass.output", "ToneMapper.src")
     g.addEdge("IrradianceAccumulatePass.output", "IrradianceToneMapper.src")
+    # 新增：连接单通道辐照度累积通道到单通道色调映射器
+    g.addEdge("IrradianceScalarAccumulatePass.outputScalar", "IrradianceScalarToneMapper.src")
 
     # 标记输出
     g.markOutput("ToneMapper.dst")
     g.markOutput("IrradianceToneMapper.dst")
+    # 新增：标记单通道辐照度输出
+    g.markOutput("IrradianceScalarToneMapper.dst")
 
     return g
 
