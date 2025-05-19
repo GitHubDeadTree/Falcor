@@ -1094,6 +1094,9 @@ void PathTracer::setNRDData(const ShaderVar& var, const RenderData& renderData) 
     var["deltaTransmissionNormWRoughMaterialID"] = renderData.getTexture(kOutputNRDDeltaTransmissionNormWRoughMaterialID);
     var["deltaTransmissionPathLength"] = renderData.getTexture(kOutputNRDDeltaTransmissionPathLength);
     var["deltaTransmissionPosW"] = renderData.getTexture(kOutputNRDDeltaTransmissionPosW);
+    var["outputNRDDeltaTransmissionRadianceHitDist"] = renderData.getTexture(kOutputNRDDeltaTransmissionRadianceHitDist);
+    var["outputNRDResidualRadianceHitDist"] = renderData.getTexture(kOutputNRDResidualRadianceHitDist);
+    var["outputInitialRayInfo"] = renderData.getTexture(kOutputInitialRayInfo); // Bind initialRayInfo output texture
 }
 
 void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderData, bool useLightSampling) const
@@ -1359,7 +1362,7 @@ void PathTracer::tracePass(RenderContext* pRenderContext, const RenderData& rend
 
 void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& renderData)
 {
-    if (!mOutputGuideData && !mOutputNRDData && mFixedSampleCount && mStaticParams.samplesPerPixel == 1) return;
+    if (!mOutputGuideData && !mOutputNRDData && !mOutputInitialRayInfo && mFixedSampleCount && mStaticParams.samplesPerPixel == 1) return;
 
     FALCOR_PROFILE(pRenderContext, "resolvePass");
 
@@ -1372,6 +1375,7 @@ void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& re
     // Additional specialization. This shouldn't change resource declarations.
     mpResolvePass->addDefine("OUTPUT_GUIDE_DATA", mOutputGuideData ? "1" : "0");
     mpResolvePass->addDefine("OUTPUT_NRD_DATA", mOutputNRDData ? "1" : "0");
+    mpResolvePass->addDefine("OUTPUT_INITIAL_RAY_INFO", mOutputInitialRayInfo ? "1" : "0");  // Add define for initialRayInfo
 
     // Bind resources.
     auto var = mpResolvePass->getRootVar()["CB"]["gResolvePass"];
@@ -1388,7 +1392,6 @@ void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& re
     var["outputNRDDeltaReflectionRadianceHitDist"] = renderData.getTexture(kOutputNRDDeltaReflectionRadianceHitDist);
     var["outputNRDDeltaTransmissionRadianceHitDist"] = renderData.getTexture(kOutputNRDDeltaTransmissionRadianceHitDist);
     var["outputNRDResidualRadianceHitDist"] = renderData.getTexture(kOutputNRDResidualRadianceHitDist);
-    var["outputInitialRayInfo"] = renderData.getTexture(kOutputInitialRayInfo); // 新增：绑定初始光线信息输出纹理
 
     if (mVarsChanged)
     {

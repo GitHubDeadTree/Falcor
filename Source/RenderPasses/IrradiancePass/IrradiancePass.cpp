@@ -349,11 +349,11 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
 
     // 添加关于单通道辐射度输出的信息
     widget.separator();
-    widget.text("--- 输出通道 ---");
-    widget.text("RGB 辐射度: " + std::string(kOutputIrradiance));
-    widget.tooltip("RGB 辐射度输出 (RGBA32Float 格式)");
-    widget.text("单通道辐射度: " + std::string(kOutputIrradianceScalar));
-    widget.tooltip("单通道浮点数辐射度输出 (R32Float 格式)");
+    //widget.text("--- 输出通道 ---");
+    //widget.text("RGB 辐射度: " + std::string(kOutputIrradiance));
+    //widget.tooltip("RGB 辐射度输出 (RGBA32Float 格式)");
+    //widget.text("单通道辐射度: " + std::string(kOutputIrradianceScalar));
+    //widget.tooltip("单通道浮点数辐射度输出 (R32Float 格式)");
 
     // Only show other settings in non-passthrough mode
     if (!mPassthrough)

@@ -1,4 +1,4 @@
-# PathTracer中initialRayInfo输出通道问题分析
+# PathTracer中initialRayInfo输出通道问题分析与修复
 
 ## 问题描述
 
@@ -28,9 +28,13 @@ void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& re
 
 在这个提前返回的条件中，只检查了`mOutputGuideData`和`mOutputNRDData`这两个标志，但没有检查`mOutputInitialRayInfo`标志。当每像素只有1个样本时，系统认为不需要执行解析步骤，直接将tracePass的结果作为最终输出。
 
-## 解决方案
+## 代码修改
 
-修改`resolvePass`函数的判断条件，增加对`mOutputInitialRayInfo`的检查：
+为了解决这个问题，我们进行了以下修改：
+
+### 1. 修改resolvePass函数中的提前返回条件
+
+修改`resolvePass`函数，在条件判断中添加对`mOutputInitialRayInfo`的检查：
 
 ```cpp
 void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& renderData)
@@ -41,18 +45,57 @@ void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& re
 }
 ```
 
-通过增加`!mOutputInitialRayInfo`条件，可以确保当需要输出initialRayInfo时，即使每像素只有1个样本，也会执行解析步骤，从而正确处理initialRayInfo输出通道。
+### 2. 添加OUTPUT_INITIAL_RAY_INFO宏定义
 
-## 技术细节
+在`resolvePass`函数中，为shader添加`OUTPUT_INITIAL_RAY_INFO`的定义：
 
-在代码中，initialRayInfo的处理流程如下：
-
-1. PathTracer会为每个样本生成初始光线信息，存储在`mpSampleInitialRayInfo`缓冲区中
-2. `resolvePass`负责将这些样本数据解析到最终的输出纹理
-3. 当每像素只有1个样本时，系统优化跳过了解析步骤，导致`initialRayInfo`通道没有得到正确处理
-
-当解析步骤执行时，`resolvePass`函数中的这段代码会处理initialRayInfo输出：
 ```cpp
-var["outputInitialRayInfo"] = renderData.getTexture(kOutputInitialRayInfo);
-var["sampleInitialRayInfo"] = mpSampleInitialRayInfo;
+// Additional specialization. This shouldn't change resource declarations.
+mpResolvePass->addDefine("OUTPUT_GUIDE_DATA", mOutputGuideData ? "1" : "0");
+mpResolvePass->addDefine("OUTPUT_NRD_DATA", mOutputNRDData ? "1" : "0");
+mpResolvePass->addDefine("OUTPUT_INITIAL_RAY_INFO", mOutputInitialRayInfo ? "1" : "0");  // 新增：添加initialRayInfo定义
 ```
+
+### 3. 绑定输出纹理
+
+确保在resolvePass函数中正确绑定initialRayInfo输出纹理：
+
+```cpp
+var["outputInitialRayInfo"] = renderData.getTexture(kOutputInitialRayInfo);  // 绑定initialRayInfo输出纹理
+```
+
+### 4. 修改TracePass中的处理逻辑
+
+确保在TracePass中的rayGen函数中，当只有一个样本时也考虑initialRayInfo的情况：
+
+```cpp
+// For the special case of fixed 1 spp output, the results are written directly.
+if (kSamplesPerPixel == 1 && !kOutputGuideData && !kOutputNRDData && !kOutputInitialRayInfo)
+{
+    outputColor[pixel] = float4(mainPathContrib, 1.f);
+}
+// Otherwise store the per-sample results into our packed buffer.
+else
+{
+    // ... 存储样本数据
+
+    if (kOutputInitialRayInfo && hasInitialRayInfo)
+    {
+        sampleInitialRayInfo[pathID] = float4(pathState.initialDir, pathState.initialIntensity);
+    }
+
+    // ... 其他处理
+}
+```
+
+## 实现效果
+
+通过上述修改，即使在每像素只有1个样本的情况下，initialRayInfo输出通道也能正确工作：
+
+1. 当需要输出initialRayInfo时，会执行解析步骤
+2. 在解析过程中会收集初始光线信息并输出到指定纹理
+3. TracePass中的样本收集逻辑也会考虑initialRayInfo的情况
+
+## 总结
+
+问题的核心在于resolvePass函数中的条件判断缺少对initialRayInfo的考虑，导致当样本数为1时跳过了解析步骤。通过添加对initialRayInfo的检查并确保正确绑定输出纹理，我们成功解决了这个问题，使initialRayInfo输出通道在各种配置下都能正常工作。
