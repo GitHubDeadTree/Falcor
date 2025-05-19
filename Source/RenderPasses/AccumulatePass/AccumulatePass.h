@@ -29,6 +29,8 @@
 #include "Falcor.h"
 #include "RenderGraph/RenderPass.h"
 #include "RenderGraph/RenderPassHelpers.h"
+#include "Utils/Algorithm/ParallelReduction.h"
+#include <memory>
 
 using namespace Falcor;
 
@@ -67,6 +69,9 @@ public:
     // Scripting functions
     void reset();
 
+    // Get average value of scalar output
+    float getAverageValue() const { return mAverageValue; }
+
     enum class Precision : uint32_t
     {
         Double,            ///< Standard summation in double precision.
@@ -103,6 +108,9 @@ protected:
     void prepareAccumulation(RenderContext* pRenderContext, uint32_t width, uint32_t height);
     void accumulate(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst);
     void accumulateScalar(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst);
+
+    // Average calculation function for scalar output
+    void computeAverageValue(RenderContext* pRenderContext, const ref<Texture>& pTexture);
 
     // Internal state
 
@@ -157,6 +165,12 @@ protected:
     RenderPassHelpers::IOSize mOutputSizeSelection = RenderPassHelpers::IOSize::Default;
     /// Output size in pixels when 'Fixed' size is selected.
     uint2 mFixedOutputSize = {512, 512};
+
+    // Average calculation members
+    std::unique_ptr<ParallelReduction> mpParallelReduction; ///< Parallel reduction utility for computing texture averages
+    float mAverageValue = 0.0f;                            ///< Stores the computed average of the scalar output
+    bool mComputeAverage = true;                           ///< Controls whether to compute the average value
+    ref<Buffer> mpAverageResultBuffer;                     ///< Buffer to store the average calculation result
 };
 
 FALCOR_ENUM_REGISTER(AccumulatePass::Precision);

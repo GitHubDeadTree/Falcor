@@ -33,6 +33,7 @@ static void regAccumulatePass(pybind11::module& m)
     pybind11::class_<AccumulatePass, RenderPass, ref<AccumulatePass>> pass(m, "AccumulatePass");
     pass.def_property("enabled", &AccumulatePass::isEnabled, &AccumulatePass::setEnabled);
     pass.def("reset", &AccumulatePass::reset);
+    pass.def_property_readonly("averageValue", &AccumulatePass::getAverageValue);
 }
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
@@ -59,6 +60,7 @@ const char kAutoReset[] = "autoReset";
 const char kPrecisionMode[] = "precisionMode";
 const char kMaxFrameCount[] = "maxFrameCount";
 const char kOverflowMode[] = "overflowMode";
+const char kComputeAverage[] = "computeAverage";
 } // namespace
 
 AccumulatePass::AccumulatePass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
@@ -82,6 +84,8 @@ AccumulatePass::AccumulatePass(ref<Device> pDevice, const Properties& props) : R
             mMaxFrameCount = value;
         else if (key == kOverflowMode)
             mOverflowMode = value;
+        else if (key == kComputeAverage)
+            mComputeAverage = value;
         else
             logWarning("Unknown property '{}' in AccumulatePass properties.", key);
     }
@@ -94,6 +98,13 @@ AccumulatePass::AccumulatePass(ref<Device> pDevice, const Properties& props) : R
     }
 
     mpState = ComputeState::create(mpDevice);
+
+    // Create ParallelReduction instance
+    mpParallelReduction = std::make_unique<ParallelReduction>(pDevice);
+
+    // Create result buffer (16 bytes, size of float4)
+    mpAverageResultBuffer = pDevice->createBuffer(sizeof(float4), ResourceBindFlags::None, MemoryType::ReadBack);
+    mpAverageResultBuffer->setName("AccumulatePass::AverageResultBuffer");
 }
 
 Properties AccumulatePass::getProperties() const
@@ -109,6 +120,7 @@ Properties AccumulatePass::getProperties() const
     props[kPrecisionMode] = mPrecisionMode;
     props[kMaxFrameCount] = mMaxFrameCount;
     props[kOverflowMode] = mOverflowMode;
+    props[kComputeAverage] = mComputeAverage;
     return props;
 }
 
@@ -198,79 +210,43 @@ void AccumulatePass::execute(RenderContext* pRenderContext, const RenderData& re
         return;
     }
 
-    uint2 resolution = {0, 0};
+    // Prepare accumulation resources and shaders.
+    uint32_t width = 0;
+    uint32_t height = 0;
     if (hasStandardData)
     {
-        resolution = uint2(pSrc->getWidth(), pSrc->getHeight());
+        FALCOR_ASSERT(pSrc->getWidth() == pDst->getWidth() && pSrc->getHeight() == pDst->getHeight());
+        width = pSrc->getWidth();
+        height = pSrc->getHeight();
+        mSrcType = getFormatType(pSrc->getFormat());
     }
-    else if (hasScalarData)
-    {
-        resolution = uint2(pScalarSrc->getWidth(), pScalarSrc->getHeight());
-    }
-
-    if (any(resolution != mFrameDim) && resolution.x > 0 && resolution.y > 0)
-    {
-        mFrameDim = resolution;
-        reset();
-    }
-
-    if (hasStandardData)
-    {
-        const bool resolutionMatch = pDst->getWidth() == mFrameDim.x && pDst->getHeight() == mFrameDim.y;
-
-        if (isIntegerFormat(pDst->getFormat()))
-        {
-            FALCOR_THROW("AccumulatePass: Output to integer format is not supported");
-        }
-
-        if (mEnabled && !resolutionMatch)
-        {
-            logError("AccumulatePass I/O sizes don't match for RGBA data. The pass will be disabled.");
-            mEnabled = false;
-        }
-
-        if (!mEnabled && !isIntegerFormat(pSrc->getFormat()))
-        {
-            pRenderContext->blit(pSrc->getSRV(0, 1, 0, 1), pDst->getRTV(0, 0, 1));
-        }
-        else if (resolutionMatch)
-        {
-            accumulate(pRenderContext, pSrc, pDst);
-        }
-        else
-        {
-            logWarning("AccumulatePass unsupported I/O configuration for RGBA data. The output will be cleared.");
-            pRenderContext->clearUAV(pDst->getUAV().get(), uint4(0));
-        }
-    }
-
     if (hasScalarData)
     {
-        const bool resolutionMatch = pScalarDst->getWidth() == mFrameDim.x && pScalarDst->getHeight() == mFrameDim.y;
+        FALCOR_ASSERT(pScalarSrc->getWidth() == pScalarDst->getWidth() && pScalarSrc->getHeight() == pScalarDst->getHeight());
+        width = std::max(width, pScalarSrc->getWidth());
+        height = std::max(height, pScalarSrc->getHeight());
+        mScalarSrcType = getFormatType(pScalarSrc->getFormat());
+    }
+    FALCOR_ASSERT(width > 0 && height > 0);
 
-        if (isIntegerFormat(pScalarDst->getFormat()))
-        {
-            FALCOR_THROW("AccumulatePass: Output to integer format is not supported for scalar data");
-        }
+    prepareAccumulation(pRenderContext, width, height);
+    assert(mFrameDim.x == width && mFrameDim.y == height);
 
-        if (mEnabled && !resolutionMatch)
-        {
-            logError("AccumulatePass I/O sizes don't match for scalar data. The pass will be disabled.");
-            mEnabled = false;
-        }
+    // Perform accumulation of standard data.
+    if (hasStandardData)
+    {
+        accumulate(pRenderContext, pSrc, pDst);
+    }
 
-        if (!mEnabled && !isIntegerFormat(pScalarSrc->getFormat()))
+    // Perform accumulation of scalar data.
+    if (hasScalarData)
+    {
+        accumulateScalar(pRenderContext, pScalarSrc, pScalarDst);
+
+        // Compute average value of scalar output if enabled
+        if (mComputeAverage)
         {
-            pRenderContext->blit(pScalarSrc->getSRV(0, 1, 0, 1), pScalarDst->getRTV(0, 0, 1));
-        }
-        else if (resolutionMatch)
-        {
-            accumulateScalar(pRenderContext, pScalarSrc, pScalarDst);
-        }
-        else
-        {
-            logWarning("AccumulatePass unsupported I/O configuration for scalar data. The output will be cleared.");
-            pRenderContext->clearUAV(pScalarDst->getUAV().get(), uint4(0));
+            computeAverageValue(pRenderContext, pScalarDst);
         }
     }
 }
@@ -431,58 +407,72 @@ void AccumulatePass::accumulateScalar(RenderContext* pRenderContext, const ref<T
 
 void AccumulatePass::renderUI(Gui::Widgets& widget)
 {
-    // Controls for output size.
-    // When output size requirements change, we'll trigger a graph recompile to update the render pass I/O sizes.
-    if (widget.dropdown("Output size", mOutputSizeSelection))
-        requestRecompile();
-    if (mOutputSizeSelection == RenderPassHelpers::IOSize::Fixed)
+    widget.checkbox("Enabled", mEnabled);
+    widget.tooltip("Enable/disable accumulation.");
+
+    if (widget.checkbox("Auto Reset", mAutoReset))
     {
-        if (widget.var("Size in pixels", mFixedOutputSize, 32u, 16384u))
-            requestRecompile();
+        if (mAutoReset)
+            reset();
+    }
+    widget.tooltip("Reset accumulation automatically upon scene changes or refresh flags.");
+
+    if (widget.button("Reset", true))
+        reset();
+    widget.tooltip("Reset accumulation.");
+
+    widget.text("Frame count: " + std::to_string(mFrameCount));
+
+    // Only enable the combo box for selecting precision in modes that use compute shaders.
+    if (widget.dropdown("Mode", mPrecisionMode))
+    {
+        reset();
+    }
+    widget.tooltip(
+        "Precision mode selection:\n\n"
+        "Double:\n"
+        "Standard summation in double precision. Slow but accurate.\n\n"
+        "Single:\n"
+        "Standard summation in single precision. Fast but may result in excessive variance on accumulation.\n\n"
+        "SingleCompensated:\n"
+        "Compensated summation using Kahan summation in single precision. Good balance between speed and precision."
+    );
+
+    widget.var("Max Frame Count", mMaxFrameCount, 0u, UINT_MAX, 1u);
+    widget.tooltip("Maximum number of frames to accumulate before triggering overflow handler. Set to 0 for unlimited.");
+
+    if (mMaxFrameCount > 0)
+    {
+        widget.dropdown("Overflow Mode", mOverflowMode);
+        widget.tooltip(
+            "Overflow handler:\n\n"
+            "Stop:\n"
+            "Stop accumulation and retain accumulated image when max frame count is reached.\n\n"
+            "Reset:\n"
+            "Reset accumulation and continue when max frame count is reached.\n\n"
+            "EMA:\n"
+            "Switch to exponential moving average when max frame count is reached."
+        );
     }
 
-    if (bool enabled = isEnabled(); widget.checkbox("Enabled", enabled))
-        setEnabled(enabled);
+    // Add average value calculation controls
+    widget.separator();
+    widget.text("--- Average Value ---");
+    widget.checkbox("Compute Average", mComputeAverage);
+    widget.tooltip("When enabled, computes the average value of the scalar output texture.");
 
-    if (mEnabled)
+    if (mComputeAverage && mFrameCount > 0)
     {
-        if (widget.button("Reset", true))
-            reset();
-
-        widget.checkbox("Auto Reset", mAutoReset);
-        widget.tooltip("Reset accumulation automatically upon scene changes and refresh flags.");
-
-        if (widget.dropdown("Mode", mPrecisionMode))
-        {
-            // Reset accumulation when mode changes.
-            reset();
-        }
-
-        if (mPrecisionMode != Precision::SingleCompensated)
-        {
-            // When mMaxFrameCount is nonzero, the accumulate pass will only compute the average of
-            // up to that number of frames. Further frames will be accumulated in the exponential moving
-            // average fashion, i.e. every next frame is blended with the history using the same weight.
-            if (widget.var("Max Frames", mMaxFrameCount, 0u))
-            {
-                reset();
-            }
-            widget.tooltip("Maximum number of frames to accumulate before triggering overflow. 0 means infinite accumulation.");
-
-            if (widget.dropdown("Overflow Mode", mOverflowMode))
-            {
-                reset();
-            }
-            widget.tooltip(
-                "What to do after maximum number of frames are accumulated:\n"
-                "  Stop: Stop accumulation and retain accumulated image.\n"
-                "  Reset: Reset accumulation.\n"
-                "  EMA: Switch to exponential moving average accumulation.\n"
-            );
-        }
-
-        const std::string text = std::string("Frames accumulated ") + std::to_string(mFrameCount);
-        widget.text(text);
+        std::string avgText = "Average Value: " + std::to_string(mAverageValue);
+        widget.text(avgText);
+    }
+    else if (mFrameCount == 0)
+    {
+        widget.text("Average not available (no frames accumulated)");
+    }
+    else
+    {
+        widget.text("Average calculation disabled");
     }
 }
 
@@ -517,6 +507,9 @@ void AccumulatePass::reset()
 
 void AccumulatePass::prepareAccumulation(RenderContext* pRenderContext, uint32_t width, uint32_t height)
 {
+    // Update frame dimensions
+    mFrameDim = { width, height };
+
     // Allocate/resize/clear buffers for intermedate data. These are different depending on accumulation mode.
     // Buffers that are not used in the current mode are released.
     auto prepareBuffer = [&](ref<Texture>& pBuf, ResourceFormat format, bool bufUsed)
@@ -560,4 +553,45 @@ void AccumulatePass::prepareAccumulation(RenderContext* pRenderContext, uint32_t
     prepareBuffer(mpScalarLastFrameCorr, ResourceFormat::R32Float, mPrecisionMode == Precision::SingleCompensated);
     prepareBuffer(mpScalarLastFrameSumLo, ResourceFormat::R32Uint, mPrecisionMode == Precision::Double);
     prepareBuffer(mpScalarLastFrameSumHi, ResourceFormat::R32Uint, mPrecisionMode == Precision::Double);
+}
+
+// Implementation of average value calculation
+void AccumulatePass::computeAverageValue(RenderContext* pRenderContext, const ref<Texture>& pTexture)
+{
+    if (!mpParallelReduction || !pTexture)
+    {
+        logWarning("AccumulatePass::computeAverageValue() - ParallelReduction or texture is missing");
+        return;
+    }
+
+    try
+    {
+        // Execute parallel reduction (sum)
+        mpParallelReduction->execute<float4>(
+            pRenderContext,
+            pTexture,
+            ParallelReduction::Type::Sum,
+            nullptr,  // Don't directly read results to avoid GPU sync wait
+            mpAverageResultBuffer,
+            0
+        );
+
+        // Wait for computation to complete (submit and sync)
+        pRenderContext->submit(true);
+
+        float4 sum;
+        mpAverageResultBuffer->getBlob(&sum, 0, sizeof(float4));
+
+        // Calculate average (total divided by pixel count)
+        const uint32_t pixelCount = pTexture->getWidth() * pTexture->getHeight();
+        if (pixelCount > 0)
+        {
+            mAverageValue = sum.x / pixelCount;
+            logInfo("AccumulatePass::computeAverageValue() - Average value: {}", mAverageValue);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("AccumulatePass::computeAverageValue() - Error calculating average: {}", e.what());
+    }
 }
