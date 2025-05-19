@@ -2,6 +2,8 @@
 #include "Falcor.h"
 #include "RenderGraph/RenderPass.h"
 #include "RenderGraph/RenderPassHelpers.h"
+#include "Utils/Algorithm/ParallelReduction.h"
+#include <memory>
 
 using namespace Falcor;
 
@@ -30,6 +32,8 @@ public:
     // Scripting functions
     bool useRayDirectionReversal() const { return mReverseRayDirection; }
     void setRayDirectionReversal(bool reverse) { mReverseRayDirection = reverse; }
+
+    float getAverageIrradiance() const { return mAverageIrradiance; }
 
 private:
     // Internal state
@@ -60,9 +64,17 @@ private:
     float3 mFixedNormal = float3(0, 0, 1);  ///< The fixed normal direction to use when not using actual normals
     bool mPassthrough = false;         ///< When enabled, directly outputs the input rayinfo without any calculations
 
+    // Average calculation
+    std::unique_ptr<ParallelReduction> mpParallelReduction; ///< Parallel reduction utility for computing texture averages
+    float mAverageIrradiance = 0.0f;   ///< Stores the computed average of the scalar irradiance
+    bool mComputeAverage = true;       ///< Controls whether to compute the average value
+    ref<Buffer> mpAverageResultBuffer; ///< Buffer to store the average calculation result
+
     void prepareResources(RenderContext* pRenderContext, const RenderData& renderData);
     void prepareProgram();
     bool shouldCompute(RenderContext* pRenderContext); ///< Determines if computation should be performed this frame
     void copyLastResultToOutput(RenderContext* pRenderContext, const ref<Texture>& pOutputIrradiance); ///< Copies last result to output
     void copyLastScalarResultToOutput(RenderContext* pRenderContext, const ref<Texture>& pOutputScalarIrradiance); ///< Copies last scalar result to output
+
+    void computeAverageIrradiance(RenderContext* pRenderContext, const ref<Texture>& pTexture);
 };

@@ -35,11 +35,19 @@ IrradiancePass::IrradiancePass(ref<Device> pDevice, const Properties& props) : R
         else if (key == "computeInterval") mComputeInterval = value;
         else if (key == "frameInterval") mFrameInterval = value;
         else if (key == "useLastResult") mUseLastResult = value;
+        else if (key == "computeAverage") mComputeAverage = value;
         else logWarning("Unknown property '{}' in IrradiancePass properties.", key);
     }
 
     // Create compute pass
     prepareProgram();
+
+    // Create ParallelReduction instance
+    mpParallelReduction = std::make_unique<ParallelReduction>(pDevice);
+
+    // Create result buffer (16 bytes, size of float4)
+    mpAverageResultBuffer = pDevice->createBuffer(sizeof(float4), ResourceBindFlags::None, MemoryType::ReadBack);
+    mpAverageResultBuffer->setName("IrradiancePass::AverageResultBuffer");
 }
 
 Properties IrradiancePass::getProperties() const
@@ -55,6 +63,7 @@ Properties IrradiancePass::getProperties() const
     props["computeInterval"] = mComputeInterval;
     props["frameInterval"] = mFrameInterval;
     props["useLastResult"] = mUseLastResult;
+    props["computeAverage"] = mComputeAverage;
     return props;
 }
 
@@ -256,6 +265,12 @@ void IrradiancePass::execute(RenderContext* pRenderContext, const RenderData& re
     logInfo("IrradiancePass::execute() - Dispatching compute with dimensions {}x{}", width, height);
     mpComputePass->execute(pRenderContext, width, height, 1);
 
+
+    if (mComputeAverage && !mDebugNormalView)
+    {
+        computeAverageIrradiance(pRenderContext, pOutputScalarIrradiance);
+    }
+
     // Store the result for future frames
     if (mUseLastResult)
     {
@@ -347,13 +362,26 @@ void IrradiancePass::renderUI(Gui::Widgets& widget)
                 mPassthrough ? "bypassed" : "active");
     }
 
-    // 添加关于单通道辐射度输出的信息
+
     widget.separator();
-    //widget.text("--- 输出通道 ---");
-    //widget.text("RGB 辐射度: " + std::string(kOutputIrradiance));
-    //widget.tooltip("RGB 辐射度输出 (RGBA32Float 格式)");
-    //widget.text("单通道辐射度: " + std::string(kOutputIrradianceScalar));
-    //widget.tooltip("单通道浮点数辐射度输出 (R32Float 格式)");
+    widget.text("--- Average Irradiance ---");
+    widget.checkbox("Compute Average", mComputeAverage);
+    widget.tooltip("When enabled, computes the average value of the scalar irradiance texture.");
+
+
+    if (mComputeAverage && !mDebugNormalView)
+    {
+        std::string avgText = "Average Irradiance: " + std::to_string(mAverageIrradiance);
+        widget.text(avgText);
+    }
+    else if (mDebugNormalView)
+    {
+        widget.text("Average not available in debug view mode");
+    }
+    else
+    {
+        widget.text("Average calculation disabled");
+    }
 
     // Only show other settings in non-passthrough mode
     if (!mPassthrough)
@@ -608,6 +636,46 @@ void IrradiancePass::copyLastScalarResultToOutput(RenderContext* pRenderContext,
 
     logInfo("IrradiancePass::copyLastScalarResultToOutput() - Reusing last computed scalar result");
     pRenderContext->copyResource(pOutputScalarIrradiance.get(), mpLastIrradianceScalarResult.get());
+}
+
+void IrradiancePass::computeAverageIrradiance(RenderContext* pRenderContext, const ref<Texture>& pTexture)
+{
+    if (!mpParallelReduction || !pTexture)
+    {
+        logWarning("IrradiancePass::computeAverageIrradiance() - ParallelReduction or texture is missing");
+        return;
+    }
+
+    try
+    {
+        // Execute parallel reduction (sum)
+        mpParallelReduction->execute<float4>(
+            pRenderContext,
+            pTexture,
+            ParallelReduction::Type::Sum,
+            nullptr,  // Don't directly read results to avoid GPU sync wait
+            mpAverageResultBuffer,
+            0
+        );
+
+        // Wait for computation to complete (submit and sync)
+        pRenderContext->submit(true);
+
+        float4 sum;
+        mpAverageResultBuffer->getBlob(&sum, 0, sizeof(float4));
+
+        // Calculate average (total divided by pixel count)
+        const uint32_t pixelCount = pTexture->getWidth() * pTexture->getHeight();
+        if (pixelCount > 0)
+        {
+            mAverageIrradiance = sum.x / pixelCount;
+            logInfo("IrradiancePass::computeAverageIrradiance() - Average irradiance: {}", mAverageIrradiance);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("IrradiancePass::computeAverageIrradiance() - Error calculating average: {}", e.what());
+    }
 }
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
