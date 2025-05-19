@@ -1094,9 +1094,6 @@ void PathTracer::setNRDData(const ShaderVar& var, const RenderData& renderData) 
     var["deltaTransmissionNormWRoughMaterialID"] = renderData.getTexture(kOutputNRDDeltaTransmissionNormWRoughMaterialID);
     var["deltaTransmissionPathLength"] = renderData.getTexture(kOutputNRDDeltaTransmissionPathLength);
     var["deltaTransmissionPosW"] = renderData.getTexture(kOutputNRDDeltaTransmissionPosW);
-    var["outputNRDDeltaTransmissionRadianceHitDist"] = renderData.getTexture(kOutputNRDDeltaTransmissionRadianceHitDist);
-    var["outputNRDResidualRadianceHitDist"] = renderData.getTexture(kOutputNRDResidualRadianceHitDist);
-    var["outputInitialRayInfo"] = renderData.getTexture(kOutputInitialRayInfo); // Bind initialRayInfo output texture
 }
 
 void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderData, bool useLightSampling) const
@@ -1109,7 +1106,7 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         var["sampleOffset"] = mpSampleOffset; // Can be nullptr
         var["sampleColor"] = mpSampleColor;
         var["sampleGuideData"] = mpSampleGuideData;
-        var["sampleInitialRayInfo"] = mpSampleInitialRayInfo; // 新增: 绑定初始光线信息缓冲区
+        var["sampleInitialRayInfo"] = mpSampleInitialRayInfo; 
     }
 
     // Bind runtime data.
@@ -1387,6 +1384,7 @@ void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& re
     var["outputIndirectAlbedo"] = renderData.getTexture(kOutputIndirectAlbedo);
     var["outputGuideNormal"] = renderData.getTexture(kOutputGuideNormal);
     var["outputReflectionPosW"] = renderData.getTexture(kOutputReflectionPosW);
+    var["outputInitialRayInfo"] = renderData.getTexture(kOutputInitialRayInfo);
     var["outputNRDDiffuseRadianceHitDist"] = renderData.getTexture(kOutputNRDDiffuseRadianceHitDist);
     var["outputNRDSpecularRadianceHitDist"] = renderData.getTexture(kOutputNRDSpecularRadianceHitDist);
     var["outputNRDDeltaReflectionRadianceHitDist"] = renderData.getTexture(kOutputNRDDeltaReflectionRadianceHitDist);

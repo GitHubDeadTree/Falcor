@@ -656,36 +656,4 @@ void rayGen()
     if (all(pixel >= frameDim)) return;
 
     gScheduler.run(pixel);
-
-    // For the special case of fixed 1 spp output, the results are written directly.
-    if (kSamplesPerPixel == 1 && !kOutputGuideData && !kOutputNRDData && !kOutputInitialRayInfo)
-    {
-        outputColor[pixel] = float4(mainPathContrib, 1.f);
-    }
-    // Otherwise store the per-sample results into our packed buffer.
-    else
-    {
-        ColorType c;
-        c.set(mainPathContrib);
-        sampleColor[pathID] = c;
-
-        if (kOutputGuideData)
-        {
-            sampleGuideData[pathID].setAlbedo(spt.diffuseReflectance);
-            sampleGuideData[pathID].setSpecularAlbedo(spt.specularReflectance);
-            sampleGuideData[pathID].setIndirectAlbedo(indirectAlbedo);
-            sampleGuideData[pathID].setGuideNormal(spt.guideNormal);
-            sampleGuideData[pathID].setReflectionPos(reflectionPos);
-        }
-
-        if (kOutputInitialRayInfo && hasInitialRayInfo)
-        {
-            sampleInitialRayInfo[pathID] = float4(pathState.initialDir, pathState.initialIntensity);
-        }
-
-        if (kOutputNRDData)
-        {
-            // Implementation of kOutputNRDData handling
-        }
-    }
 }
