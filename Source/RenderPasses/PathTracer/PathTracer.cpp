@@ -1106,7 +1106,7 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         var["sampleOffset"] = mpSampleOffset; // Can be nullptr
         var["sampleColor"] = mpSampleColor;
         var["sampleGuideData"] = mpSampleGuideData;
-        var["sampleInitialRayInfo"] = mpSampleInitialRayInfo; 
+        var["sampleInitialRayInfo"] = mpSampleInitialRayInfo;
     }
 
     // Bind runtime data.
