@@ -28,9 +28,7 @@ def render_graph_IncomingLightPowerExample():
 
     # Connect PathTracer to IncomingLightPower
     g.addEdge("PathTracer.color", "IncomingLightPower.radiance")
-    # Optional connections if available in your PathTracer version
-    if hasattr(PathTracer, "initialRayInfo"):
-        g.addEdge("PathTracer.initialRayInfo", "IncomingLightPower.rayDirection")
+    g.addEdge("PathTracer.initialRayInfo", "IncomingLightPower.rayDirection")
 
     # Connect for accumulation and tone mapping
     g.addEdge("IncomingLightPower.lightPower", "AccumulatePass.input")
@@ -68,6 +66,7 @@ def render_graph_IncomingLightPower_RedFilter():
     # Connect passes
     g.addEdge("VBufferRT.vbuffer", "PathTracer.vbuffer")
     g.addEdge("PathTracer.color", "IncomingLightPower.radiance")
+    g.addEdge("PathTracer.initialRayInfo", "IncomingLightPower.rayDirection")
     g.addEdge("IncomingLightPower.lightPower", "ToneMapper.src")
 
     g.markOutput("ToneMapper.dst")
@@ -97,6 +96,7 @@ def render_graph_IncomingLightPower_SpecificBands():
     # Connect passes
     g.addEdge("VBufferRT.vbuffer", "PathTracer.vbuffer")
     g.addEdge("PathTracer.color", "IncomingLightPower.radiance")
+    g.addEdge("PathTracer.initialRayInfo", "IncomingLightPower.rayDirection")
     g.addEdge("IncomingLightPower.lightPower", "ToneMapper.src")
 
     g.markOutput("ToneMapper.dst")
@@ -129,6 +129,7 @@ def render_graph_IncomingLightPower_InvertedFilter():
     # Connect passes
     g.addEdge("VBufferRT.vbuffer", "PathTracer.vbuffer")
     g.addEdge("PathTracer.color", "IncomingLightPower.radiance")
+    g.addEdge("PathTracer.initialRayInfo", "IncomingLightPower.rayDirection")
     g.addEdge("IncomingLightPower.lightPower", "ToneMapper.src")
 
     g.markOutput("ToneMapper.dst")
