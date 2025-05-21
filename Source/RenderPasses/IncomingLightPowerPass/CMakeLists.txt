@@ -6,4 +6,5 @@ target_sources(IncomingLightPowerPass PRIVATE
     IncomingLightPowerPass.cs.slang
 )
 
+target_copy_shaders(IncomingLightPowerPass RenderPasses/IncomingLightPowerPass)
 target_source_group(IncomingLightPowerPass "RenderPasses")
