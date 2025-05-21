@@ -29,6 +29,10 @@
 #define INVERT_FILTER 0
 #endif
 
+#ifndef ENABLE_WAVELENGTH_FILTER
+#define ENABLE_WAVELENGTH_FILTER 1
+#endif
+
 #ifndef SPECIFIC_BANDS
 #define SPECIFIC_BANDS 0
 #endif
@@ -58,6 +62,7 @@ cbuffer PerFrameCB
     float gMaxWavelength;              ///< Maximum wavelength to consider (nm)
     bool gUseVisibleSpectrumOnly;      ///< Whether to only consider visible light spectrum (380-780nm)
     bool gInvertFilter;                ///< Whether to invert the wavelength filter
+    bool gEnableWavelengthFilter;      ///< Whether to enable wavelength filtering at all
     uint gFilterMode;                  ///< Wavelength filtering mode (0=Range, 1=Specific Bands, 2=Custom)
     uint gBandCount;                   ///< Number of specific bands to filter
     float gBandWavelengths[MAX_BANDS]; ///< Center wavelengths for specific bands
@@ -116,6 +121,12 @@ bool passesCustomFilter(float wavelength)
 // Check if wavelength is allowed by the filter
 bool isWavelengthAllowed(float wavelength)
 {
+    // If filtering is completely disabled, allow all wavelengths
+    if (!gEnableWavelengthFilter)
+    {
+        return true;
+    }
+
     // First check visible spectrum if that option is enabled
     if (gUseVisibleSpectrumOnly && !isInVisibleSpectrum(wavelength))
     {
@@ -235,10 +246,15 @@ float estimateWavelengthFromRGB(float3 rgb)
 // Compute the power of incoming light for the given pixel
 float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 radiance, float wavelength)
 {
-    // Apply wavelength filtering
-    if (!isWavelengthAllowed(wavelength))
+    // Apply wavelength filtering if enabled
+    // Only check wavelength filtering if the global control is enabled
+    if (gEnableWavelengthFilter)
     {
-        return float4(0, 0, 0, 0);
+        // Check if the wavelength passes the filter
+        if (!isWavelengthAllowed(wavelength))
+        {
+            return float4(0, 0, 0, 0);
+        }
     }
 
     // Calculate pixel area

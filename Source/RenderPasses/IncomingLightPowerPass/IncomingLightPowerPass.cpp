@@ -151,8 +151,15 @@ bool IncomingLightPowerPass::CameraIncidentPower::isWavelengthAllowed(
     bool useVisibleSpectrumOnly,
     bool invertFilter,
     const std::vector<float>& bandWavelengths,
-    const std::vector<float>& bandTolerances) const
+    const std::vector<float>& bandTolerances,
+    bool enableFilter) const
 {
+    // If wavelength filtering is disabled, all wavelengths are allowed
+    if (!enableFilter)
+    {
+        return true;
+    }
+
     // Apply visible spectrum filter if enabled
     if (useVisibleSpectrumOnly && (wavelength < 380.0f || wavelength > 780.0f))
     {
@@ -213,12 +220,13 @@ float4 IncomingLightPowerPass::CameraIncidentPower::compute(
     bool useVisibleSpectrumOnly,
     bool invertFilter,
     const std::vector<float>& bandWavelengths,
-    const std::vector<float>& bandTolerances) const
+    const std::vector<float>& bandTolerances,
+    bool enableFilter) const
 {
     // Apply wavelength filtering
     if (!isWavelengthAllowed(wavelength, minWavelength, maxWavelength,
         filterMode, useVisibleSpectrumOnly, invertFilter,
-        bandWavelengths, bandTolerances))
+        bandWavelengths, bandTolerances, enableFilter))
     {
         return float4(0.f, 0.f, 0.f, 0.f);
     }
@@ -249,6 +257,7 @@ IncomingLightPowerPass::IncomingLightPowerPass(ref<Device> pDevice, const Proper
         else if (key == "filterMode") mFilterMode = static_cast<FilterMode>((uint32_t)value);
         else if (key == "useVisibleSpectrumOnly") mUseVisibleSpectrumOnly = value;
         else if (key == "invertFilter") mInvertFilter = value;
+        else if (key == "enableWavelengthFilter") mEnableWavelengthFilter = value;
         else if (key == "outputPowerTexName") mOutputPowerTexName = value.operator std::string();
         else if (key == "outputWavelengthTexName") mOutputWavelengthTexName = value.operator std::string();
         else logWarning("Unknown property '{}' in IncomingLightPowerPass properties.", key);
@@ -271,6 +280,7 @@ Properties IncomingLightPowerPass::getProperties() const
     props["filterMode"] = static_cast<uint32_t>(mFilterMode);
     props["useVisibleSpectrumOnly"] = mUseVisibleSpectrumOnly;
     props["invertFilter"] = mInvertFilter;
+    props["enableWavelengthFilter"] = mEnableWavelengthFilter;
     props["outputPowerTexName"] = mOutputPowerTexName;
     props["outputWavelengthTexName"] = mOutputWavelengthTexName;
     return props;
@@ -320,6 +330,10 @@ void IncomingLightPowerPass::setScene(RenderContext* pRenderContext, const ref<S
 
 void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
+    // Print debug info - current settings
+    logInfo(fmt::format("IncomingLightPowerPass executing - settings: enabled={0}, wavelength_filter_enabled={1}, filter_mode={2}, min_wavelength={3}, max_wavelength={4}",
+                       mEnabled, mEnableWavelengthFilter, static_cast<int>(mFilterMode), mMinWavelength, mMaxWavelength));
+
     // Get input texture
     const auto& pInputRadiance = renderData.getTexture(kInputRadiance);
     if (!pInputRadiance)
@@ -378,6 +392,7 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     var[kPerFrameCB][kUseVisibleSpectrumOnly] = mUseVisibleSpectrumOnly;
     var[kPerFrameCB][kInvertFilter] = mInvertFilter;
     var[kPerFrameCB][kFilterMode] = (uint32_t)mFilterMode;
+    var[kPerFrameCB]["gEnableWavelengthFilter"] = mEnableWavelengthFilter;
 
     // Set camera data
     if (mpScene && mpScene->getCamera())
@@ -469,128 +484,147 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
     auto filterGroup = widget.group("Wavelength Filter", true);
     if (filterGroup)
     {
-        // Filter mode selection
-        Gui::DropdownList filterModeList;
-        filterModeList.push_back({ 0, "Range" });
-        filterModeList.push_back({ 1, "Specific Bands" });
-        filterModeList.push_back({ 2, "Custom" });
-
-        uint32_t currentMode = static_cast<uint32_t>(mFilterMode);
-        if (widget.dropdown("Filter Mode", filterModeList, currentMode))
+        // Enable/disable wavelength filtering
+        bool filterChanged = widget.checkbox("Enable Wavelength Filtering", mEnableWavelengthFilter);
+        if (filterChanged)
         {
-            mFilterMode = static_cast<FilterMode>(currentMode);
             changed = true;
-        }
-
-        // Range filter options
-        if (mFilterMode == FilterMode::Range)
-        {
-            changed |= widget.slider("Min Wavelength (nm)", mMinWavelength, 100.f, 1500.f);
-            changed |= widget.slider("Max Wavelength (nm)", mMaxWavelength, mMinWavelength, 1500.f);
-        }
-        // Specific bands filter options
-        else if (mFilterMode == FilterMode::SpecificBands)
-        {
-            // Band presets dropdown
-            Gui::DropdownList presetsList;
-            presetsList.push_back({ 0, "Custom" });
-            presetsList.push_back({ 1, "Mercury Lamp" });
-            presetsList.push_back({ 2, "Hydrogen Lines" });
-            presetsList.push_back({ 3, "Sodium D-lines" });
-
-            static uint32_t selectedPreset = 0;
-            if (widget.dropdown("Presets", presetsList, selectedPreset))
+            if (filterChanged && mAutoClearStats)
             {
+                resetStatistics();
+            }
+        }
+
+        // Only show filter options if filtering is enabled
+        if (mEnableWavelengthFilter)
+        {
+            // Filter mode selection
+            Gui::DropdownList filterModeList;
+            filterModeList.push_back({ 0, "Range" });
+            filterModeList.push_back({ 1, "Specific Bands" });
+            filterModeList.push_back({ 2, "Custom" });
+
+            uint32_t currentMode = static_cast<uint32_t>(mFilterMode);
+            if (widget.dropdown("Filter Mode", filterModeList, currentMode))
+            {
+                mFilterMode = static_cast<FilterMode>(currentMode);
                 changed = true;
-                switch (selectedPreset)
-                {
-                case 1: // Mercury Lamp
-                    mBandWavelengths = { 405.0f, 436.0f, 546.0f, 578.0f };
-                    mBandTolerances = { 5.0f, 5.0f, 5.0f, 5.0f };
-                    break;
-                case 2: // Hydrogen
-                    mBandWavelengths = { 434.0f, 486.0f, 656.0f };
-                    mBandTolerances = { 5.0f, 5.0f, 5.0f };
-                    break;
-                case 3: // Sodium
-                    mBandWavelengths = { 589.0f, 589.6f };
-                    mBandTolerances = { 2.0f, 2.0f };
-                    break;
-                default:
-                    break;
-                }
             }
 
-            // Display bands and allow editing
-            widget.text("Bands (nm):");
-
-            // Add UI for each band
-            std::vector<float> bandWavelengthsCopy = mBandWavelengths;
-            std::vector<float> bandTolerancesCopy = mBandTolerances;
-            std::vector<bool> bandToRemove(mBandWavelengths.size(), false);
-
-            bool bandsChanged = false;
-
-            for (size_t i = 0; i < bandWavelengthsCopy.size(); i++)
+            // Range filter options
+            if (mFilterMode == FilterMode::Range)
             {
-                // Ensure tolerance vector is large enough
-                if (i >= bandTolerancesCopy.size())
+                changed |= widget.slider("Min Wavelength (nm)", mMinWavelength, 100.f, 1500.f);
+                changed |= widget.slider("Max Wavelength (nm)", mMaxWavelength, mMinWavelength, 1500.f);
+            }
+            // Specific bands filter options
+            else if (mFilterMode == FilterMode::SpecificBands)
+            {
+                // Band presets dropdown
+                Gui::DropdownList presetsList;
+                presetsList.push_back({ 0, "Custom" });
+                presetsList.push_back({ 1, "Mercury Lamp" });
+                presetsList.push_back({ 2, "Hydrogen Lines" });
+                presetsList.push_back({ 3, "Sodium D-lines" });
+
+                static uint32_t selectedPreset = 0;
+                if (widget.dropdown("Presets", presetsList, selectedPreset))
+                {
+                    changed = true;
+                    switch (selectedPreset)
+                    {
+                    case 1: // Mercury Lamp
+                        mBandWavelengths = { 405.0f, 436.0f, 546.0f, 578.0f };
+                        mBandTolerances = { 5.0f, 5.0f, 5.0f, 5.0f };
+                        break;
+                    case 2: // Hydrogen
+                        mBandWavelengths = { 434.0f, 486.0f, 656.0f };
+                        mBandTolerances = { 5.0f, 5.0f, 5.0f };
+                        break;
+                    case 3: // Sodium
+                        mBandWavelengths = { 589.0f, 589.6f };
+                        mBandTolerances = { 2.0f, 2.0f };
+                        break;
+                    default:
+                        break;
+                    }
+                }
+
+                // Display bands and allow editing
+                widget.text("Bands (nm):");
+
+                // Add UI for each band
+                std::vector<float> bandWavelengthsCopy = mBandWavelengths;
+                std::vector<float> bandTolerancesCopy = mBandTolerances;
+                std::vector<bool> bandToRemove(mBandWavelengths.size(), false);
+
+                bool bandsChanged = false;
+
+                for (size_t i = 0; i < bandWavelengthsCopy.size(); i++)
+                {
+                    // Ensure tolerance vector is large enough
+                    if (i >= bandTolerancesCopy.size())
+                        bandTolerancesCopy.push_back(kDefaultTolerance);
+
+                    // Display band UI row
+                    std::string id = "Band " + std::to_string(i+1);
+                    auto bandGroup = widget.group(id);
+                    if (bandGroup)
+                    {
+                        // Allow editing band center and tolerance
+                        bandsChanged |= widget.slider("Center", bandWavelengthsCopy[i], 100.f, 1500.f);
+                        bandsChanged |= widget.slider("±Range", bandTolerancesCopy[i], 1.f, 50.f);
+
+                        // Remove button for this band
+                        bandToRemove[i] = widget.button("Remove");
+                    }
+                }
+
+                // Handle band removal
+                for (int i = (int)bandToRemove.size() - 1; i >= 0; i--)
+                {
+                    if (bandToRemove[i])
+                    {
+                        bandWavelengthsCopy.erase(bandWavelengthsCopy.begin() + i);
+                        if (i < (int)bandTolerancesCopy.size())
+                            bandTolerancesCopy.erase(bandTolerancesCopy.begin() + i);
+                        bandsChanged = true;
+                    }
+                }
+
+                // Add new band button
+                if (widget.button("Add Band"))
+                {
+                    bandWavelengthsCopy.push_back(550.0f); // Default to middle of visible spectrum
                     bandTolerancesCopy.push_back(kDefaultTolerance);
-
-                // Display band UI row
-                std::string id = "Band " + std::to_string(i+1);
-                auto bandGroup = widget.group(id);
-                if (bandGroup)
-                {
-                    // Allow editing band center and tolerance
-                    bandsChanged |= widget.slider("Center", bandWavelengthsCopy[i], 100.f, 1500.f);
-                    bandsChanged |= widget.slider("±Range", bandTolerancesCopy[i], 1.f, 50.f);
-
-                    // Remove button for this band
-                    bandToRemove[i] = widget.button("Remove");
-                }
-            }
-
-            // Handle band removal
-            for (int i = (int)bandToRemove.size() - 1; i >= 0; i--)
-            {
-                if (bandToRemove[i])
-                {
-                    bandWavelengthsCopy.erase(bandWavelengthsCopy.begin() + i);
-                    if (i < (int)bandTolerancesCopy.size())
-                        bandTolerancesCopy.erase(bandTolerancesCopy.begin() + i);
                     bandsChanged = true;
                 }
+
+                // Update bands if changed
+                if (bandsChanged)
+                {
+                    mBandWavelengths = bandWavelengthsCopy;
+                    mBandTolerances = bandTolerancesCopy;
+                    changed = true;
+                }
             }
 
-            // Add new band button
-            if (widget.button("Add Band"))
+            // Common filter options
+            changed |= widget.checkbox("Visible Spectrum Only", mUseVisibleSpectrumOnly);
+            if (mUseVisibleSpectrumOnly)
             {
-                bandWavelengthsCopy.push_back(550.0f); // Default to middle of visible spectrum
-                bandTolerancesCopy.push_back(kDefaultTolerance);
-                bandsChanged = true;
+                widget.text("Restricts to 380-780nm range");
             }
 
-            // Update bands if changed
-            if (bandsChanged)
+            changed |= widget.checkbox("Invert Filter", mInvertFilter);
+            if (mInvertFilter)
             {
-                mBandWavelengths = bandWavelengthsCopy;
-                mBandTolerances = bandTolerancesCopy;
-                changed = true;
+                widget.text("Selects wavelengths OUTSIDE the specified criteria");
             }
         }
-
-        // Common filter options
-        changed |= widget.checkbox("Visible Spectrum Only", mUseVisibleSpectrumOnly);
-        if (mUseVisibleSpectrumOnly)
+        else
         {
-            widget.text("Restricts to 380-780nm range");
-        }
-
-        changed |= widget.checkbox("Invert Filter", mInvertFilter);
-        if (mInvertFilter)
-        {
-            widget.text("Selects wavelengths OUTSIDE the specified criteria");
+            widget.text("All wavelengths will be passed through without filtering");
         }
     }
 
@@ -620,21 +654,66 @@ void IncomingLightPowerPass::renderStatisticsUI(Gui::Widgets& widget)
             if (mPowerStats.totalPixels > 0)
             {
                 const float passRate = 100.0f * float(mPowerStats.pixelCount) / float(mPowerStats.totalPixels);
-                widget.text("Filtered pixels: " + std::to_string(mPowerStats.pixelCount) + " / " +
-                            std::to_string(mPowerStats.totalPixels) + " (" +
-                            std::to_string(int(passRate)) + "%)");
 
-                widget.text("Total Power (W): R=" + std::to_string(mPowerStats.totalPower[0]) +
-                            ", G=" + std::to_string(mPowerStats.totalPower[1]) +
-                            ", B=" + std::to_string(mPowerStats.totalPower[2]));
+                // Use formatted string for better display
+                widget.text(fmt::format("Filtered pixels: {0} / {1} ({2:.2f}%)",
+                                       mPowerStats.pixelCount,
+                                       mPowerStats.totalPixels,
+                                       passRate));
 
-                widget.text("Average Power (W): R=" + std::to_string(mPowerStats.averagePower[0]) +
-                            ", G=" + std::to_string(mPowerStats.averagePower[1]) +
-                            ", B=" + std::to_string(mPowerStats.averagePower[2]));
+                widget.text(fmt::format("Total Power (W): R={0:.6f}, G={1:.6f}, B={2:.6f}",
+                                       mPowerStats.totalPower[0],
+                                       mPowerStats.totalPower[1],
+                                       mPowerStats.totalPower[2]));
 
-                widget.text("Peak Power (W): R=" + std::to_string(mPowerStats.peakPower[0]) +
-                            ", G=" + std::to_string(mPowerStats.peakPower[1]) +
-                            ", B=" + std::to_string(mPowerStats.peakPower[2]));
+                widget.text(fmt::format("Average Power (W): R={0:.6f}, G={1:.6f}, B={2:.6f}",
+                                       mPowerStats.averagePower[0],
+                                       mPowerStats.averagePower[1],
+                                       mPowerStats.averagePower[2]));
+
+                widget.text(fmt::format("Peak Power (W): R={0:.6f}, G={1:.6f}, B={2:.6f}",
+                                       mPowerStats.peakPower[0],
+                                       mPowerStats.peakPower[1],
+                                       mPowerStats.peakPower[2]));
+
+                // Add wavelength statistics summary
+                if (!mPowerStats.wavelengthDistribution.empty())
+                {
+                    widget.text(fmt::format("Wavelength distribution: {0} distinct bands",
+                                          mPowerStats.wavelengthDistribution.size()));
+
+                    // Add expandable wavelength details
+                    auto wlGroup = widget.group("Wavelength Details", false);
+                    if (wlGroup)
+                    {
+                        int maxBandsToShow = 10; // Limit UI display to top 10 bands
+                        int bandsShown = 0;
+
+                        // Sort wavelength bins by count to show most common first
+                        std::vector<std::pair<int, uint32_t>> sortedBins;
+                        for (const auto& [wavelength, count] : mPowerStats.wavelengthDistribution)
+                        {
+                            sortedBins.push_back({wavelength, count});
+                        }
+
+                        std::sort(sortedBins.begin(), sortedBins.end(),
+                                 [](const auto& a, const auto& b) { return a.second > b.second; });
+
+                        for (const auto& [wavelength, count] : sortedBins)
+                        {
+                            if (bandsShown++ >= maxBandsToShow)
+                            {
+                                widget.text("... and more bands");
+                                break;
+                            }
+
+                            widget.text(fmt::format("{0}-{1} nm: {2} pixels",
+                                                  wavelength * 10,
+                                                  wavelength * 10 + 10,
+                                                  count));
+                        }
+                    }
+                }
             }
             else
             {
@@ -645,13 +724,19 @@ void IncomingLightPowerPass::renderStatisticsUI(Gui::Widgets& widget)
             statsChanged |= widget.checkbox("Accumulate Power", mAccumulatePower);
             if (mAccumulatePower)
             {
-                widget.text("Accumulated frames: " + std::to_string(mAccumulatedFrames));
+                widget.text(fmt::format("Accumulated frames: {0}", mAccumulatedFrames));
             }
 
-            // Manual reset button
-            if (widget.button("Reset Statistics"))
+            // Manual reset button with better styling
+            if (widget.button("Reset Statistics", true)) // Use primary button style
             {
                 resetStatistics();
+            }
+
+            // Add force refresh button
+            if (widget.button("Force Refresh Statistics"))
+            {
+                mNeedStatsUpdate = true;
             }
 
             statsChanged |= widget.checkbox("Auto-clear when filter changes", mAutoClearStats);
@@ -980,8 +1065,13 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
     // Read back the data from GPU
     if (!readbackData(pRenderContext, renderData))
     {
+        logError("Failed to read back data for statistics calculation");
         return;
     }
+
+    // Log filter settings for debugging
+    logInfo(fmt::format("Calculating statistics with settings: wavelength_filter_enabled={0}, filter_mode={1}, min={2}, max={3}, invert={4}",
+                       mEnableWavelengthFilter, static_cast<int>(mFilterMode), mMinWavelength, mMaxWavelength, mInvertFilter));
 
     // Initialize statistics if needed
     if (!mAccumulatePower || mAccumulatedFrames == 0)
@@ -989,17 +1079,57 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
         resetStatistics();
     }
 
+    // Ensure buffer size is reasonable before processing
+    if (mPowerReadbackBuffer.empty())
+    {
+        logError("Power readback buffer is empty, cannot calculate statistics");
+        return;
+    }
+
+    // Add safety limit to prevent pixel count from growing indefinitely
+    const uint32_t maxPixelCount = mFrameDim.x * mFrameDim.y * 10; // Allow up to 10 frames accumulation
+    if (mAccumulatePower && mPowerStats.pixelCount >= maxPixelCount)
+    {
+        logWarning(fmt::format("Pixel count reached limit ({0}), resetting statistics", maxPixelCount));
+        resetStatistics();
+    }
+
     // Count pixels, accumulate power values
+    uint32_t nonZeroPixels = 0;
+    float maxR = 0.0f, maxG = 0.0f, maxB = 0.0f;
+    float sumR = 0.0f, sumG = 0.0f, sumB = 0.0f;
+
+    // First pass: count non-zero pixels and gather statistics
     for (uint32_t i = 0; i < mPowerReadbackBuffer.size(); i++)
     {
         const float4& power = mPowerReadbackBuffer[i];
 
-        // Only process pixels with non-zero power (those that passed the filter)
-        if (power.x > 0 || power.y > 0 || power.z > 0)
+        // Use a small epsilon to filter out nearly-zero values that might be due to precision errors
+        const float epsilon = 1e-6f;
+        if (power.x > epsilon || power.y > epsilon || power.z > epsilon)
         {
+            nonZeroPixels++;
+
+            // Track local maximums for validation
+            maxR = std::max(maxR, power.x);
+            maxG = std::max(maxG, power.y);
+            maxB = std::max(maxB, power.z);
+
+            // Track local sums for validation
+            sumR += power.x;
+            sumG += power.y;
+            sumB += power.z;
+
+            if (nonZeroPixels <= 10) // Log first 10 non-zero pixels for debugging
+            {
+                logInfo(fmt::format("NonZero pixel [{0}]: R={1:.8f}, G={2:.8f}, B={3:.8f}, W={4:.2f}",
+                                   i, power.x, power.y, power.z, power.w));
+            }
+
+            // Update stats
             mPowerStats.pixelCount++;
 
-            // Accumulate total power
+            // Accumulate power using precise addition to minimize floating point errors
             mPowerStats.totalPower[0] += power.x;
             mPowerStats.totalPower[1] += power.y;
             mPowerStats.totalPower[2] += power.z;
@@ -1010,26 +1140,116 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
             mPowerStats.peakPower[2] = std::max(mPowerStats.peakPower[2], power.z);
 
             // Track wavelength distribution (bin by 10nm intervals)
-            int wavelengthBin = static_cast<int>(power.w / 10.0f);
-            mPowerStats.wavelengthDistribution[wavelengthBin]++;
+            // Ensure wavelength is valid and within reasonable range before binning
+            if (power.w > 0.0f && power.w < 2000.0f) // Typical wavelength range: 0-2000nm
+            {
+                int wavelengthBin = static_cast<int>(power.w / 10.0f);
+                mPowerStats.wavelengthDistribution[wavelengthBin]++;
+            }
+        }
+    }
+
+    // Validate consistency of our statistics tracking
+    if (nonZeroPixels > 0)
+    {
+        // Check if peak power tracking is working correctly
+        if (std::abs(maxR - mPowerStats.peakPower[0]) > 1e-5f ||
+            std::abs(maxG - mPowerStats.peakPower[1]) > 1e-5f ||
+            std::abs(maxB - mPowerStats.peakPower[2]) > 1e-5f)
+        {
+            logWarning("Peak power tracking may be inconsistent");
+            // Correct the values if needed
+            mPowerStats.peakPower[0] = std::max(mPowerStats.peakPower[0], maxR);
+            mPowerStats.peakPower[1] = std::max(mPowerStats.peakPower[1], maxG);
+            mPowerStats.peakPower[2] = std::max(mPowerStats.peakPower[2], maxB);
+        }
+
+        // Check if total power tracking is working correctly (with some tolerance for floating point)
+        const float relativeTolerance = 0.01f; // 1% tolerance
+        if (mAccumulatedFrames == 0) // Only check for first frame
+        {
+            if (std::abs(sumR - mPowerStats.totalPower[0]) / std::max(sumR, 1e-5f) > relativeTolerance ||
+                std::abs(sumG - mPowerStats.totalPower[1]) / std::max(sumG, 1e-5f) > relativeTolerance ||
+                std::abs(sumB - mPowerStats.totalPower[2]) / std::max(sumB, 1e-5f) > relativeTolerance)
+            {
+                logWarning("Total power tracking may be inconsistent");
+                // Log differences for debugging
+                logInfo(fmt::format("Power sum difference: R={0:.8f}, G={1:.8f}, B={2:.8f}",
+                                   sumR - mPowerStats.totalPower[0],
+                                   sumG - mPowerStats.totalPower[1],
+                                   sumB - mPowerStats.totalPower[2]));
+            }
         }
     }
 
     // Update total pixels count
     mPowerStats.totalPixels = mFrameDim.x * mFrameDim.y;
 
-    // Calculate averages
+    // Calculate averages with safe division to prevent divide-by-zero
     if (mPowerStats.pixelCount > 0)
     {
         mPowerStats.averagePower[0] = mPowerStats.totalPower[0] / mPowerStats.pixelCount;
         mPowerStats.averagePower[1] = mPowerStats.totalPower[1] / mPowerStats.pixelCount;
         mPowerStats.averagePower[2] = mPowerStats.totalPower[2] / mPowerStats.pixelCount;
     }
+    else
+    {
+        // Reset average power to zero if no pixels passed filtering
+        mPowerStats.averagePower[0] = 0.0f;
+        mPowerStats.averagePower[1] = 0.0f;
+        mPowerStats.averagePower[2] = 0.0f;
+    }
 
     // Update accumulated frames count
     if (mAccumulatePower)
     {
         mAccumulatedFrames++;
+    }
+
+    // Log detailed statistics summary for debugging
+    float percentage = mPowerReadbackBuffer.size() > 0 ?
+                      100.0f * nonZeroPixels / mPowerReadbackBuffer.size() : 0.0f;
+
+    logInfo(fmt::format("Statistics: Found {0} non-zero power pixels out of {1} ({2:.2f}%)",
+                       nonZeroPixels,
+                       mPowerReadbackBuffer.size(),
+                       percentage));
+
+    logInfo(fmt::format("Total Power (W): R={0:.8f}, G={1:.8f}, B={2:.8f}",
+                      mPowerStats.totalPower[0],
+                      mPowerStats.totalPower[1],
+                      mPowerStats.totalPower[2]));
+
+    logInfo(fmt::format("Peak Power (W): R={0:.8f}, G={1:.8f}, B={2:.8f}",
+                      mPowerStats.peakPower[0],
+                      mPowerStats.peakPower[1],
+                      mPowerStats.peakPower[2]));
+
+    if (nonZeroPixels == 0 && mPowerReadbackBuffer.size() > 0)
+    {
+        // Log sample pixels to debug when no non-zero pixels are found
+        logWarning("No non-zero pixels found in the current frame");
+        for (uint32_t i = 0; i < std::min(static_cast<size_t>(5), mPowerReadbackBuffer.size()); i++)
+        {
+            const float4& power = mPowerReadbackBuffer[i];
+            logInfo(fmt::format("Sample pixel [{0}]: R={1:.8f}, G={2:.8f}, B={3:.8f}, W={4:.2f}",
+                               i, power.x, power.y, power.z, power.w));
+        }
+    }
+
+    // Output wavelength distribution summary if available
+    if (!mPowerStats.wavelengthDistribution.empty())
+    {
+        uint32_t totalBins = mPowerStats.wavelengthDistribution.size();
+        uint32_t countedWavelengths = 0;
+
+        for (const auto& [binIndex, count] : mPowerStats.wavelengthDistribution)
+        {
+            countedWavelengths += count;
+        }
+
+        logInfo(fmt::format("Wavelength distribution: {0} distinct bands, {1} wavelengths counted",
+                          totalBins, countedWavelengths));
     }
 
     // Stats are now up to date
@@ -1050,6 +1270,7 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
 
     if (!pOutputPower || !pOutputWavelength)
     {
+        logError("readbackData: Missing output textures");
         return false;
     }
 
@@ -1057,6 +1278,12 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
     uint32_t width = pOutputPower->getWidth();
     uint32_t height = pOutputPower->getHeight();
     uint32_t numPixels = width * height;
+
+    logInfo(fmt::format("readbackData: Texture dimensions: {0}x{1}, total pixels: {2}",
+                       width, height, numPixels));
+    logInfo(fmt::format("Power texture format: {0}, Wavelength texture format: {1}",
+                       to_string(pOutputPower->getFormat()),
+                       to_string(pOutputWavelength->getFormat())));
 
     try
     {
@@ -1070,30 +1297,80 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
         // Check if we got valid data
         if (powerRawData.empty() || wavelengthRawData.empty())
         {
-            logWarning("Failed to read texture data");
+            logWarning("Failed to read texture data: empty raw data");
             return false;
         }
+
+        // Log data size information for debugging
+        logInfo(fmt::format("readbackData: Power raw data size: {0} bytes, expected: {1} bytes (float4 per pixel)",
+                          powerRawData.size(), numPixels * sizeof(float4)));
+        logInfo(fmt::format("readbackData: Wavelength raw data size: {0} bytes, expected: {1} bytes (float per pixel)",
+                          wavelengthRawData.size(), numPixels * sizeof(float)));
 
         // Resize the destination buffers
         mPowerReadbackBuffer.resize(numPixels);
         mWavelengthReadbackBuffer.resize(numPixels);
 
-        // Copy the data to our float4 and float buffers
-        // The raw data should be in the correct format: RGBA32Float for power, R32Float for wavelength
-        std::memcpy(mPowerReadbackBuffer.data(), powerRawData.data(), powerRawData.size());
-        std::memcpy(mWavelengthReadbackBuffer.data(), wavelengthRawData.data(), wavelengthRawData.size());
+        // NEW IMPLEMENTATION: Properly parse the RGBA32Float format for power data
+        if (powerRawData.size() >= numPixels * sizeof(float4))
+        {
+            // Use proper type casting to interpret the raw bytes as float4 data
+            const float4* floatData = reinterpret_cast<const float4*>(powerRawData.data());
+            for (uint32_t i = 0; i < numPixels; i++)
+            {
+                mPowerReadbackBuffer[i] = floatData[i];
+            }
+            logInfo("Successfully parsed power data");
+        }
+        else
+        {
+            logError(fmt::format("Power data size mismatch: expected at least {0} bytes, got {1} bytes",
+                              numPixels * sizeof(float4), powerRawData.size()));
+            return false;
+        }
+
+        // NEW IMPLEMENTATION: Properly parse the R32Float format for wavelength data
+        if (wavelengthRawData.size() >= numPixels * sizeof(float))
+        {
+            // Use proper type casting to interpret the raw bytes as float data
+            const float* floatData = reinterpret_cast<const float*>(wavelengthRawData.data());
+            for (uint32_t i = 0; i < numPixels; i++)
+            {
+                mWavelengthReadbackBuffer[i] = floatData[i];
+            }
+            logInfo("Successfully parsed wavelength data");
+        }
+        else
+        {
+            logError(fmt::format("Wavelength data size mismatch: expected at least {0} bytes, got {1} bytes",
+                              numPixels * sizeof(float), wavelengthRawData.size()));
+            return false;
+        }
+
+        // Validate data by checking a few values (debugging)
+        for (uint32_t i = 0; i < std::min(static_cast<size_t>(5), mPowerReadbackBuffer.size()); i++)
+        {
+            const float4& power = mPowerReadbackBuffer[i];
+            logInfo(fmt::format("readbackData: Sample power[{0}] = ({1:.6f}, {2:.6f}, {3:.6f}, {4:.2f})",
+                              i, power.x, power.y, power.z, power.w));
+        }
 
         return true;
     }
     catch (const std::exception& e)
     {
-        logError("Error reading texture data: " + std::string(e.what()));
+        logError(fmt::format("Error reading texture data: {0}", e.what()));
         return false;
     }
 }
 
 void IncomingLightPowerPass::resetStatistics()
 {
+    // Store previous values for logging
+    uint32_t prevPixelCount = mPowerStats.pixelCount;
+    uint32_t prevTotalPixels = mPowerStats.totalPixels;
+    uint32_t prevWavelengthBins = mPowerStats.wavelengthDistribution.size();
+
     // Clear all statistics
     std::memset(mPowerStats.totalPower, 0, sizeof(mPowerStats.totalPower));
     std::memset(mPowerStats.peakPower, 0, sizeof(mPowerStats.peakPower));
@@ -1103,7 +1380,15 @@ void IncomingLightPowerPass::resetStatistics()
     mPowerStats.wavelengthDistribution.clear();
 
     // Reset frame accumulation
+    uint32_t prevAccumulatedFrames = mAccumulatedFrames;
     mAccumulatedFrames = 0;
+
+    // Log reset action
+    if (prevPixelCount > 0 || prevAccumulatedFrames > 0)
+    {
+        logInfo(fmt::format("Statistics reset: Cleared {0} filtered pixels over {1} frames, {2} wavelength bins",
+                          prevPixelCount, prevAccumulatedFrames, prevWavelengthBins));
+    }
 
     // Mark stats as needing update
     mNeedStatsUpdate = true;
@@ -1154,6 +1439,9 @@ void IncomingLightPowerPass::updateFilterDefines(DefineList& defines)
 {
     // Add basic wavelength filter define
     defines.add("WAVELENGTH_FILTER", "1");
+
+    // Add filter enable/disable flag
+    defines.add("ENABLE_WAVELENGTH_FILTER", mEnableWavelengthFilter ? "1" : "0");
 
     // Add filter mode
     int filterMode = static_cast<int>(mFilterMode);

@@ -73,6 +73,9 @@ public:
     bool getInvertFilter() const { return mInvertFilter; }
     void setInvertFilter(bool value) { mInvertFilter = value; mNeedRecompile = true; }
 
+    bool getEnableWavelengthFilter() const { return mEnableWavelengthFilter; }
+    void setEnableWavelengthFilter(bool enable) { mEnableWavelengthFilter = enable; mNeedRecompile = true; }
+
     // New export functions
     bool exportPowerData(const std::string& filename, OutputFormat format = OutputFormat::EXR);
     bool exportStatistics(const std::string& filename, OutputFormat format = OutputFormat::CSV);
@@ -89,43 +92,15 @@ public:
     public:
         CameraIncidentPower() = default;
 
-        /** Initialize the calculator with scene and camera information.
-            @param[in] pScene Pointer to the scene.
-            @param[in] dimensions Frame dimensions (width, height).
-        */
+        // Initialize with scene and dimensions
         void setup(const ref<Scene>& pScene, const uint2& dimensions);
 
-        /** Compute the effective pixel area on the camera sensor.
-            @return The effective area of a pixel in world units.
-        */
+        // Compute methods
         float computePixelArea() const;
-
-        /** Compute ray direction for a given pixel.
-            @param[in] pixel The pixel coordinates.
-            @return The ray direction in world space.
-        */
         float3 computeRayDirection(const uint2& pixel) const;
-
-        /** Compute the cosine term (angle between ray and camera normal).
-            @param[in] rayDir The ray direction.
-            @return The cosine value.
-        */
         float computeCosTheta(const float3& rayDir) const;
 
-        /** Compute the power of incoming light for the given parameters.
-            @param[in] pixel The pixel coordinates.
-            @param[in] rayDir The ray direction.
-            @param[in] radiance The radiance value.
-            @param[in] wavelength The wavelength of the ray.
-            @param[in] minWavelength The minimum wavelength to consider.
-            @param[in] maxWavelength The maximum wavelength to consider.
-            @param[in] filterMode The wavelength filtering mode.
-            @param[in] useVisibleSpectrumOnly Whether to use visible spectrum only.
-            @param[in] invertFilter Whether to invert the filter.
-            @param[in] bandWavelengths Array of specific wavelength bands to filter.
-            @param[in] bandTolerances Array of tolerances for each band.
-            @return The calculated power (rgb) and wavelength (a).
-        */
+        // Main compute method
         float4 compute(
             const uint2& pixel,
             const float3& rayDir,
@@ -137,20 +112,11 @@ public:
             bool useVisibleSpectrumOnly = false,
             bool invertFilter = false,
             const std::vector<float>& bandWavelengths = {},
-            const std::vector<float>& bandTolerances = {}
+            const std::vector<float>& bandTolerances = {},
+            bool enableFilter = true
         ) const;
 
-        /** Check if a wavelength passes the wavelength filter.
-            @param[in] wavelength The wavelength to check.
-            @param[in] minWavelength The minimum wavelength to consider.
-            @param[in] maxWavelength The maximum wavelength to consider.
-            @param[in] filterMode The wavelength filtering mode.
-            @param[in] useVisibleSpectrumOnly Whether to use visible spectrum only.
-            @param[in] invertFilter Whether to invert the filter.
-            @param[in] bandWavelengths Array of specific wavelength bands to filter.
-            @param[in] bandTolerances Array of tolerances for each band.
-            @return True if the wavelength passes the filter, false otherwise.
-        */
+        // Wavelength filtering method
         bool isWavelengthAllowed(
             float wavelength,
             float minWavelength,
@@ -159,7 +125,8 @@ public:
             bool useVisibleSpectrumOnly = false,
             bool invertFilter = false,
             const std::vector<float>& bandWavelengths = {},
-            const std::vector<float>& bandTolerances = {}
+            const std::vector<float>& bandTolerances = {},
+            bool enableFilter = true
         ) const;
 
     private:
@@ -185,6 +152,7 @@ private:
     FilterMode mFilterMode = FilterMode::Range; ///< Wavelength filtering mode
     bool mUseVisibleSpectrumOnly = true; ///< Whether to only consider visible light spectrum (380-780nm)
     bool mInvertFilter = false;          ///< Whether to invert the wavelength filter
+    bool mEnableWavelengthFilter = true; ///< Whether to enable wavelength filtering at all
     std::vector<float> mBandWavelengths; ///< Specific wavelength bands to filter
     std::vector<float> mBandTolerances;  ///< Tolerances for specific wavelength bands
     static constexpr float kDefaultTolerance = 5.0f; ///< Default tolerance for specific bands in nm
