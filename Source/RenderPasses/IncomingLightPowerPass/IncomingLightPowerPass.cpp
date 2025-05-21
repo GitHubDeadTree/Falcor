@@ -9,6 +9,7 @@ namespace
     const std::string kInputRadiance = "radiance";               // Input texture with radiance values (from path tracer)
     const std::string kInputRayDirection = "rayDirection";       // Input texture with ray direction (if available)
     const std::string kInputWavelength = "wavelength";           // Input texture with wavelength information
+    const std::string kInputSampleCount = "sampleCount";         // Input sample count from path tracer (optional)
     const std::string kOutputPower = "lightPower";               // Output texture with light power values
     const std::string kOutputWavelength = "lightWavelength";     // Output texture with filtered wavelength values
 
@@ -16,6 +17,10 @@ namespace
     const std::string kPerFrameCB = "PerFrameCB";           // cbuffer name
     const std::string kMinWavelength = "gMinWavelength";    // Minimum wavelength to consider
     const std::string kMaxWavelength = "gMaxWavelength";    // Maximum wavelength to consider
+    const std::string kUseVisibleSpectrumOnly = "gUseVisibleSpectrumOnly"; // Whether to use visible spectrum only
+    const std::string kInvertFilter = "gInvertFilter";      // Whether to invert the filter
+    const std::string kFilterMode = "gFilterMode";          // Wavelength filtering mode
+    const std::string kBandCount = "gBandCount";            // Number of specific bands to filter
 }
 
 // Implementation of CameraIncidentPower methods
@@ -112,16 +117,82 @@ float IncomingLightPowerPass::CameraIncidentPower::computeCosTheta(const float3&
     return cosTheta;
 }
 
+bool IncomingLightPowerPass::CameraIncidentPower::isWavelengthAllowed(
+    float wavelength,
+    float minWavelength,
+    float maxWavelength,
+    IncomingLightPowerPass::FilterMode filterMode,
+    bool useVisibleSpectrumOnly,
+    bool invertFilter,
+    const std::vector<float>& bandWavelengths,
+    const std::vector<float>& bandTolerances) const
+{
+    // Apply visible spectrum filter if enabled
+    if (useVisibleSpectrumOnly && (wavelength < 380.0f || wavelength > 780.0f))
+    {
+        return invertFilter; // If invert is true, return true for wavelengths outside visible spectrum
+    }
+
+    bool allowed = false;
+
+    switch (filterMode)
+    {
+    case IncomingLightPowerPass::FilterMode::Range:
+        // Range mode - check if wavelength is within min-max range
+        allowed = (wavelength >= minWavelength && wavelength <= maxWavelength);
+        break;
+
+    case IncomingLightPowerPass::FilterMode::SpecificBands:
+        // Specific bands mode - check if wavelength matches any of the specified bands
+        if (bandWavelengths.empty())
+        {
+            // If no bands specified, fall back to range mode
+            allowed = (wavelength >= minWavelength && wavelength <= maxWavelength);
+        }
+        else
+        {
+            // Check each band
+            for (size_t i = 0; i < bandWavelengths.size(); i++)
+            {
+                float bandCenter = bandWavelengths[i];
+                float tolerance = (i < bandTolerances.size()) ? bandTolerances[i] : 5.0f;
+
+                if (std::abs(wavelength - bandCenter) <= tolerance)
+                {
+                    allowed = true;
+                    break;
+                }
+            }
+        }
+        break;
+
+    case IncomingLightPowerPass::FilterMode::Custom:
+        // Custom mode - not implemented yet, fall back to range mode
+        allowed = (wavelength >= minWavelength && wavelength <= maxWavelength);
+        break;
+    }
+
+    // Apply filter inversion if enabled
+    return invertFilter ? !allowed : allowed;
+}
+
 float4 IncomingLightPowerPass::CameraIncidentPower::compute(
     const uint2& pixel,
     const float3& rayDir,
     const float4& radiance,
     float wavelength,
     float minWavelength,
-    float maxWavelength) const
+    float maxWavelength,
+    IncomingLightPowerPass::FilterMode filterMode,
+    bool useVisibleSpectrumOnly,
+    bool invertFilter,
+    const std::vector<float>& bandWavelengths,
+    const std::vector<float>& bandTolerances) const
 {
-    // Filter by wavelength range
-    if (wavelength < minWavelength || wavelength > maxWavelength)
+    // Apply wavelength filtering
+    if (!isWavelengthAllowed(wavelength, minWavelength, maxWavelength,
+        filterMode, useVisibleSpectrumOnly, invertFilter,
+        bandWavelengths, bandTolerances))
     {
         return float4(0.f, 0.f, 0.f, 0.f);
     }
@@ -149,10 +220,17 @@ IncomingLightPowerPass::IncomingLightPowerPass(ref<Device> pDevice, const Proper
         if (key == "enabled") mEnabled = value;
         else if (key == "minWavelength") mMinWavelength = value;
         else if (key == "maxWavelength") mMaxWavelength = value;
+        else if (key == "filterMode") mFilterMode = static_cast<FilterMode>((uint32_t)value);
+        else if (key == "useVisibleSpectrumOnly") mUseVisibleSpectrumOnly = value;
+        else if (key == "invertFilter") mInvertFilter = value;
         else if (key == "outputPowerTexName") mOutputPowerTexName = value.operator std::string();
         else if (key == "outputWavelengthTexName") mOutputWavelengthTexName = value.operator std::string();
         else logWarning("Unknown property '{}' in IncomingLightPowerPass properties.", key);
     }
+
+    // Add default wavelength bands for common light sources
+    mBandWavelengths = { 405.0f, 436.0f, 546.0f, 578.0f }; // Mercury lamp wavelengths
+    mBandTolerances = { 5.0f, 5.0f, 5.0f, 5.0f };
 
     // Create compute pass
     prepareProgram();
@@ -164,6 +242,9 @@ Properties IncomingLightPowerPass::getProperties() const
     props["enabled"] = mEnabled;
     props["minWavelength"] = mMinWavelength;
     props["maxWavelength"] = mMaxWavelength;
+    props["filterMode"] = static_cast<uint32_t>(mFilterMode);
+    props["useVisibleSpectrumOnly"] = mUseVisibleSpectrumOnly;
+    props["invertFilter"] = mInvertFilter;
     props["outputPowerTexName"] = mOutputPowerTexName;
     props["outputWavelengthTexName"] = mOutputWavelengthTexName;
     return props;
@@ -184,6 +265,11 @@ RenderPassReflection IncomingLightPowerPass::reflect(const CompileData& compileD
 
     // Input: Wavelength information (optional)
     reflector.addInput(kInputWavelength, "Wavelength information for rays")
+        .bindFlags(ResourceBindFlags::ShaderResource)
+        .flags(RenderPassReflection::Field::Flags::Optional);
+
+    // Input: Sample count information (optional, for handling multi-sample data)
+    reflector.addInput(kInputSampleCount, "Sample count per pixel")
         .bindFlags(ResourceBindFlags::ShaderResource)
         .flags(RenderPassReflection::Field::Flags::Optional);
 
@@ -257,6 +343,30 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     // Set constants
     var[kPerFrameCB][kMinWavelength] = mMinWavelength;
     var[kPerFrameCB][kMaxWavelength] = mMaxWavelength;
+    var[kPerFrameCB][kUseVisibleSpectrumOnly] = mUseVisibleSpectrumOnly;
+    var[kPerFrameCB][kInvertFilter] = mInvertFilter;
+    var[kPerFrameCB][kFilterMode] = static_cast<uint32_t>(mFilterMode);
+
+    // Set band data if available
+    if (!mBandWavelengths.empty() && mFilterMode == FilterMode::SpecificBands)
+    {
+        var[kPerFrameCB][kBandCount] = (uint32_t)mBandWavelengths.size();
+
+        // Transfer band data to GPU buffers
+        size_t bandCount = std::min(mBandWavelengths.size(), size_t(16)); // Limit to 16 bands max
+        for (size_t i = 0; i < bandCount; i++)
+        {
+            float bandCenter = mBandWavelengths[i];
+            float tolerance = (i < mBandTolerances.size()) ? mBandTolerances[i] : kDefaultTolerance;
+
+            var[kPerFrameCB]["gBandWavelengths"][i] = bandCenter;
+            var[kPerFrameCB]["gBandTolerances"][i] = tolerance;
+        }
+    }
+    else
+    {
+        var[kPerFrameCB][kBandCount] = 0;
+    }
 
     // Bind input resources
     var["gInputRadiance"] = pInputRadiance;
@@ -273,6 +383,18 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     if (pWavelength)
     {
         var["gInputWavelength"] = pWavelength;
+    }
+
+    // Check for sample count texture for multi-sample handling
+    const auto& pSampleCount = renderData.getTexture(kInputSampleCount);
+    if (pSampleCount)
+    {
+        // If multi-sample data is available, we could bind it to the shader
+        // for per-pixel sample count if needed in the future
+        // var["gSampleCount"] = pSampleCount;
+
+        // Log that multi-sample data is detected
+        logInfo("IncomingLightPowerPass: Multi-sample data detected");
     }
 
     // Bind output resources
@@ -295,16 +417,158 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
 
     changed |= widget.checkbox("Enabled", mEnabled);
 
-    auto group = widget.group("Wavelength Filter", true);
-    if (group)
+    auto filterGroup = widget.group("Wavelength Filter", true);
+    if (filterGroup)
     {
-        changed |= widget.slider("Min Wavelength (nm)", mMinWavelength, 380.f, 780.f);
-        changed |= widget.slider("Max Wavelength (nm)", mMaxWavelength, 380.f, 780.f);
+        // Filter mode selection
+        Gui::DropdownList filterModeList;
+        filterModeList.push_back({ 0, "Range" });
+        filterModeList.push_back({ 1, "Specific Bands" });
+        filterModeList.push_back({ 2, "Custom" });
+
+        uint32_t currentMode = static_cast<uint32_t>(mFilterMode);
+        if (widget.dropdown("Filter Mode", filterModeList, currentMode))
+        {
+            mFilterMode = static_cast<FilterMode>(currentMode);
+            changed = true;
+        }
+
+        // Range filter options
+        if (mFilterMode == FilterMode::Range)
+        {
+            changed |= widget.slider("Min Wavelength (nm)", mMinWavelength, 100.f, 1500.f);
+            changed |= widget.slider("Max Wavelength (nm)", mMaxWavelength, mMinWavelength, 1500.f);
+        }
+        // Specific bands filter options
+        else if (mFilterMode == FilterMode::SpecificBands)
+        {
+            // Band presets dropdown
+            Gui::DropdownList presetsList;
+            presetsList.push_back({ 0, "Custom" });
+            presetsList.push_back({ 1, "Mercury Lamp" });
+            presetsList.push_back({ 2, "Hydrogen Lines" });
+            presetsList.push_back({ 3, "Sodium D-lines" });
+
+            static uint32_t selectedPreset = 0;
+            if (widget.dropdown("Presets", presetsList, selectedPreset))
+            {
+                changed = true;
+                switch (selectedPreset)
+                {
+                case 1: // Mercury Lamp
+                    mBandWavelengths = { 405.0f, 436.0f, 546.0f, 578.0f };
+                    mBandTolerances = { 5.0f, 5.0f, 5.0f, 5.0f };
+                    break;
+                case 2: // Hydrogen
+                    mBandWavelengths = { 434.0f, 486.0f, 656.0f };
+                    mBandTolerances = { 5.0f, 5.0f, 5.0f };
+                    break;
+                case 3: // Sodium
+                    mBandWavelengths = { 589.0f, 589.6f };
+                    mBandTolerances = { 2.0f, 2.0f };
+                    break;
+                default:
+                    break;
+                }
+            }
+
+            // Display bands and allow editing
+            widget.text("Bands (nm):");
+
+            // Add UI for each band
+            std::vector<float> bandWavelengthsCopy = mBandWavelengths;
+            std::vector<float> bandTolerancesCopy = mBandTolerances;
+            std::vector<bool> bandToRemove(mBandWavelengths.size(), false);
+
+            bool bandsChanged = false;
+
+            for (size_t i = 0; i < bandWavelengthsCopy.size(); i++)
+            {
+                // Ensure tolerance vector is large enough
+                if (i >= bandTolerancesCopy.size())
+                    bandTolerancesCopy.push_back(kDefaultTolerance);
+
+                // Display band UI row
+                std::string id = "Band " + std::to_string(i+1);
+                auto bandGroup = widget.group(id);
+                if (bandGroup)
+                {
+                    // Allow editing band center and tolerance
+                    bandsChanged |= widget.slider("Center", bandWavelengthsCopy[i], 100.f, 1500.f);
+                    bandsChanged |= widget.slider("±Range", bandTolerancesCopy[i], 1.f, 50.f);
+
+                    // Remove button for this band
+                    bandToRemove[i] = widget.button("Remove");
+                }
+            }
+
+            // Handle band removal
+            for (int i = (int)bandToRemove.size() - 1; i >= 0; i--)
+            {
+                if (bandToRemove[i])
+                {
+                    bandWavelengthsCopy.erase(bandWavelengthsCopy.begin() + i);
+                    if (i < (int)bandTolerancesCopy.size())
+                        bandTolerancesCopy.erase(bandTolerancesCopy.begin() + i);
+                    bandsChanged = true;
+                }
+            }
+
+            // Add new band button
+            if (widget.button("Add Band"))
+            {
+                bandWavelengthsCopy.push_back(550.0f); // Default to middle of visible spectrum
+                bandTolerancesCopy.push_back(kDefaultTolerance);
+                bandsChanged = true;
+            }
+
+            // Update bands if changed
+            if (bandsChanged)
+            {
+                mBandWavelengths = bandWavelengthsCopy;
+                mBandTolerances = bandTolerancesCopy;
+                changed = true;
+            }
+        }
+
+        // Common filter options
+        changed |= widget.checkbox("Visible Spectrum Only", mUseVisibleSpectrumOnly);
+        if (mUseVisibleSpectrumOnly)
+        {
+            widget.text("Restricts to 380-780nm range");
+        }
+
+        changed |= widget.checkbox("Invert Filter", mInvertFilter);
+        if (mInvertFilter)
+        {
+            widget.text("Selects wavelengths OUTSIDE the specified criteria");
+        }
     }
 
     if (changed)
     {
         mNeedRecompile = true;
+    }
+}
+
+void IncomingLightPowerPass::updateFilterDefines(DefineList& defines)
+{
+    // Add basic wavelength filter define
+    defines.add("WAVELENGTH_FILTER", "1");
+
+    // Add filter mode
+    int filterMode = static_cast<int>(mFilterMode);
+    defines.add("FILTER_MODE", std::to_string(filterMode));
+
+    // Add other filter options
+    defines.add("USE_VISIBLE_SPECTRUM_ONLY", mUseVisibleSpectrumOnly ? "1" : "0");
+    defines.add("INVERT_FILTER", mInvertFilter ? "1" : "0");
+
+    // Add specific band support if needed
+    if (mFilterMode == FilterMode::SpecificBands && !mBandWavelengths.empty())
+    {
+        defines.add("SPECIFIC_BANDS", "1");
+        defines.add("MAX_BANDS", std::to_string(std::min(mBandWavelengths.size(), size_t(16))));
     }
 }
 
@@ -317,7 +581,7 @@ void IncomingLightPowerPass::prepareProgram()
 
     // Add compile-time constants
     DefineList defines;
-    defines.add("WAVELENGTH_FILTER", "1");
+    updateFilterDefines(defines);
 
     // Create compute pass
     mpComputePass = ComputePass::create(mpDevice, desc, defines);
