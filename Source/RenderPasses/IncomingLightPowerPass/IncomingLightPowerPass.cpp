@@ -97,7 +97,7 @@ float3 IncomingLightPowerPass::CameraIncidentPower::computeRayDirection(const ui
     float4 worldPos = mul(invViewProj, float4(ndc.x, -ndc.y, 1.f, 1.f));
     worldPos /= worldPos.w;
 
-    return normalize(float3(worldPos) - cameraPos);
+    return normalize(float3(worldPos.x, worldPos.y, worldPos.z) - cameraPos);
 }
 
 float IncomingLightPowerPass::CameraIncidentPower::computeCosTheta(const float3& rayDir) const
