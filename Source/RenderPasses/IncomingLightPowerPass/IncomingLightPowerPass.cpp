@@ -1,5 +1,8 @@
 #include "IncomingLightPowerPass.h"
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 
 namespace
 {
@@ -355,6 +358,12 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     {
         prepareProgram();
         mNeedRecompile = false;
+
+        // When filter settings change, optionally reset statistics
+        if (mAutoClearStats)
+        {
+            resetStatistics();
+        }
     }
 
     // Prepare resources
@@ -444,12 +453,17 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
 
     // Execute the compute pass
     mpComputePass->execute(pRenderContext, uint3(mFrameDim.x, mFrameDim.y, 1));
+
+    // Calculate statistics if enabled
+    if (mEnableStatistics)
+    {
+        calculateStatistics(pRenderContext, renderData);
+    }
 }
 
 void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
 {
     bool changed = false;
-
     changed |= widget.checkbox("Enabled", mEnabled);
 
     auto filterGroup = widget.group("Wavelength Filter", true);
@@ -580,10 +594,560 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
         }
     }
 
+    // Statistics UI
+    renderStatisticsUI(widget);
+
+    // Export UI
+    renderExportUI(widget);
+
     if (changed)
     {
         mNeedRecompile = true;
     }
+}
+
+void IncomingLightPowerPass::renderStatisticsUI(Gui::Widgets& widget)
+{
+    auto statsGroup = widget.group("Power Statistics", true);
+    if (statsGroup)
+    {
+        // Enable/disable statistics
+        bool statsChanged = widget.checkbox("Enable Statistics", mEnableStatistics);
+
+        if (mEnableStatistics)
+        {
+            // Display basic statistics
+            if (mPowerStats.totalPixels > 0)
+            {
+                const float passRate = 100.0f * float(mPowerStats.pixelCount) / float(mPowerStats.totalPixels);
+                widget.text("Filtered pixels: " + std::to_string(mPowerStats.pixelCount) + " / " +
+                            std::to_string(mPowerStats.totalPixels) + " (" +
+                            std::to_string(int(passRate)) + "%)");
+
+                widget.text("Total Power (W): R=" + std::to_string(mPowerStats.totalPower[0]) +
+                            ", G=" + std::to_string(mPowerStats.totalPower[1]) +
+                            ", B=" + std::to_string(mPowerStats.totalPower[2]));
+
+                widget.text("Average Power (W): R=" + std::to_string(mPowerStats.averagePower[0]) +
+                            ", G=" + std::to_string(mPowerStats.averagePower[1]) +
+                            ", B=" + std::to_string(mPowerStats.averagePower[2]));
+
+                widget.text("Peak Power (W): R=" + std::to_string(mPowerStats.peakPower[0]) +
+                            ", G=" + std::to_string(mPowerStats.peakPower[1]) +
+                            ", B=" + std::to_string(mPowerStats.peakPower[2]));
+            }
+            else
+            {
+                widget.text("No statistics available");
+            }
+
+            // Power accumulation options
+            statsChanged |= widget.checkbox("Accumulate Power", mAccumulatePower);
+            if (mAccumulatePower)
+            {
+                widget.text("Accumulated frames: " + std::to_string(mAccumulatedFrames));
+            }
+
+            // Manual reset button
+            if (widget.button("Reset Statistics"))
+            {
+                resetStatistics();
+            }
+
+            statsChanged |= widget.checkbox("Auto-clear when filter changes", mAutoClearStats);
+        }
+
+        if (statsChanged)
+        {
+            mNeedStatsUpdate = true;
+        }
+    }
+}
+
+void IncomingLightPowerPass::renderExportUI(Gui::Widgets& widget)
+{
+    auto exportGroup = widget.group("Export Results", true);
+    if (exportGroup)
+    {
+        // Export directory
+        if (widget.textbox("Directory", mExportDirectory))
+        {
+            // Directory updated
+        }
+
+        // Export format selector
+        Gui::DropdownList formatList;
+        formatList.push_back({ 0, "PNG" });
+        formatList.push_back({ 1, "EXR" });
+        formatList.push_back({ 2, "CSV" });
+        formatList.push_back({ 3, "JSON" });
+
+        uint32_t currentFormat = static_cast<uint32_t>(mExportFormat);
+        if (widget.dropdown("Export Format", formatList, currentFormat))
+        {
+            mExportFormat = static_cast<OutputFormat>(currentFormat);
+        }
+
+        // Export buttons
+        if (widget.button("Export Power Data"))
+        {
+            const std::string baseName = "light_power_" + std::to_string(std::time(nullptr));
+            const std::string ext = mExportFormat == OutputFormat::PNG ? ".png" :
+                                   mExportFormat == OutputFormat::EXR ? ".exr" :
+                                   mExportFormat == OutputFormat::CSV ? ".csv" : ".json";
+
+            exportPowerData(mExportDirectory + "/" + baseName + ext, mExportFormat);
+        }
+
+        if (widget.button("Export Statistics"))
+        {
+            const std::string baseName = "light_stats_" + std::to_string(std::time(nullptr));
+            const std::string ext = mExportFormat == OutputFormat::CSV ? ".csv" : ".json";
+
+            exportStatistics(mExportDirectory + "/" + baseName + ext,
+                            mExportFormat == OutputFormat::CSV ? OutputFormat::CSV : OutputFormat::JSON);
+        }
+    }
+}
+
+bool IncomingLightPowerPass::exportPowerData(const std::string& filename, OutputFormat format)
+{
+    try
+    {
+        // Create directories if needed
+        std::filesystem::path filePath(filename);
+        std::filesystem::create_directories(filePath.parent_path());
+
+        // Handle different export formats
+        if (format == OutputFormat::PNG || format == OutputFormat::EXR)
+        {
+            // Get the last rendered output
+            if (mPowerReadbackBuffer.empty())
+            {
+                // We need a valid RenderContext and RenderData, which we don't have here
+                // Just check if we already have data in the buffer
+                logWarning("Failed to read back power data for export");
+                return false;
+            }
+
+            // Create an image for export
+            uint32_t width = mFrameDim.x;
+            uint32_t height = mFrameDim.y;
+
+            // Save as image using Falcor's image export
+            Bitmap::FileFormat bitmapFormat = (format == OutputFormat::PNG) ?
+                                            Bitmap::FileFormat::PngFile :
+                                            Bitmap::FileFormat::ExrFile;
+
+            // Save using Bitmap's static saveImage method
+            Bitmap::saveImage(
+                filename,
+                width,
+                height,
+                bitmapFormat,
+                Bitmap::ExportFlags::None,
+                ResourceFormat::RGBA32Float,
+                true, // top-down
+                mPowerReadbackBuffer.data()
+            );
+
+            logInfo("Exported power data to " + filename);
+            return true;
+        }
+        else if (format == OutputFormat::CSV)
+        {
+            // Export as CSV
+            if (mPowerReadbackBuffer.empty())
+            {
+                logWarning("Failed to read back power data for export");
+                return false;
+            }
+
+            std::ofstream csvFile(filename);
+            if (!csvFile.is_open())
+            {
+                logWarning("Failed to open file for CSV export: " + filename);
+                return false;
+            }
+
+            // Write CSV header
+            csvFile << "pixel_x,pixel_y,power_r,power_g,power_b,wavelength\n";
+
+            // Write pixel data
+            for (uint32_t y = 0; y < mFrameDim.y; y++)
+            {
+                for (uint32_t x = 0; x < mFrameDim.x; x++)
+                {
+                    uint32_t index = y * mFrameDim.x + x;
+                    const float4& power = mPowerReadbackBuffer[index];
+
+                    // Only export non-zero power values (those that passed the filter)
+                    if (power.x > 0 || power.y > 0 || power.z > 0)
+                    {
+                        csvFile << x << "," << y << ","
+                                << power.x << "," << power.y << "," << power.z << ","
+                                << power.w << "\n";
+                    }
+                }
+            }
+
+            csvFile.close();
+            logInfo("Exported power data to " + filename);
+            return true;
+        }
+        else if (format == OutputFormat::JSON)
+        {
+            // Export as JSON
+            if (mPowerReadbackBuffer.empty())
+            {
+                logWarning("Failed to read back power data for export");
+                return false;
+            }
+
+            std::ofstream jsonFile(filename);
+            if (!jsonFile.is_open())
+            {
+                logWarning("Failed to open file for JSON export: " + filename);
+                return false;
+            }
+
+            // Write JSON header
+            jsonFile << "{\n";
+            jsonFile << "  \"metadata\": {\n";
+            jsonFile << "    \"width\": " << mFrameDim.x << ",\n";
+            jsonFile << "    \"height\": " << mFrameDim.y << ",\n";
+            jsonFile << "    \"minWavelength\": " << mMinWavelength << ",\n";
+            jsonFile << "    \"maxWavelength\": " << mMaxWavelength << ",\n";
+            jsonFile << "    \"filterMode\": " << static_cast<int>(mFilterMode) << "\n";
+            jsonFile << "  },\n";
+
+            // Write pixel data
+            jsonFile << "  \"pixels\": [\n";
+
+            bool firstEntry = true;
+            for (uint32_t y = 0; y < mFrameDim.y; y++)
+            {
+                for (uint32_t x = 0; x < mFrameDim.x; x++)
+                {
+                    uint32_t index = y * mFrameDim.x + x;
+                    const float4& power = mPowerReadbackBuffer[index];
+
+                    // Only export non-zero power values (those that passed the filter)
+                    if (power.x > 0 || power.y > 0 || power.z > 0)
+                    {
+                        if (!firstEntry)
+                        {
+                            jsonFile << ",\n";
+                        }
+                        firstEntry = false;
+
+                        jsonFile << "    {\n";
+                        jsonFile << "      \"x\": " << x << ",\n";
+                        jsonFile << "      \"y\": " << y << ",\n";
+                        jsonFile << "      \"power\": [" << power.x << ", " << power.y << ", " << power.z << "],\n";
+                        jsonFile << "      \"wavelength\": " << power.w << "\n";
+                        jsonFile << "    }";
+                    }
+                }
+            }
+
+            jsonFile << "\n  ]\n}\n";
+
+            jsonFile.close();
+            logInfo("Exported power data to " + filename);
+            return true;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("Error exporting power data: " + std::string(e.what()));
+        return false;
+    }
+
+    return false;
+}
+
+bool IncomingLightPowerPass::exportStatistics(const std::string& filename, OutputFormat format)
+{
+    try
+    {
+        // Create directories if needed
+        std::filesystem::path filePath(filename);
+        std::filesystem::create_directories(filePath.parent_path());
+
+        if (format == OutputFormat::CSV)
+        {
+            std::ofstream csvFile(filename);
+            if (!csvFile.is_open())
+            {
+                logWarning("Failed to open file for CSV export: " + filename);
+                return false;
+            }
+
+            // Write general statistics
+            csvFile << "Statistic,Red,Green,Blue\n";
+            csvFile << "Total Power," << mPowerStats.totalPower[0] << "," << mPowerStats.totalPower[1] << "," << mPowerStats.totalPower[2] << "\n";
+            csvFile << "Average Power," << mPowerStats.averagePower[0] << "," << mPowerStats.averagePower[1] << "," << mPowerStats.averagePower[2] << "\n";
+            csvFile << "Peak Power," << mPowerStats.peakPower[0] << "," << mPowerStats.peakPower[1] << "," << mPowerStats.peakPower[2] << "\n";
+            csvFile << "\n";
+
+            // Write pixel statistics
+            csvFile << "Pixel Count," << mPowerStats.pixelCount << "\n";
+            csvFile << "Total Pixels," << mPowerStats.totalPixels << "\n";
+            csvFile << "Pass Rate (%)," << (100.0f * float(mPowerStats.pixelCount) / float(mPowerStats.totalPixels)) << "\n";
+            csvFile << "\n";
+
+            // Write wavelength distribution
+            csvFile << "Wavelength Bin (nm),Count\n";
+            for (const auto& [wavelength, count] : mPowerStats.wavelengthDistribution)
+            {
+                // Wavelength bins are 10nm wide, centered at the key value
+                csvFile << (wavelength * 10) << "-" << (wavelength * 10 + 10) << "," << count << "\n";
+            }
+
+            csvFile.close();
+            logInfo("Exported statistics to " + filename);
+            return true;
+        }
+        else if (format == OutputFormat::JSON)
+        {
+            std::ofstream jsonFile(filename);
+            if (!jsonFile.is_open())
+            {
+                logWarning("Failed to open file for JSON export: " + filename);
+                return false;
+            }
+
+            // Write JSON data
+            jsonFile << "{\n";
+
+            // Write metadata
+            jsonFile << "  \"metadata\": {\n";
+            jsonFile << "    \"filterMode\": " << static_cast<int>(mFilterMode) << ",\n";
+            jsonFile << "    \"minWavelength\": " << mMinWavelength << ",\n";
+            jsonFile << "    \"maxWavelength\": " << mMaxWavelength << ",\n";
+            jsonFile << "    \"useVisibleSpectrumOnly\": " << (mUseVisibleSpectrumOnly ? "true" : "false") << ",\n";
+            jsonFile << "    \"invertFilter\": " << (mInvertFilter ? "true" : "false") << "\n";
+            jsonFile << "  },\n";
+
+            // Write power statistics
+            jsonFile << "  \"powerStatistics\": {\n";
+            jsonFile << "    \"totalPower\": [" << mPowerStats.totalPower[0] << ", " << mPowerStats.totalPower[1] << ", " << mPowerStats.totalPower[2] << "],\n";
+            jsonFile << "    \"averagePower\": [" << mPowerStats.averagePower[0] << ", " << mPowerStats.averagePower[1] << ", " << mPowerStats.averagePower[2] << "],\n";
+            jsonFile << "    \"peakPower\": [" << mPowerStats.peakPower[0] << ", " << mPowerStats.peakPower[1] << ", " << mPowerStats.peakPower[2] << "]\n";
+            jsonFile << "  },\n";
+
+            // Write pixel statistics
+            jsonFile << "  \"pixelStatistics\": {\n";
+            jsonFile << "    \"pixelCount\": " << mPowerStats.pixelCount << ",\n";
+            jsonFile << "    \"totalPixels\": " << mPowerStats.totalPixels << ",\n";
+            jsonFile << "    \"passRate\": " << (100.0f * float(mPowerStats.pixelCount) / float(mPowerStats.totalPixels)) << "\n";
+            jsonFile << "  },\n";
+
+            // Write wavelength distribution
+            jsonFile << "  \"wavelengthDistribution\": {\n";
+
+            bool firstEntry = true;
+            for (const auto& [wavelength, count] : mPowerStats.wavelengthDistribution)
+            {
+                if (!firstEntry)
+                {
+                    jsonFile << ",\n";
+                }
+                firstEntry = false;
+
+                jsonFile << "    \"" << (wavelength * 10) << "-" << (wavelength * 10 + 10) << "\": " << count;
+            }
+
+            jsonFile << "\n  }\n}\n";
+
+            jsonFile.close();
+            logInfo("Exported statistics to " + filename);
+            return true;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("Error exporting statistics: " + std::string(e.what()));
+        return false;
+    }
+
+    return false;
+}
+
+void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, const RenderData& renderData)
+{
+    // Read back the data from GPU
+    if (!readbackData(pRenderContext, renderData))
+    {
+        return;
+    }
+
+    // Initialize statistics if needed
+    if (!mAccumulatePower || mAccumulatedFrames == 0)
+    {
+        resetStatistics();
+    }
+
+    // Count pixels, accumulate power values
+    for (uint32_t i = 0; i < mPowerReadbackBuffer.size(); i++)
+    {
+        const float4& power = mPowerReadbackBuffer[i];
+
+        // Only process pixels with non-zero power (those that passed the filter)
+        if (power.x > 0 || power.y > 0 || power.z > 0)
+        {
+            mPowerStats.pixelCount++;
+
+            // Accumulate total power
+            mPowerStats.totalPower[0] += power.x;
+            mPowerStats.totalPower[1] += power.y;
+            mPowerStats.totalPower[2] += power.z;
+
+            // Track peak power
+            mPowerStats.peakPower[0] = std::max(mPowerStats.peakPower[0], power.x);
+            mPowerStats.peakPower[1] = std::max(mPowerStats.peakPower[1], power.y);
+            mPowerStats.peakPower[2] = std::max(mPowerStats.peakPower[2], power.z);
+
+            // Track wavelength distribution (bin by 10nm intervals)
+            int wavelengthBin = static_cast<int>(power.w / 10.0f);
+            mPowerStats.wavelengthDistribution[wavelengthBin]++;
+        }
+    }
+
+    // Update total pixels count
+    mPowerStats.totalPixels = mFrameDim.x * mFrameDim.y;
+
+    // Calculate averages
+    if (mPowerStats.pixelCount > 0)
+    {
+        mPowerStats.averagePower[0] = mPowerStats.totalPower[0] / mPowerStats.pixelCount;
+        mPowerStats.averagePower[1] = mPowerStats.totalPower[1] / mPowerStats.pixelCount;
+        mPowerStats.averagePower[2] = mPowerStats.totalPower[2] / mPowerStats.pixelCount;
+    }
+
+    // Update accumulated frames count
+    if (mAccumulatePower)
+    {
+        mAccumulatedFrames++;
+    }
+
+    // Stats are now up to date
+    mNeedStatsUpdate = false;
+}
+
+bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const RenderData& renderData)
+{
+    // If pRenderContext is null, we're called from an export function with no context
+    // In this case, use the already read back data if available
+    if (!pRenderContext)
+    {
+        return !mPowerReadbackBuffer.empty();
+    }
+
+    const auto& pOutputPower = renderData.getTexture(kOutputPower);
+    const auto& pOutputWavelength = renderData.getTexture(kOutputWavelength);
+
+    if (!pOutputPower || !pOutputWavelength)
+    {
+        return false;
+    }
+
+    // Get dimensions
+    uint32_t width = pOutputPower->getWidth();
+    uint32_t height = pOutputPower->getHeight();
+    uint32_t numPixels = width * height;
+
+    try
+    {
+        // Get raw texture data using the correct readTextureSubresource call that returns a vector
+        std::vector<uint8_t> powerRawData = pRenderContext->readTextureSubresource(pOutputPower.get(), 0);
+        std::vector<uint8_t> wavelengthRawData = pRenderContext->readTextureSubresource(pOutputWavelength.get(), 0);
+
+        // Wait for operations to complete
+        pRenderContext->submit(true);
+
+        // Check if we got valid data
+        if (powerRawData.empty() || wavelengthRawData.empty())
+        {
+            logWarning("Failed to read texture data");
+            return false;
+        }
+
+        // Resize the destination buffers
+        mPowerReadbackBuffer.resize(numPixels);
+        mWavelengthReadbackBuffer.resize(numPixels);
+
+        // Copy the data to our float4 and float buffers
+        // The raw data should be in the correct format: RGBA32Float for power, R32Float for wavelength
+        std::memcpy(mPowerReadbackBuffer.data(), powerRawData.data(), powerRawData.size());
+        std::memcpy(mWavelengthReadbackBuffer.data(), wavelengthRawData.data(), wavelengthRawData.size());
+
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        logError("Error reading texture data: " + std::string(e.what()));
+        return false;
+    }
+}
+
+void IncomingLightPowerPass::resetStatistics()
+{
+    // Clear all statistics
+    std::memset(mPowerStats.totalPower, 0, sizeof(mPowerStats.totalPower));
+    std::memset(mPowerStats.peakPower, 0, sizeof(mPowerStats.peakPower));
+    std::memset(mPowerStats.averagePower, 0, sizeof(mPowerStats.averagePower));
+    mPowerStats.pixelCount = 0;
+    mPowerStats.totalPixels = 0;
+    mPowerStats.wavelengthDistribution.clear();
+
+    // Reset frame accumulation
+    mAccumulatedFrames = 0;
+
+    // Mark stats as needing update
+    mNeedStatsUpdate = true;
+}
+
+std::string IncomingLightPowerPass::getFormattedStatistics() const
+{
+    std::stringstream ss;
+
+    ss << "Light Power Statistics:" << std::endl;
+    ss << "--------------------" << std::endl;
+
+    if (mPowerStats.totalPixels > 0)
+    {
+        const float passRate = 100.0f * float(mPowerStats.pixelCount) / float(mPowerStats.totalPixels);
+
+        ss << "Filtered pixels: " << mPowerStats.pixelCount << " / " << mPowerStats.totalPixels;
+        ss << " (" << std::fixed << std::setprecision(2) << passRate << "%)" << std::endl;
+
+        ss << std::endl << "Power Statistics:" << std::endl;
+        ss << "Total Power (W): R=" << mPowerStats.totalPower[0];
+        ss << ", G=" << mPowerStats.totalPower[1];
+        ss << ", B=" << mPowerStats.totalPower[2] << std::endl;
+
+        ss << "Average Power (W): R=" << mPowerStats.averagePower[0];
+        ss << ", G=" << mPowerStats.averagePower[1];
+        ss << ", B=" << mPowerStats.averagePower[2] << std::endl;
+
+        ss << "Peak Power (W): R=" << mPowerStats.peakPower[0];
+        ss << ", G=" << mPowerStats.peakPower[1];
+        ss << ", B=" << mPowerStats.peakPower[2] << std::endl;
+
+        ss << std::endl << "Wavelength Distribution:" << std::endl;
+        for (const auto& [wavelength, count] : mPowerStats.wavelengthDistribution)
+        {
+            ss << (wavelength * 10) << "-" << (wavelength * 10 + 10) << " nm: " << count << " pixels" << std::endl;
+        }
+    }
+    else
+    {
+        ss << "No statistics available." << std::endl;
+    }
+
+    return ss.str();
 }
 
 void IncomingLightPowerPass::updateFilterDefines(DefineList& defines)

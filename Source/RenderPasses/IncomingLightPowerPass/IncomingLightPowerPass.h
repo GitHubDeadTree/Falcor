@@ -37,6 +37,26 @@ public:
         Custom          ///< Custom filter function
     };
 
+    // Output format enum
+    enum class OutputFormat
+    {
+        PNG,            ///< PNG format for image data
+        EXR,            ///< EXR format for HDR image data
+        CSV,            ///< CSV format for tabular data
+        JSON            ///< JSON format for structured data
+    };
+
+    // Statistics struct to hold power calculation results
+    struct PowerStatistics
+    {
+        float totalPower[3] = { 0.0f, 0.0f, 0.0f }; ///< Total power (RGB)
+        float peakPower[3] = { 0.0f, 0.0f, 0.0f };  ///< Maximum power value (RGB)
+        float averagePower[3] = { 0.0f, 0.0f, 0.0f }; ///< Average power (RGB)
+        uint32_t pixelCount = 0;                     ///< Number of pixels passing the wavelength filter
+        uint32_t totalPixels = 0;                    ///< Total number of pixels processed
+        std::map<int, uint32_t> wavelengthDistribution; ///< Histogram of wavelengths (binned by 10nm)
+    };
+
     // Scripting functions
     float getMinWavelength() const { return mMinWavelength; }
     void setMinWavelength(float minWavelength) { mMinWavelength = minWavelength; mNeedRecompile = true; }
@@ -52,6 +72,13 @@ public:
 
     bool getInvertFilter() const { return mInvertFilter; }
     void setInvertFilter(bool value) { mInvertFilter = value; mNeedRecompile = true; }
+
+    // New export functions
+    bool exportPowerData(const std::string& filename, OutputFormat format = OutputFormat::EXR);
+    bool exportStatistics(const std::string& filename, OutputFormat format = OutputFormat::CSV);
+
+    // Statistics accessor
+    const PowerStatistics& getPowerStatistics() const { return mPowerStats; }
 
     /** Camera Incident Power Calculator
         Utility class for calculating the power of light rays entering the camera.
@@ -190,9 +217,31 @@ private:
     static const std::string kCameraTarget;          ///< Camera target parameter name
     static const std::string kCameraFocalLength;     ///< Camera focal length parameter name
 
+    // Statistics and export-related members
+    PowerStatistics mPowerStats;              ///< Statistics about the calculated power
+    bool mEnableStatistics = true;            ///< Whether to calculate statistics
+    bool mNeedStatsUpdate = true;             ///< Flag indicating statistics need to be updated
+    bool mAccumulatePower = false;            ///< Whether to accumulate power over frames
+    uint32_t mAccumulatedFrames = 0;          ///< Number of accumulated frames
+    bool mAutoClearStats = true;              ///< Whether to auto-clear stats when filter changes
+    std::string mExportDirectory = "./";      ///< Directory for exporting data
+    OutputFormat mExportFormat = OutputFormat::EXR; ///< Default export format
+
+    // CPU buffers for data readback
+    std::vector<float4> mPowerReadbackBuffer;  ///< Buffer for power readback
+    std::vector<float> mWavelengthReadbackBuffer; ///< Buffer for wavelength readback
+
     void prepareResources(RenderContext* pRenderContext, const RenderData& renderData);
     void prepareProgram();
 
     // Helper method to update filter-specific defines
     void updateFilterDefines(DefineList& defines);
+
+    // New methods
+    void calculateStatistics(RenderContext* pRenderContext, const RenderData& renderData);
+    bool readbackData(RenderContext* pRenderContext, const RenderData& renderData);
+    void renderStatisticsUI(Gui::Widgets& widget);
+    void renderExportUI(Gui::Widgets& widget);
+    std::string getFormattedStatistics() const;
+    void resetStatistics();
 };
