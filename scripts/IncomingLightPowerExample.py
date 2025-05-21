@@ -1,10 +1,6 @@
 from falcor import *
 
 def render_graph_IncomingLightPowerExample():
-    """
-    This example demonstrates how to use the IncomingLightPowerPass with a path tracer.
-    It shows how to filter specific wavelengths of light to analyze lighting in a scene.
-    """
     g = RenderGraph("Incoming Light Power Example")
 
     # Create passes

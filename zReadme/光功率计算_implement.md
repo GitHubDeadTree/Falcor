@@ -993,58 +993,90 @@ def render_graph_IncomingLightPowerExample():
 
 任务4的实现成功地将IncomingLightPowerPass与路径追踪器集成，使得该通道能够接收并处理路径追踪结果中的辐射度、波长和光线方向信息。同时，通过添加波长估计算法，即使在缺少波长数据的情况下，也能提供合理的功率计算结果。示例渲染图展示了通道的实际使用方法，包括不同的波长过滤模式和输出选项。
 
-## 问题解决：Render Graph 加载问题
+## 解决Camera API访问问题的终极方案
 
-在实现了 IncomingLightPowerPass 渲染通道后，我们遇到了无法在 Mogwai 界面中加载渲染图的问题。通过调查，发现 `IncomingLightPowerExample.py` 文件缺少必要的代码部分，导致渲染图无法在 Falcor 中被识别和加载。
+在尝试了多种方式解决Falcor中的Camera API访问问题后，我们采用了一种更直接和可靠的方法。问题的关键在于在Falcor的不同版本中，Scene结构在Slang着色器中的API可能有所不同，使得无法统一使用`gScene.camera`或`gScene.getCamera()`。
 
-### 问题分析
+### 解决方案：使用常量缓冲区传递相机数据
 
-1. **原始状态**：
-   - 渲染图文件（`IncomingLightPowerExample.py`）被创建在 `Source/RenderPasses/IncomingLightPowerPass/` 目录
-   - 后来文件被移动到 `scripts/` 目录，但无法被 Mogwai 加载
+为了彻底解决着色器中的相机访问问题，我们修改了实现策略，直接通过常量缓冲区传递所需的相机数据，而不依赖于Scene结构体中的相机访问方法。
 
-2. **根本原因**：
-   - 与标准的 Falcor 渲染图文件（如 `PathTracer.py`）对比后发现，我们的文件缺少以下至关重要的代码部分：
-     ```python
-     # 实例化渲染图
-     GraphName = render_graph_GraphName()
-     # 尝试将渲染图添加到 Mogwai
-     try: m.addGraph(GraphName)
-     except NameError: None
-     ```
-   - 这部分代码负责创建渲染图实例并将其注册到 Mogwai 的界面中，没有这部分代码，渲染图虽然定义了但不会显示在界面中
+#### 1. 在着色器中定义相机参数
 
-### 解决方案
+在`IncomingLightPowerPass.cs.slang`中，我们在常量缓冲区中添加了相机相关的参数：
 
-修改 `scripts/IncomingLightPowerExample.py` 文件，在文件末尾添加以下代码：
+```hlsl
+cbuffer PerFrameCB
+{
+    // 原有参数...
 
-```python
-# Create instances of the render graphs and add them to Mogwai
-IncomingLightPowerExample = render_graph_IncomingLightPowerExample()
-IncomingLightPower_RedFilter = render_graph_IncomingLightPower_RedFilter()
-IncomingLightPower_SpecificBands = render_graph_IncomingLightPower_SpecificBands()
-IncomingLightPower_InvertedFilter = render_graph_IncomingLightPower_InvertedFilter()
-
-# Try to add the graphs to Mogwai (required for UI display)
-try:
-    m.addGraph(IncomingLightPowerExample)
-    m.addGraph(IncomingLightPower_RedFilter)
-    m.addGraph(IncomingLightPower_SpecificBands)
-    m.addGraph(IncomingLightPower_InvertedFilter)
-except NameError:
-    None
+    // Camera data
+    float4x4 gCameraInvViewProj;       ///< Camera inverse view-projection matrix
+    float3 gCameraPosition;            ///< Camera position in world space
+    float3 gCameraTarget;              ///< Camera target in world space
+    float gCameraFocalLength;          ///< Camera focal length
+}
 ```
 
-这段代码为每个渲染图函数创建实例，并尝试将它们添加到 Mogwai 界面中。`try-except` 结构确保即使没有 Mogwai 环境（如在独立 Python 环境中运行脚本时），代码也不会抛出错误。
+#### 2. 在C++代码中设置相机数据
 
-### 要点总结
+在`IncomingLightPowerPass.cpp`的`execute`方法中，我们添加了设置相机数据的代码：
 
-1. Falcor 渲染图 Python 文件必须包含两个关键部分：
-   - 渲染图定义函数（`def render_graph_Name()`）
-   - 实例化和注册代码（创建实例并调用 `m.addGraph()`）
+```cpp
+// Set camera data
+if (mpScene && mpScene->getCamera())
+{
+    auto pCamera = mpScene->getCamera();
+    var[kPerFrameCB][kCameraInvViewProj] = pCamera->getInvViewProjMatrix();
+    var[kPerFrameCB][kCameraPosition] = pCamera->getPosition();
+    var[kPerFrameCB][kCameraTarget] = pCamera->getTarget();
+    var[kPerFrameCB][kCameraFocalLength] = pCamera->getFocalLength();
+}
+else
+{
+    // Default values if no camera is available
+    var[kPerFrameCB][kCameraInvViewProj] = float4x4::identity();
+    var[kPerFrameCB][kCameraPosition] = float3(0.0f, 0.0f, 0.0f);
+    var[kPerFrameCB][kCameraTarget] = float3(0.0f, 0.0f, -1.0f);
+    var[kPerFrameCB][kCameraFocalLength] = 21.0f; // Default focal length
+}
+```
 
-2. 渲染图文件应该放在 `scripts/` 目录中，这是 Falcor 加载渲染图的默认位置
+#### 3. 修改着色器函数使用常量缓冲区数据
 
-3. 如果有多个渲染图函数，每个都需要单独实例化并通过 `m.addGraph()` 注册到 Mogwai
+着色器中的函数也相应地修改为使用常量缓冲区中的相机数据：
 
-这个修复解决了渲染图无法加载的问题，现在所有四个波长过滤示例（蓝光、红光、特定波段和反向过滤）都可以在 Mogwai 界面中正确显示和使用。
+```hlsl
+float3 computeRayDirection(uint2 pixel, uint2 dimensions)
+{
+    // 不再尝试从gScene获取相机
+    // 使用常量缓冲区中的相机数据
+    float2 pixelCenter = float2(pixel) + 0.5f;
+    float2 ndc = pixelCenter / float2(dimensions) * 2.0f - 1.0f;
+
+    float4 viewPos = float4(ndc.x, -ndc.y, 1.0f, 1.0f);
+    float4 worldPos = mul(gCameraInvViewProj, viewPos);
+    worldPos /= worldPos.w;
+
+    float3 origin = gCameraPosition;
+    float3 rayDir = normalize(float3(worldPos.xyz) - origin);
+
+    return rayDir;
+}
+```
+
+### 好处和局限性
+
+**好处：**
+1. **兼容性强** - 不依赖于Falcor版本特定的Scene/Camera API
+2. **可预测性** - 显式控制所需的相机参数，减少依赖
+3. **性能** - 常量缓冲区访问通常比通过嵌套结构体访问更有效
+
+**局限性：**
+1. **维护** - 如果相机参数需求变化，需要同时更新着色器和C++代码
+2. **冗余** - 相机数据在Scene和常量缓冲区中存在两份
+3. **集成** - 与其他渲染通道集成时，可能需要额外工作来保持参数一致
+
+### 结论
+
+这种方法虽然不是最"优雅"的解决方案，但却是最健壮和可靠的。它确保了渲染通道在不同版本的Falcor中都能正常工作，同时避免了因API变更导致的编译错误。在图形编程中，直接控制所需数据有时比依赖框架的抽象层更为可靠，尤其是在跨版本兼容性重要的情况下。

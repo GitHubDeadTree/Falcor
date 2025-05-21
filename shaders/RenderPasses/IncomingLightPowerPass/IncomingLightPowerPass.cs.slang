@@ -1,16 +1,16 @@
-/*
+﻿/*
     IncomingLightPowerPass.cs.slang
 
     This compute shader calculates the power of light rays entering the camera,
     with an option to filter by wavelength range.
 
     Power calculation is based on the formula:
-    Power = Radiance * Effective Area * cos(θ)
+    Power = Radiance * Effective Area * cos(胃)
 
     Where:
     - Radiance is the input ray intensity
     - Effective Area is the pixel area on the camera sensor
-    - cos(θ) is the angle between the ray and the camera normal
+    - cos(胃) is the angle between the ray and the camera normal
 */
 
 // Scene imports for accessing camera parameters
@@ -63,12 +63,6 @@ cbuffer PerFrameCB
     uint gBandCount;                   ///< Number of specific bands to filter
     float gBandWavelengths[MAX_BANDS]; ///< Center wavelengths for specific bands
     float gBandTolerances[MAX_BANDS];  ///< Tolerances for specific wavelength bands
-
-    // Camera data
-    float4x4 gCameraInvViewProj;       ///< Camera inverse view-projection matrix
-    float3 gCameraPosition;            ///< Camera position in world space
-    float3 gCameraTarget;              ///< Camera target in world space
-    float gCameraFocalLength;          ///< Camera focal length
 }
 
 // Scene data (bound by the host code)
@@ -161,16 +155,19 @@ bool isWavelengthAllowed(float wavelength)
 // Compute ray direction from pixel position (used if ray direction texture is not available)
 float3 computeRayDirection(uint2 pixel, uint2 dimensions)
 {
+    // Use camera data from the scene to generate more accurate ray directions
+    Camera camera = gScene.getCamera();
+
     // Calculate normalized device coordinates
     float2 pixelCenter = float2(pixel) + 0.5f;
     float2 ndc = pixelCenter / float2(dimensions) * 2.0f - 1.0f;
 
     // Generate ray direction using camera view-projection matrix
     float4 viewPos = float4(ndc.x, -ndc.y, 1.0f, 1.0f);
-    float4 worldPos = mul(gCameraInvViewProj, viewPos);
+    float4 worldPos = mul(camera.getInvViewProj(), viewPos);
     worldPos /= worldPos.w;
 
-    float3 origin = gCameraPosition;
+    float3 origin = camera.getPosition();
     float3 rayDir = normalize(float3(worldPos.xyz) - origin);
 
     return rayDir;
@@ -179,8 +176,11 @@ float3 computeRayDirection(uint2 pixel, uint2 dimensions)
 // Compute pixel area on the image sensor
 float computePixelArea(uint2 dimensions)
 {
+    // Get camera from the scene
+    Camera camera = gScene.getCamera();
+
     // Calculate FOV and aspect ratio
-    float fovY = gCameraFocalLength;  // Camera focal length in Falcor units
+    float fovY = camera.getFocalLength();  // In Falcor's camera API, this gives fovY in radians
     float aspectRatio = float(dimensions.x) / float(dimensions.y);
 
     // Use normalized distance to image plane
@@ -201,8 +201,11 @@ float computePixelArea(uint2 dimensions)
 // Compute the cosine term based on ray direction and camera normal
 float computeCosTheta(float3 rayDir)
 {
+    // Get camera from scene to calculate the proper camera normal
+    Camera camera = gScene.getCamera();
+
     // Calculate camera normal (forward direction)
-    float3 cameraNormal = normalize(gCameraTarget - gCameraPosition);
+    float3 cameraNormal = normalize(camera.getTarget() - camera.getPosition());
 
     // For rays entering the camera, use inverse normal
     float3 invNormal = -cameraNormal;
@@ -248,7 +251,7 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
     // Calculate cosine term
     float cosTheta = computeCosTheta(rayDir);
 
-    // Calculate power using the formula: Power = Radiance * Area * cos(θ)
+    // Calculate power using the formula: Power = Radiance * Area * cos(胃)
     float3 power = radiance.rgb * pixelArea * cosTheta;
 
     return float4(power, wavelength);

@@ -23,6 +23,29 @@ namespace
     const std::string kBandCount = "gBandCount";            // Number of specific bands to filter
 }
 
+// Define constants
+const std::string IncomingLightPowerPass::kInputRadiance = "radiance";
+const std::string IncomingLightPowerPass::kInputRayDirection = "rayDirection";
+const std::string IncomingLightPowerPass::kInputWavelength = "wavelength";
+const std::string IncomingLightPowerPass::kInputSampleCount = "sampleCount";
+const std::string IncomingLightPowerPass::kOutputPower = "lightPower";
+const std::string IncomingLightPowerPass::kOutputWavelength = "lightWavelength";
+const std::string IncomingLightPowerPass::kPerFrameCB = "PerFrameCB";
+
+// Shader parameter names
+const std::string IncomingLightPowerPass::kMinWavelength = "gMinWavelength";
+const std::string IncomingLightPowerPass::kMaxWavelength = "gMaxWavelength";
+const std::string IncomingLightPowerPass::kUseVisibleSpectrumOnly = "gUseVisibleSpectrumOnly";
+const std::string IncomingLightPowerPass::kInvertFilter = "gInvertFilter";
+const std::string IncomingLightPowerPass::kFilterMode = "gFilterMode";
+const std::string IncomingLightPowerPass::kBandCount = "gBandCount";
+
+// Camera parameter names
+const std::string IncomingLightPowerPass::kCameraInvViewProj = "gCameraInvViewProj";
+const std::string IncomingLightPowerPass::kCameraPosition = "gCameraPosition";
+const std::string IncomingLightPowerPass::kCameraTarget = "gCameraTarget";
+const std::string IncomingLightPowerPass::kCameraFocalLength = "gCameraFocalLength";
+
 // Implementation of CameraIncidentPower methods
 void IncomingLightPowerPass::CameraIncidentPower::setup(const ref<Scene>& pScene, const uint2& dimensions)
 {
@@ -345,7 +368,25 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     var[kPerFrameCB][kMaxWavelength] = mMaxWavelength;
     var[kPerFrameCB][kUseVisibleSpectrumOnly] = mUseVisibleSpectrumOnly;
     var[kPerFrameCB][kInvertFilter] = mInvertFilter;
-    var[kPerFrameCB][kFilterMode] = static_cast<uint32_t>(mFilterMode);
+    var[kPerFrameCB][kFilterMode] = (uint32_t)mFilterMode;
+
+    // Set camera data
+    if (mpScene && mpScene->getCamera())
+    {
+        auto pCamera = mpScene->getCamera();
+        var[kPerFrameCB][kCameraInvViewProj] = pCamera->getInvViewProjMatrix();
+        var[kPerFrameCB][kCameraPosition] = pCamera->getPosition();
+        var[kPerFrameCB][kCameraTarget] = pCamera->getTarget();
+        var[kPerFrameCB][kCameraFocalLength] = pCamera->getFocalLength();
+    }
+    else
+    {
+        // Default values if no camera is available
+        var[kPerFrameCB][kCameraInvViewProj] = float4x4::identity();
+        var[kPerFrameCB][kCameraPosition] = float3(0.0f, 0.0f, 0.0f);
+        var[kPerFrameCB][kCameraTarget] = float3(0.0f, 0.0f, -1.0f);
+        var[kPerFrameCB][kCameraFocalLength] = 21.0f; // Default focal length
+    }
 
     // Set band data if available
     if (!mBandWavelengths.empty() && mFilterMode == FilterMode::SpecificBands)

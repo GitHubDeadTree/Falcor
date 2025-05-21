@@ -167,6 +167,29 @@ private:
     std::string mOutputPowerTexName = "lightPower";     ///< Name of the output power texture
     std::string mOutputWavelengthTexName = "lightWavelength"; ///< Name of the output wavelength texture
 
+    // Internal constants
+    static const std::string kInputRadiance;         ///< Input radiance texture name
+    static const std::string kInputRayDirection;     ///< Input ray direction texture name
+    static const std::string kInputWavelength;       ///< Input wavelength texture name
+    static const std::string kInputSampleCount;      ///< Input sample count texture name
+    static const std::string kOutputPower;           ///< Output power texture name
+    static const std::string kOutputWavelength;      ///< Output wavelength texture name
+    static const std::string kPerFrameCB;            ///< Per-frame constant buffer name
+
+    // Shader parameter names
+    static const std::string kMinWavelength;         ///< Min wavelength parameter name
+    static const std::string kMaxWavelength;         ///< Max wavelength parameter name
+    static const std::string kUseVisibleSpectrumOnly;///< Use visible spectrum only parameter name
+    static const std::string kInvertFilter;          ///< Invert filter parameter name
+    static const std::string kFilterMode;            ///< Filter mode parameter name
+    static const std::string kBandCount;             ///< Band count parameter name
+
+    // Camera parameters
+    static const std::string kCameraInvViewProj;     ///< Camera inverse view-projection matrix name
+    static const std::string kCameraPosition;        ///< Camera position parameter name
+    static const std::string kCameraTarget;          ///< Camera target parameter name
+    static const std::string kCameraFocalLength;     ///< Camera focal length parameter name
+
     void prepareResources(RenderContext* pRenderContext, const RenderData& renderData);
     void prepareProgram();
 
