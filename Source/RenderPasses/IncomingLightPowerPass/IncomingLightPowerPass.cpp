@@ -442,12 +442,6 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     var["gOutputPower"] = pOutputPower;
     var["gOutputWavelength"] = pOutputWavelength;
 
-    // Bind scene for camera information
-    if (mpScene)
-    {
-        mpScene->bindShaderData(var["gScene"]);
-    }
-
     // Execute the compute pass
     mpComputePass->execute(pRenderContext, uint3(mFrameDim.x, mFrameDim.y, 1));
 }

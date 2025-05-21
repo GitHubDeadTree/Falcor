@@ -37,10 +37,10 @@ def render_graph_IncomingLightPowerExample():
     g.addEdge("AccumulatePass.output", "ToneMapper.src")
 
     # Mark outputs to be displayed
-    g.markOutput("ToneMapper.dst", "Filtered Light Power")
-    g.markOutput("IncomingLightPower.lightPower", "Raw Light Power")
-    g.markOutput("IncomingLightPower.lightWavelength", "Wavelength")
-    g.markOutput("PathTracer.color", "Path Tracer Output")
+    g.markOutput("ToneMapper.dst")
+    g.markOutput("IncomingLightPower.lightPower")
+    g.markOutput("IncomingLightPower.lightWavelength")
+    g.markOutput("PathTracer.color")
 
     return g
 
@@ -132,7 +132,7 @@ def render_graph_IncomingLightPower_InvertedFilter():
     g.addEdge("IncomingLightPower.lightPower", "ToneMapper.src")
 
     g.markOutput("ToneMapper.dst")
-    g.markOutput("PathTracer.color", "Original")
+    g.markOutput("PathTracer.color")
 
     return g
 

@@ -13,9 +13,8 @@
     - cos(θ) is the angle between the ray and the camera normal
 */
 
-// Scene imports for accessing camera parameters
-import Scene.Scene;
-import Scene.Shading;
+// Remove Scene imports as they are causing compilation issues
+// We will rely on our constant buffer for camera data instead
 
 // Define constants for filter modes
 #ifndef FILTER_MODE
@@ -71,8 +70,8 @@ cbuffer PerFrameCB
     float gCameraFocalLength;          ///< Camera focal length
 }
 
-// Scene data (bound by the host code)
-ParameterBlock<Scene> gScene;           ///< Scene data for accessing camera information
+// Remove Scene parameter block - we don't need it anymore
+// ParameterBlock<Scene> gScene;
 
 // Utility functions
 

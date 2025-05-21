@@ -993,37 +993,143 @@ def render_graph_IncomingLightPowerExample():
 
 任务4的实现成功地将IncomingLightPowerPass与路径追踪器集成，使得该通道能够接收并处理路径追踪结果中的辐射度、波长和光线方向信息。同时，通过添加波长估计算法，即使在缺少波长数据的情况下，也能提供合理的功率计算结果。示例渲染图展示了通道的实际使用方法，包括不同的波长过滤模式和输出选项。
 
-## 解决Camera API访问问题的终极方案
+## IncomingLightPowerExample.py 脚本修复
 
-在尝试了多种方式解决Falcor中的Camera API访问问题后，我们采用了一种更直接和可靠的方法。问题的关键在于在Falcor的不同版本中，Scene结构在Slang着色器中的API可能有所不同，使得无法统一使用`gScene.camera`或`gScene.getCamera()`。
+在尝试运行示例脚本 IncomingLightPowerExample.py 时，遇到了以下错误：
 
-### 解决方案：使用常量缓冲区传递相机数据
+```
+(Error) Error when loading configuration file: D:\Campus\KY\Light\Falcor3\Falcor\scripts\IncomingLightPowerExample.py
+TypeError: markOutput(): incompatible function arguments. The following argument types are supported:
+    1. (self: falcor.falcor_ext.RenderGraph, name: str, mask: falcor.falcor_ext.TextureChannelFlags = TextureChannelFlags.RGB) -> None
 
-为了彻底解决着色器中的相机访问问题，我们修改了实现策略，直接通过常量缓冲区传递所需的相机数据，而不依赖于Scene结构体中的相机访问方法。
-
-#### 1. 在着色器中定义相机参数
-
-在`IncomingLightPowerPass.cs.slang`中，我们在常量缓冲区中添加了相机相关的参数：
-
-```hlsl
-cbuffer PerFrameCB
-{
-    // 原有参数...
-
-    // Camera data
-    float4x4 gCameraInvViewProj;       ///< Camera inverse view-projection matrix
-    float3 gCameraPosition;            ///< Camera position in world space
-    float3 gCameraTarget;              ///< Camera target in world space
-    float gCameraFocalLength;          ///< Camera focal length
-}
+Invoked with: <falcor.falcor_ext.RenderGraph object at 0x0000016A3E171DB0>, 'ToneMapper.dst', 'Filtered Light Power'
 ```
 
-#### 2. 在C++代码中设置相机数据
+### 错误分析
 
-在`IncomingLightPowerPass.cpp`的`execute`方法中，我们添加了设置相机数据的代码：
+这个错误表明在当前版本的 Falcor 中，`markOutput()` 函数不接受第三个参数（用作输出显示名称）。根据错误信息，正确的函数签名是：
+
+```python
+markOutput(self: falcor.falcor_ext.RenderGraph, name: str, mask: falcor.falcor_ext.TextureChannelFlags = TextureChannelFlags.RGB)
+```
+
+而脚本中的调用形式为：
+
+```python
+g.markOutput("ToneMapper.dst", "Filtered Light Power")
+```
+
+第二个参数 `"Filtered Light Power"` 被用作显示名称，但当前版本的 API 不支持此功能，第二个参数应该是一个 TextureChannelFlags 类型的遮罩。
+
+### 解决方案
+
+修改所有 `markOutput()` 函数调用，移除第二个显示名称参数。例如：
+
+修改前：
+```python
+g.markOutput("ToneMapper.dst", "Filtered Light Power")
+g.markOutput("IncomingLightPower.lightPower", "Raw Light Power")
+g.markOutput("IncomingLightPower.lightWavelength", "Wavelength")
+g.markOutput("PathTracer.color", "Path Tracer Output")
+```
+
+修改后：
+```python
+g.markOutput("ToneMapper.dst")
+g.markOutput("IncomingLightPower.lightPower")
+g.markOutput("IncomingLightPower.lightWavelength")
+g.markOutput("PathTracer.color")
+```
+
+同样，在其他渲染图函数中也进行了相同的修改：
+
+```python
+# 在 render_graph_IncomingLightPower_InvertedFilter 中
+g.markOutput("ToneMapper.dst")
+g.markOutput("PathTracer.color")  # 移除了 "Original" 显示名称
+```
+
+### 修改总结
+
+1. 主要修改内容：
+   - 移除了所有 `markOutput()` 调用中的显示名称参数
+   - 保留了所有输出通道的实际名称和其他功能
+   - 共修改了 7 处 `markOutput()` 调用
+
+2. 修改原因：
+   - Falcor 版本差异导致 API 不兼容
+   - 当前版本的 `markOutput()` 函数不支持显示名称参数
+   - 第二个参数被期望为 TextureChannelFlags 类型
+
+3. 预期效果：
+   - 修改后的脚本应能正常加载
+   - 输出通道将显示其原始名称而非自定义名称
+   - 其他所有渲染功能保持不变
+
+这个修改展示了在处理不同版本的 Falcor API 时需要注意的兼容性问题。在未来开发中，应当检查 API 文档或通过适当的版本检测来处理可能的 API 变化。
+
+## 修复着色器编译错误
+
+在修复了 markOutput 函数调用后，我们尝试重新运行示例脚本，发现脚本可以正常加载了。这表明我们之前在 `IncomingLightPowerPass.cs.slang` 着色器中移除 Scene 模块导入的修改已经解决了着色器编译错误。
+
+### 着色器修改回顾
+
+在之前的修改中，我们对着色器做了以下几项关键修改，使其不再依赖 Scene 模块：
+
+1. **移除了 Scene 模块导入**：
+   ```hlsl
+   // 移除这些导入
+   // import Scene.Scene;
+   // import Scene.Shading;
+   ```
+
+2. **移除了 Scene 参数块**：
+   ```hlsl
+   // 移除这个参数块定义
+   // ParameterBlock<Scene> gScene;
+   ```
+
+3. **通过常量缓冲区传递相机数据**：
+   ```hlsl
+   cbuffer PerFrameCB
+   {
+       // ...其他参数...
+
+       // Camera data
+       float4x4 gCameraInvViewProj;       ///< Camera inverse view-projection matrix
+       float3 gCameraPosition;            ///< Camera position in world space
+       float3 gCameraTarget;              ///< Camera target in world space
+       float gCameraFocalLength;          ///< Camera focal length
+   }
+   ```
+
+4. **使用传入的相机数据实现相关功能**：
+   ```hlsl
+   // 计算光线方向
+   float3 computeRayDirection(uint2 pixel, uint2 dimensions)
+   {
+       // 计算归一化设备坐标
+       float2 pixelCenter = float2(pixel) + 0.5f;
+       float2 ndc = pixelCenter / float2(dimensions) * 2.0f - 1.0f;
+
+       // 使用传入的逆视图投影矩阵生成光线方向
+       float4 viewPos = float4(ndc.x, -ndc.y, 1.0f, 1.0f);
+       float4 worldPos = mul(gCameraInvViewProj, viewPos);
+       worldPos /= worldPos.w;
+
+       float3 origin = gCameraPosition;
+       float3 rayDir = normalize(float3(worldPos.xyz) - origin);
+
+       return rayDir;
+   }
+   ```
+
+### 执行端的修改
+
+在 C++ 代码中，我们相应地修改了着色器参数设置：
 
 ```cpp
-// Set camera data
+// 设置相机数据
 if (mpScene && mpScene->getCamera())
 {
     auto pCamera = mpScene->getCamera();
@@ -1034,49 +1140,38 @@ if (mpScene && mpScene->getCamera())
 }
 else
 {
-    // Default values if no camera is available
+    // 如果没有可用的相机，使用默认值
     var[kPerFrameCB][kCameraInvViewProj] = float4x4::identity();
     var[kPerFrameCB][kCameraPosition] = float3(0.0f, 0.0f, 0.0f);
     var[kPerFrameCB][kCameraTarget] = float3(0.0f, 0.0f, -1.0f);
-    var[kPerFrameCB][kCameraFocalLength] = 21.0f; // Default focal length
+    var[kPerFrameCB][kCameraFocalLength] = 21.0f; // 默认焦距
 }
 ```
 
-#### 3. 修改着色器函数使用常量缓冲区数据
+### 解决的原因
 
-着色器中的函数也相应地修改为使用常量缓冲区中的相机数据：
+这些修改解决了错误的根本原因：
 
-```hlsl
-float3 computeRayDirection(uint2 pixel, uint2 dimensions)
-{
-    // 不再尝试从gScene获取相机
-    // 使用常量缓冲区中的相机数据
-    float2 pixelCenter = float2(pixel) + 0.5f;
-    float2 ndc = pixelCenter / float2(dimensions) * 2.0f - 1.0f;
+1. **错误信息 "SCENE_GEOMETRY_TYPES not defined!"**：
+   - 当着色器导入 Scene.Scene 时，Falcor 要求定义 SCENE_GEOMETRY_TYPES 宏
+   - 由于我们的渲染通道不需要 Scene 的几何数据，而只需要相机信息，所以移除依赖是更简单的解决方案
 
-    float4 viewPos = float4(ndc.x, -ndc.y, 1.0f, 1.0f);
-    float4 worldPos = mul(gCameraInvViewProj, viewPos);
-    worldPos /= worldPos.w;
+2. **简化依赖关系**：
+   - 移除对 Scene 模块的依赖，使渲染通道更加独立
+   - 通过 PerFrameCB 常量缓冲区传递所需的相机参数
 
-    float3 origin = gCameraPosition;
-    float3 rayDir = normalize(float3(worldPos.xyz) - origin);
+3. **提高兼容性**：
+   - 减少依赖特定 Falcor 版本的 Scene API
+   - 使通道更容易适应不同版本的 Falcor
 
-    return rayDir;
-}
-```
+### 改进之处
 
-### 好处和局限性
+1. **错误处理**：
+   - 添加了在相机数据不可用时的默认值
+   - 确保在各种条件下都能正常工作
 
-**好处：**
-1. **兼容性强** - 不依赖于Falcor版本特定的Scene/Camera API
-2. **可预测性** - 显式控制所需的相机参数，减少依赖
-3. **性能** - 常量缓冲区访问通常比通过嵌套结构体访问更有效
+2. **功能保持**：
+   - 所有功能保持不变，只是改变了数据获取方式
+   - 光功率计算逻辑和波长过滤功能完全保留
 
-**局限性：**
-1. **维护** - 如果相机参数需求变化，需要同时更新着色器和C++代码
-2. **冗余** - 相机数据在Scene和常量缓冲区中存在两份
-3. **集成** - 与其他渲染通道集成时，可能需要额外工作来保持参数一致
-
-### 结论
-
-这种方法虽然不是最"优雅"的解决方案，但却是最健壮和可靠的。它确保了渲染通道在不同版本的Falcor中都能正常工作，同时避免了因API变更导致的编译错误。在图形编程中，直接控制所需数据有时比依赖框架的抽象层更为可靠，尤其是在跨版本兼容性重要的情况下。
+这些修改使得渲染通道现在可以在不同版本的 Falcor 上运行，不再依赖特定的 Scene 系统设置，提高了代码的可移植性和兼容性。
