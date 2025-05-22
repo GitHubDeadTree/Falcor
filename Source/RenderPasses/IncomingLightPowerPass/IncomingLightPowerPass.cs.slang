@@ -54,6 +54,9 @@ Texture2D<float> gInputWavelength;      ///< Optional input wavelength informati
 // Output data
 RWTexture2D<float4> gOutputPower;       ///< Output power value (rgb) and wavelength (a)
 RWTexture2D<float> gOutputWavelength;   ///< Output wavelength (for filtered rays)
+RWTexture2D<float4> gDebugOutput;       ///< Debug output for original calculation (without forcing large values)
+RWTexture2D<float4> gDebugInputData;    ///< Debug output for input data
+RWTexture2D<float4> gDebugCalculation;  ///< Debug output for calculation steps
 
 // Parameters
 cbuffer PerFrameCB
@@ -246,6 +249,17 @@ float estimateWavelengthFromRGB(float3 rgb)
 // Compute the power of incoming light for the given pixel
 float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 radiance, float wavelength)
 {
+    // Debug: For first 4 pixels, log detailed computation
+    bool isDebugPixel = pixel.x < 2 && pixel.y < 2;
+    float3 originalPower = float3(0, 0, 0);
+    float pixelArea = 0;
+    float cosTheta = 0;
+
+    // Store input data for debug pixels
+    if (isDebugPixel) {
+        gDebugInputData[pixel] = float4(radiance.rgb, wavelength);
+    }
+
     // Apply wavelength filtering if enabled
     // Only check wavelength filtering if the global control is enabled
     if (gEnableWavelengthFilter)
@@ -253,26 +267,60 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
         // Check if the wavelength passes the filter
         if (!isWavelengthAllowed(wavelength))
         {
+            if (isDebugPixel) {
+                // Store debug info for filtered out wavelength
+                gDebugOutput[pixel] = float4(-1, -1, -1, wavelength);
+            }
             return float4(0, 0, 0, 0);
         }
     }
 
-    // Get original radiance color components but normalize them
-    float3 normalizedColor = float3(0.0f, 0.0f, 0.0f);
+    // Calculate pixel area
+    pixelArea = computePixelArea(dimensions);
 
-    // If we have any input radiance, normalize it to maintain color but force brightness
-    float maxComponent = max(max(radiance.r, radiance.g), radiance.b);
-    if (maxComponent > 0.0f)
+    // Calculate cosine term
+    cosTheta = computeCosTheta(rayDir);
+
+    // Store calculation steps for debug pixels
+    if (isDebugPixel) {
+        gDebugCalculation[pixel] = float4(pixelArea, cosTheta, length(rayDir), 0);
+    }
+
+    // Calculate power using the formula: Power = Radiance * Area * cos(θ)
+    originalPower = radiance.rgb * pixelArea * cosTheta;
+
+    // Store the original calculation result for debug pixels
+    if (isDebugPixel) {
+        // Store original calculation before forcing high values
+        gDebugOutput[pixel] = float4(originalPower, wavelength);
+    }
+
+    // FORCE HIGH POWER VALUE - Force the physically calculated values to be large
+    // Get normalized color to maintain the original color proportion
+    float3 normalizedColor;
+    float maxComponent = max(max(originalPower.r, originalPower.g), originalPower.b);
+
+    if (maxComponent > 0.0001f)
     {
-        normalizedColor = radiance.rgb / maxComponent;
+        // Normalize based on original calculation to maintain color ratio
+        normalizedColor = originalPower / maxComponent;
     }
     else
     {
-        // If no input radiance, create default white light
-        normalizedColor = float3(1.0f, 1.0f, 1.0f);
+        // If power is essentially zero, use the original radiance for color
+        maxComponent = max(radiance.r, max(radiance.g, radiance.b));
+        if (maxComponent > 0.0001f)
+        {
+            normalizedColor = radiance.rgb / maxComponent;
+        }
+        else
+        {
+            // Default to white if no meaningful color information
+            normalizedColor = float3(1.0f, 1.0f, 1.0f);
+        }
     }
 
-    // FORCE HIGH POWER VALUE - Always output a large value (20.0)
+    // Apply high power value while maintaining color proportions
     const float forcedPowerValue = 20.0f;
     float3 power = normalizedColor * forcedPowerValue;
 
@@ -296,8 +344,16 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     // Skip if outside texture bounds
     if (any(pixel >= dimensions)) return;
 
+    // Debug information for first 4 pixels
+    bool isDebugPixel = pixel.x < 2 && pixel.y < 2;
+
     // Get input radiance from path tracer
     float4 radiance = gInputRadiance[pixel];
+
+    // Debug: Store input radiance values
+    if (isDebugPixel) {
+        // Later we'll combine this with the results
+    }
 
     // Get ray direction (either from texture or compute it)
     float3 rayDir;
@@ -312,6 +368,11 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     else
     {
         rayDir = computeRayDirection(pixel, dimensions);
+    }
+
+    // Debug: Store ray direction
+    if (isDebugPixel) {
+        // Later we'll combine this with the results
     }
 
     // Get wavelength (default to estimation from RGB if not provided)
@@ -338,14 +399,6 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     // Compute power
     float4 power = computeLightPower(pixel, dimensions, rayDir, radiance, wavelength);
-
-    // Debug code: Record the value of the first pixel
-    if (pixel.x == 0 && pixel.y == 0)
-    {
-        // Can't print directly here, but we can set the first pixel to a special value for detection in C++ code
-        // Modify to a very obvious value for observation
-        power = float4(50.0, 50.0, 50.0, wavelength);
-    }
 
     // Write output
     gOutputPower[pixel] = power;

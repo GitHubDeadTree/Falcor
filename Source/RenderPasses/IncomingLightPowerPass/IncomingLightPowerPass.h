@@ -178,6 +178,9 @@ private:
     static const std::string kInvertFilter;          ///< Invert filter parameter name
     static const std::string kFilterMode;            ///< Filter mode parameter name
     static const std::string kBandCount;             ///< Band count parameter name
+    static const std::string kOutputDebug;           ///< Debug output texture name
+    static const std::string kDebugInputData;        ///< Debug input data texture name
+    static const std::string kDebugCalculation;      ///< Debug calculation texture name
 
     // Camera parameters
     static const std::string kCameraInvViewProj;     ///< Camera inverse view-projection matrix name

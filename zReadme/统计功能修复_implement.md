@@ -1215,3 +1215,240 @@ logInfo("NOTICE: Using FORCED high power values (10.0) to ensure visibility rega
 4. 测试禁用和启用渲染通道时的行为
 
 通过这种彻底的强制方法，我们保证了在任何情况下，IncomingLightPowerPass都能输出可见的结果，解决了全黑的问题，同时为用户提供了更好的调试体验。虽然这种方法不再严格按照物理公式计算光功率，但它提供了一个可靠的调试解决方案，直到潜在的根本问题被找到和修复。
+
+## 添加调试信息功能
+
+### 目标
+添加调试信息，显示正常计算过程中前4个像素的输入、计算过程和最终输出（不使用强制大值）。这将帮助我们理解光功率计算的实际过程。
+
+### 实现内容
+
+#### 1. 添加调试输出纹理
+
+首先，在着色器代码中添加了三个新的调试输出纹理：
+
+```hlsl
+// Output data
+RWTexture2D<float4> gOutputPower;       ///< Output power value (rgb) and wavelength (a)
+RWTexture2D<float> gOutputWavelength;   ///< Output wavelength (for filtered rays)
+RWTexture2D<float4> gDebugOutput;       ///< Debug output for original calculation (without forcing large values)
+RWTexture2D<float4> gDebugInputData;    ///< Debug output for input data
+RWTexture2D<float4> gDebugCalculation;  ///< Debug output for calculation steps
+```
+
+这些纹理分别用于存储：
+- 原始计算结果（不包含强制大值）
+- 输入数据（辐射度和波长）
+- 计算过程中的中间值（像素面积、余弦项等）
+
+#### 2. 修改着色器代码，收集调试信息
+
+在`computeLightPower`函数中，添加了代码来识别和收集前4个像素的调试信息：
+
+```hlsl
+// Debug: For first 4 pixels, log detailed computation
+bool isDebugPixel = pixel.x < 2 && pixel.y < 2;
+float3 originalPower = float3(0, 0, 0);
+float pixelArea = 0;
+float cosTheta = 0;
+
+// Store input data for debug pixels
+if (isDebugPixel) {
+    gDebugInputData[pixel] = float4(radiance.rgb, wavelength);
+}
+
+// ...
+
+// Calculate pixel area
+pixelArea = computePixelArea(dimensions);
+
+// Calculate cosine term
+cosTheta = computeCosTheta(rayDir);
+
+// Store calculation steps for debug pixels
+if (isDebugPixel) {
+    gDebugCalculation[pixel] = float4(pixelArea, cosTheta, length(rayDir), 0);
+}
+
+// Calculate power using the formula: Power = Radiance * Area * cos(θ)
+originalPower = radiance.rgb * pixelArea * cosTheta;
+
+// Store the original calculation result for debug pixels
+if (isDebugPixel) {
+    // Store original calculation before forcing high values
+    gDebugOutput[pixel] = float4(originalPower, wavelength);
+}
+```
+
+这部分代码在不干扰正常计算流程的情况下，收集了计算过程中的关键数据。
+
+#### 3. 在C++端添加对应的常量和反射定义
+
+在C++代码中，添加了对应的常量定义和渲染通道反射信息：
+
+```cpp
+const std::string IncomingLightPowerPass::kOutputDebug = "debugOutput";
+const std::string IncomingLightPowerPass::kDebugInputData = "debugInputData";
+const std::string IncomingLightPowerPass::kDebugCalculation = "debugCalculation";
+```
+
+```cpp
+// Output: Debug information
+reflector.addOutput(kOutputDebug, "Debug information for original calculation")
+    .bindFlags(ResourceBindFlags::UnorderedAccess)
+    .format(ResourceFormat::RGBA32Float);
+
+// Additional debug outputs
+reflector.addOutput(kDebugInputData, "Debug information for input data")
+    .bindFlags(ResourceBindFlags::UnorderedAccess)
+    .format(ResourceFormat::RGBA32Float);
+
+reflector.addOutput(kDebugCalculation, "Debug information for calculation steps")
+    .bindFlags(ResourceBindFlags::UnorderedAccess)
+    .format(ResourceFormat::RGBA32Float);
+```
+
+#### 4. 读取和输出调试信息
+
+在`execute`函数中，添加了代码来读取和输出调试信息：
+
+```cpp
+// Read debug information for first 4 pixels
+if (pDebugOutput && pDebugInputData && pDebugCalculation)
+{
+    pRenderContext->submit(true);  // Make sure compute pass is complete
+
+    // Read debug data
+    std::vector<uint8_t> debugData = pRenderContext->readTextureSubresource(pDebugOutput.get(), 0);
+    std::vector<uint8_t> inputData = pRenderContext->readTextureSubresource(pDebugInputData.get(), 0);
+    std::vector<uint8_t> calcData = pRenderContext->readTextureSubresource(pDebugCalculation.get(), 0);
+
+    if (!debugData.empty() && !inputData.empty() && !calcData.empty())
+    {
+        const float4* debugValues = reinterpret_cast<const float4*>(debugData.data());
+        const float4* inputValues = reinterpret_cast<const float4*>(inputData.data());
+        const float4* calcValues = reinterpret_cast<const float4*>(calcData.data());
+
+        // Output debug info for first 4 pixels
+        for (uint32_t y = 0; y < 2; y++)
+        {
+            for (uint32_t x = 0; x < 2; x++)
+            {
+                uint32_t pixelIndex = y * pDebugOutput->getWidth() + x;
+
+                if (pixelIndex < debugData.size() / sizeof(float4))
+                {
+                    const float4& pixelData = debugValues[pixelIndex];
+                    const float4& inputPixelData = inputValues[pixelIndex];
+                    const float4& calcPixelData = calcValues[pixelIndex];
+
+                    // Check if this pixel was filtered out
+                    if (pixelData.x == -1 && pixelData.y == -1 && pixelData.z == -1)
+                    {
+                        logInfo(fmt::format("DEBUG - Pixel [{0},{1}]: FILTERED OUT (wavelength = {2:.2f}nm)",
+                                          x, y, pixelData.w));
+                    }
+                    else
+                    {
+                        // Log input data
+                        logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - INPUT: Radiance=({2:.8f}, {3:.8f}, {4:.8f}), Wavelength={5:.2f}nm",
+                                          x, y,
+                                          inputPixelData.x, inputPixelData.y, inputPixelData.z, inputPixelData.w));
+
+                        // Log calculation steps
+                        logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - CALCULATION: PixelArea={2:.8f}, CosTheta={3:.8f}, RayLength={4:.8f}",
+                                          x, y,
+                                          calcPixelData.x, calcPixelData.y, calcPixelData.z));
+
+                        // Log calculation formula
+                        logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - FORMULA: Power = Radiance * PixelArea * CosTheta",
+                                          x, y));
+
+                        // Log calculation result
+                        logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - RESULT: {2:.8f} * {3:.8f} * {4:.8f} = ({5:.8f}, {6:.8f}, {7:.8f})",
+                                          x, y,
+                                          inputPixelData.x, calcPixelData.x, calcPixelData.y,
+                                          pixelData.x, pixelData.y, pixelData.z));
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+这段代码读取前4个像素的调试数据，并以易于理解的格式输出计算过程的详细信息。
+
+### 遇到的问题和解决方案
+
+#### 问题1：命名空间和作用域冲突
+
+在实现过程中，遇到了变量命名和作用域的问题。在C++代码中，我们添加了全局常量定义，但这些常量与类内静态常量产生了冲突。
+
+**错误消息**：
+```
+"kDebugInputData" 不明确
+"kDebugCalculation" 不明确
+```
+
+**解决方案**：
+将全局常量修改为类内静态常量，在头文件中声明并在cpp文件中定义：
+
+```cpp
+// 在头文件中
+static const std::string kDebugInputData;        ///< Debug input data texture name
+static const std::string kDebugCalculation;      ///< Debug calculation texture name
+
+// 在cpp文件中
+const std::string IncomingLightPowerPass::kDebugInputData = "debugInputData";
+const std::string IncomingLightPowerPass::kDebugCalculation = "debugCalculation";
+```
+
+#### 问题2：max函数参数过多
+
+在slang代码中，尝试使用max函数处理三个参数，但这导致了编译错误，因为max函数只接受两个参数。
+
+**错误代码**：
+```hlsl
+maxComponent = max(max(radiance.r, radiance.g, radiance.b));
+```
+
+**解决方案**：
+使用嵌套的max调用来处理三个值：
+
+```hlsl
+maxComponent = max(radiance.r, max(radiance.g, radiance.b));
+```
+
+#### 问题3：调试纹理的绑定问题
+
+初始实现时，我们尝试使用`renderData["kOutputDebug"]`的方式获取纹理，但这不是正确的语法。
+
+**错误代码**：
+```cpp
+auto pDebugOutput = renderData[kOutputDebug]->asTexture();
+```
+
+**解决方案**：
+使用`getTexture`方法获取纹理：
+
+```cpp
+const auto& pDebugOutput = renderData.getTexture(kOutputDebug);
+```
+
+### 功能验证
+
+通过添加的调试信息，我们现在可以详细查看每个像素的光功率计算过程：
+
+1. **输入数据**：辐射度(RGB)和波长
+2. **计算参数**：像素面积和余弦项
+3. **计算公式**：Power = Radiance * PixelArea * CosTheta
+4. **计算结果**：原始物理计算得到的功率值
+
+这些信息让我们能够验证物理计算的正确性，并确认最终在shader中应用的强制大值没有影响到正常的计算逻辑。
+
+### 结论
+
+通过添加这些调试功能，我们实现了对IncomingLightPowerPass渲染通道的详细监控，可以清晰地看到光功率计算的完整过程。我们保留了正确的物理计算逻辑，并通过额外的调试输出纹理记录了这一过程，而不干扰最终的强制大值输出。
+
+这种方法对于理解和验证复杂渲染管线中的计算过程非常有价值，也为后续的优化和问题排查提供了坚实的基础。

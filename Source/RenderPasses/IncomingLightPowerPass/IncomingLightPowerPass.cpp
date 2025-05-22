@@ -15,6 +15,11 @@ namespace
     const std::string kInputSampleCount = "sampleCount";         // Input sample count from path tracer (optional)
     const std::string kOutputPower = "lightPower";               // Output texture with light power values
     const std::string kOutputWavelength = "lightWavelength";     // Output texture with filtered wavelength values
+    const std::string kOutputDebug = "debugOutput";                // Output texture for debug information
+
+    // Additional debug outputs
+    const std::string kDebugInputData = "debugInputData";
+    const std::string kDebugCalculation = "debugCalculation";
 
     // Shader constants
     const std::string kPerFrameCB = "PerFrameCB";           // cbuffer name
@@ -33,6 +38,9 @@ const std::string IncomingLightPowerPass::kInputWavelength = "wavelength";
 const std::string IncomingLightPowerPass::kInputSampleCount = "sampleCount";
 const std::string IncomingLightPowerPass::kOutputPower = "lightPower";
 const std::string IncomingLightPowerPass::kOutputWavelength = "lightWavelength";
+const std::string IncomingLightPowerPass::kOutputDebug = "debugOutput";
+const std::string IncomingLightPowerPass::kDebugInputData = "debugInputData";
+const std::string IncomingLightPowerPass::kDebugCalculation = "debugCalculation";
 const std::string IncomingLightPowerPass::kPerFrameCB = "PerFrameCB";
 
 // Shader parameter names
@@ -231,8 +239,7 @@ float4 IncomingLightPowerPass::CameraIncidentPower::compute(
     const std::vector<float>& bandTolerances,
     bool enableFilter) const
 {
-    // FORCE HIGH POWER VALUE: Override normal calculation to ensure visibility
-    // Only apply wavelength filtering if explicitly enabled
+    // Apply wavelength filtering if explicitly enabled
     if (enableFilter && !isWavelengthAllowed(wavelength, minWavelength, maxWavelength,
         filterMode, useVisibleSpectrumOnly, invertFilter,
         bandWavelengths, bandTolerances, enableFilter))
@@ -240,28 +247,14 @@ float4 IncomingLightPowerPass::CameraIncidentPower::compute(
         return float4(0.f, 0.f, 0.f, 0.f);
     }
 
-    // Get original radiance color components but normalize them
-    float3 normalizedColor = float3(1.0f, 1.0f, 1.0f);  // 默认使用白色
+    // Calculate pixel area
+    float pixelArea = computePixelArea();
 
-    // If we have any input radiance, normalize it to maintain color but force brightness
-    float maxComponent = std::max(std::max(radiance.r, radiance.g), radiance.b);
-    if (maxComponent > 0.0f)
-    {
-        // 归一化但确保每个分量至少为0.25
-        normalizedColor = float3(
-            std::max(0.25f, radiance.r / maxComponent),
-            std::max(0.25f, radiance.g / maxComponent),
-            std::max(0.25f, radiance.b / maxComponent)
-        );
-    }
+    // Calculate cosine term
+    float cosTheta = computeCosTheta(rayDir);
 
-    const float forcedPowerValue = 20.0f;  
-    float3 power = normalizedColor * forcedPowerValue;
-
-    // 确保power值永远不会太小
-    power.x = std::max(5.0f, power.x);
-    power.y = std::max(5.0f, power.y);
-    power.z = std::max(5.0f, power.z);
+    // Calculate power using the formula: Power = Radiance * Area * cos(θ)
+    float3 power = float3(radiance.r, radiance.g, radiance.b) * pixelArea * cosTheta;
 
     // Return power with the wavelength
     return float4(power.x, power.y, power.z, wavelength > 0.0f ? wavelength : 550.0f);
@@ -345,6 +338,20 @@ RenderPassReflection IncomingLightPowerPass::reflect(const CompileData& compileD
         .bindFlags(ResourceBindFlags::UnorderedAccess)
         .format(ResourceFormat::R32Float);
 
+    // Output: Debug information
+    reflector.addOutput(kOutputDebug, "Debug information for original calculation")
+        .bindFlags(ResourceBindFlags::UnorderedAccess)
+        .format(ResourceFormat::RGBA32Float);
+
+    // Additional debug outputs
+    reflector.addOutput(kDebugInputData, "Debug information for input data")
+        .bindFlags(ResourceBindFlags::UnorderedAccess)
+        .format(ResourceFormat::RGBA32Float);
+
+    reflector.addOutput(kDebugCalculation, "Debug information for calculation steps")
+        .bindFlags(ResourceBindFlags::UnorderedAccess)
+        .format(ResourceFormat::RGBA32Float);
+
     return reflector;
 }
 
@@ -360,9 +367,6 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     logInfo(fmt::format("IncomingLightPowerPass executing - settings: enabled={0}, wavelength_filter_enabled={1}, filter_mode={2}, min_wavelength={3}, max_wavelength={4}",
                        mEnabled, mEnableWavelengthFilter, static_cast<int>(mFilterMode), mMinWavelength, mMaxWavelength));
 
-    // Important: Log that we're using forced high power values
-    logInfo("NOTICE: Using VERY HIGH FORCED power values (20.0) with minimum threshold (5.0) to ensure visibility regardless of input.");
-
     // Get input texture
     const auto& pInputRadiance = renderData.getTexture(kInputRadiance);
     if (!pInputRadiance)
@@ -374,11 +378,17 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     // Get output textures
     const auto& pOutputPower = renderData.getTexture(kOutputPower);
     const auto& pOutputWavelength = renderData.getTexture(kOutputWavelength);
+    const auto& pDebugOutput = renderData.getTexture(kOutputDebug);
+    const auto& pDebugInputData = renderData.getTexture(kDebugInputData);
+    const auto& pDebugCalculation = renderData.getTexture(kDebugCalculation);
     if (!pOutputPower || !pOutputWavelength)
     {
         logWarning("IncomingLightPowerPass::execute() - Output texture is missing.");
         return;
     }
+
+    // Create debug output texture
+    auto pDebugOutputTexture = renderData[kOutputDebug]->asTexture();
 
     // If disabled, use default non-zero value instead of clearing to zero
     if (!mEnabled)
@@ -498,9 +508,75 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     // Bind output resources
     var["gOutputPower"] = pOutputPower;
     var["gOutputWavelength"] = pOutputWavelength;
+    var["gDebugOutput"] = pDebugOutput;
+    var["gDebugInputData"] = pDebugInputData;
+    var["gDebugCalculation"] = pDebugCalculation;
 
     // Execute the compute pass
     mpComputePass->execute(pRenderContext, uint3(mFrameDim.x, mFrameDim.y, 1));
+
+    // Read debug information for first 4 pixels
+    if (pDebugOutput && pDebugInputData && pDebugCalculation)
+    {
+        pRenderContext->submit(true);  // Make sure compute pass is complete
+
+        // Read debug data
+        std::vector<uint8_t> debugData = pRenderContext->readTextureSubresource(pDebugOutput.get(), 0);
+        std::vector<uint8_t> inputData = pRenderContext->readTextureSubresource(pDebugInputData.get(), 0);
+        std::vector<uint8_t> calcData = pRenderContext->readTextureSubresource(pDebugCalculation.get(), 0);
+
+        if (!debugData.empty() && !inputData.empty() && !calcData.empty())
+        {
+            const float4* debugValues = reinterpret_cast<const float4*>(debugData.data());
+            const float4* inputValues = reinterpret_cast<const float4*>(inputData.data());
+            const float4* calcValues = reinterpret_cast<const float4*>(calcData.data());
+
+            // Output debug info for first 4 pixels
+            for (uint32_t y = 0; y < 2; y++)
+            {
+                for (uint32_t x = 0; x < 2; x++)
+                {
+                    uint32_t pixelIndex = y * pDebugOutput->getWidth() + x;
+
+                    if (pixelIndex < debugData.size() / sizeof(float4))
+                    {
+                        const float4& pixelData = debugValues[pixelIndex];
+                        const float4& inputPixelData = inputValues[pixelIndex];
+                        const float4& calcPixelData = calcValues[pixelIndex];
+
+                        // Check if this pixel was filtered out
+                        if (pixelData.x == -1 && pixelData.y == -1 && pixelData.z == -1)
+                        {
+                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}]: FILTERED OUT (wavelength = {2:.2f}nm)",
+                                              x, y, pixelData.w));
+                        }
+                        else
+                        {
+                            // Log input data
+                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - INPUT: Radiance=({2:.8f}, {3:.8f}, {4:.8f}), Wavelength={5:.2f}nm",
+                                              x, y,
+                                              inputPixelData.x, inputPixelData.y, inputPixelData.z, inputPixelData.w));
+
+                            // Log calculation steps
+                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - CALCULATION: PixelArea={2:.8f}, CosTheta={3:.8f}, RayLength={4:.8f}",
+                                              x, y,
+                                              calcPixelData.x, calcPixelData.y, calcPixelData.z));
+
+                            // Log calculation formula
+                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - FORMULA: Power = Radiance * PixelArea * CosTheta",
+                                              x, y));
+
+                            // Log calculation result
+                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - RESULT: {2:.8f} * {3:.8f} * {4:.8f} = ({5:.8f}, {6:.8f}, {7:.8f})",
+                                              x, y,
+                                              inputPixelData.x, calcPixelData.x, calcPixelData.y,
+                                              pixelData.x, pixelData.y, pixelData.z));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Add debug code to read the value of the first pixel
     // Create a buffer to read data back from GPU
