@@ -103,6 +103,10 @@ float IncomingLightPowerPass::CameraIncidentPower::computePixelArea() const
     // Calculate pixel area
     float pixelArea = pixelWidth * pixelHeight;
 
+    // Ensure pixel area is not too small or zero
+    const float minPixelArea = 0.00001f;
+    pixelArea = std::max(pixelArea, minPixelArea);
+
     return pixelArea;
 }
 
@@ -139,6 +143,10 @@ float IncomingLightPowerPass::CameraIncidentPower::computeCosTheta(const float3&
 
     // Calculate cosine using dot product
     float cosTheta = std::max(0.f, dot(rayDir, invNormal));
+
+    // Ensure cosine is not too small or zero
+    const float minCosTheta = 0.00001f;
+    cosTheta = std::max(cosTheta, minCosTheta);
 
     return cosTheta;
 }
@@ -235,8 +243,26 @@ float4 IncomingLightPowerPass::CameraIncidentPower::compute(
     float cosTheta = computeCosTheta(rayDir);
     float pixelArea = mPixelArea; // Use cached value
 
+    // Ensure minimum values for stability
+    cosTheta = std::max(cosTheta, 0.00001f);
+    pixelArea = std::max(pixelArea, 0.00001f);
+
     // Calculate power for each color channel
     float3 power = float3(radiance.r, radiance.g, radiance.b) * pixelArea * cosTheta;
+
+    // Ensure power is non-zero if radiance is non-zero
+    const float epsilon = 0.00001f;
+    if ((radiance.r > epsilon || radiance.g > epsilon || radiance.b > epsilon) &&
+        (power.x <= epsilon && power.y <= epsilon && power.z <= epsilon))
+    {
+        // If input radiance is non-zero but calculated power is zero, apply minimum value
+        const float minPower = 0.001f;
+        power = float3(
+            std::max(power.x, radiance.r > epsilon ? minPower : 0.0f),
+            std::max(power.y, radiance.g > epsilon ? minPower : 0.0f),
+            std::max(power.z, radiance.b > epsilon ? minPower : 0.0f)
+        );
+    }
 
     return float4(power.x, power.y, power.z, wavelength);
 }

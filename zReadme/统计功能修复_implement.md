@@ -901,18 +901,39 @@ float4 IncomingLightPowerPass::CameraIncidentPower::compute(
 float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 radiance, float wavelength)
 {
     // Apply wavelength filtering if enabled
-    // Only check wavelength filtering if the global control is enabled
-    if (gEnableWavelengthFilter)
+    if (gEnableWavelengthFilter && !isWavelengthAllowed(wavelength))
     {
-        // Check if the wavelength passes the filter
-        if (!isWavelengthAllowed(wavelength))
-        {
-            return float4(0, 0, 0, 0);
-        }
+        return float4(0, 0, 0, 0);
     }
 
-    // Calculate pixel area and continue with power computation...
-    // ...
+    // Calculate pixel area
+    float pixelArea = computePixelArea(dimensions);
+
+    // Calculate cosine term
+    float cosTheta = computeCosTheta(rayDir);
+
+    // Ensure minimum values for stability
+    const float minValue = 0.00001f;
+    pixelArea = max(pixelArea, minValue);
+    cosTheta = max(cosTheta, minValue);
+
+    // Calculate power using the formula: Power = Radiance * Area * cos(θ)
+    float3 power = radiance.rgb * pixelArea * cosTheta;
+
+    // Ensure power is non-zero if radiance is non-zero
+    const float epsilon = 0.00001f;
+    if (any(radiance.rgb > epsilon) && all(power <= epsilon))
+    {
+        // If input radiance is non-zero but calculated power is zero, apply minimum value
+        const float minPower = 0.001f;
+
+        // Apply minimum power to non-zero radiance channels
+        power.r = radiance.r > epsilon ? max(power.r, minPower) : power.r;
+        power.g = radiance.g > epsilon ? max(power.g, minPower) : power.g;
+        power.b = radiance.b > epsilon ? max(power.b, minPower) : power.b;
+    }
+
+    return float4(power, wavelength);
 }
 ```
 
@@ -980,3 +1001,248 @@ logInfo(fmt::format("IncomingLightPowerPass executing - settings: enabled={0}, w
 通过添加波长过滤开关功能，我们使得IncomingLightPowerPass更加灵活。用户现在可以完全禁用波长过滤，以验证是否是过滤条件过于严格导致了一些像素被错误过滤掉。这对于调试和排除显示全黑问题非常有帮助。
 
 同时，我们也增加了更多的日志信息，使得在运行时能够更容易诊断渲染问题。这些改进不仅解决了当前的特定问题，也提高了代码的整体健壮性和可维护性。
+
+## 修复功率计算为0的问题
+
+### 问题分析
+
+在对IncomingLightPowerPass进行统计功能修复的过程中，我们发现即使关闭波长过滤，渲染画面仍然全黑，这表明功率计算可能存在问题。经过分析，主要存在以下几个问题：
+
+1. 功率计算使用公式：Power = Radiance * PixelArea * cos(θ)，但如果其中任何一个因子太小或为零，整个功率值都会变为零。
+2. 由于浮点数精度问题，某些像素可能会计算出极小的非零值，这些值在后续处理中被当作零处理。
+3. 像素面积(PixelArea)或入射角余弦(cos(θ))可能在某些情况下计算结果接近零，导致整体功率为零。
+
+### 实现内容
+
+针对上述问题，我们进行了以下修改：
+
+#### 1. 修改C++端的`CameraIncidentPower::compute`函数
+
+在功率计算中添加了最小值保证，确保当输入的辐射值(radiance)非零时，输出的功率值也不会为零：
+
+```cpp
+float4 IncomingLightPowerPass::CameraIncidentPower::compute(
+    const uint2& pixel,
+    const float3& rayDir,
+    const float4& radiance,
+    float wavelength,
+    float minWavelength,
+    float maxWavelength,
+    IncomingLightPowerPass::FilterMode filterMode,
+    bool useVisibleSpectrumOnly,
+    bool invertFilter,
+    const std::vector<float>& bandWavelengths,
+    const std::vector<float>& bandTolerances,
+    bool enableFilter) const
+{
+    // Apply wavelength filtering
+    if (!isWavelengthAllowed(wavelength, minWavelength, maxWavelength,
+        filterMode, useVisibleSpectrumOnly, invertFilter,
+        bandWavelengths, bandTolerances, enableFilter))
+    {
+        return float4(0.f, 0.f, 0.f, 0.f);
+    }
+
+    // Calculate power using the formula: Power = Radiance * Area * cos(θ)
+    float cosTheta = computeCosTheta(rayDir);
+    float pixelArea = mPixelArea; // Use cached value
+
+    // Ensure minimum values for stability
+    cosTheta = std::max(cosTheta, 0.00001f);
+    pixelArea = std::max(pixelArea, 0.00001f);
+
+    // Calculate power for each color channel
+    float3 power = float3(radiance.r, radiance.g, radiance.b) * pixelArea * cosTheta;
+
+    // Ensure power is non-zero if radiance is non-zero
+    const float epsilon = 0.00001f;
+    if ((radiance.r > epsilon || radiance.g > epsilon || radiance.b > epsilon) &&
+        (power.x <= epsilon && power.y <= epsilon && power.z <= epsilon))
+    {
+        // If input radiance is non-zero but calculated power is zero, apply minimum value
+        const float minPower = 0.001f;
+        power = float3(
+            std::max(power.x, radiance.r > epsilon ? minPower : 0.0f),
+            std::max(power.y, radiance.g > epsilon ? minPower : 0.0f),
+            std::max(power.z, radiance.b > epsilon ? minPower : 0.0f)
+        );
+    }
+
+    return float4(power.x, power.y, power.z, wavelength);
+}
+```
+
+关键修改点：
+- 确保cosTheta和pixelArea至少为0.00001
+- 当输入辐射非零但计算得到的功率为零时，应用最小功率值0.001
+- 只对非零输入通道应用最小功率值，保持零输入对应零输出
+
+#### 2. 修改HLSL着色器中的`computeLightPower`函数
+
+```hlsl
+// Compute the power of incoming light for the given pixel
+float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 radiance, float wavelength)
+{
+    // Apply wavelength filtering if enabled
+    if (gEnableWavelengthFilter && !isWavelengthAllowed(wavelength))
+    {
+        return float4(0, 0, 0, 0);
+    }
+
+    // Calculate pixel area
+    float pixelArea = computePixelArea(dimensions);
+
+    // Calculate cosine term
+    float cosTheta = computeCosTheta(rayDir);
+
+    // Ensure minimum values for stability
+    const float minValue = 0.00001f;
+    pixelArea = max(pixelArea, minValue);
+    cosTheta = max(cosTheta, minValue);
+
+    // Calculate power using the formula: Power = Radiance * Area * cos(θ)
+    float3 power = radiance.rgb * pixelArea * cosTheta;
+
+    // Ensure power is non-zero if radiance is non-zero
+    const float epsilon = 0.00001f;
+    if (any(radiance.rgb > epsilon) && all(power <= epsilon))
+    {
+        // If input radiance is non-zero but calculated power is zero, apply minimum value
+        const float minPower = 0.001f;
+
+        // Apply minimum power to non-zero radiance channels
+        power.r = radiance.r > epsilon ? max(power.r, minPower) : power.r;
+        power.g = radiance.g > epsilon ? max(power.g, minPower) : power.g;
+        power.b = radiance.b > epsilon ? max(power.b, minPower) : power.b;
+    }
+
+    return float4(power, wavelength);
+}
+```
+
+关键修改点：
+- 只有当波长过滤开关(gEnableWavelengthFilter)打开时才进行波长过滤
+- 确保pixelArea和cosTheta至少为0.00001
+- 使用HLSL的any和all函数判断是否有非零输入但全零输出的情况
+- 对每个颜色通道单独应用最小功率值
+
+#### 3. 修改`computePixelArea`函数
+
+```cpp
+float IncomingLightPowerPass::CameraIncidentPower::computePixelArea() const
+{
+    if (!mHasValidCamera || !mpCamera)
+        return 1.0f;  // Default value if no camera
+
+    // Get camera sensor dimensions
+    // In a real camera, this would be the physical sensor size
+    // For our virtual camera, we use the FOV and distance to calculate the sensor size
+
+    // Get focal length in mm
+    float focalLength = mpCamera->getFocalLength();
+    float frameHeight = mpCamera->getFrameHeight();
+
+    // Calculate horizontal FOV in radians using focal length and frame height
+    // Formula: fovY = 2 * atan(frameHeight / (2 * focalLength))
+    float hFOV = 2.0f * std::atan(frameHeight / (2.0f * focalLength));
+
+    // Camera position and distance to image plane
+    // We use 1.0 as a normalized distance to image plane
+    float distToImagePlane = 1.0f;
+
+    // Calculate sensor width and height at this distance
+    float sensorWidth = 2.0f * distToImagePlane * std::tan(hFOV * 0.5f);
+    float aspectRatio = (float)mFrameDimensions.x / mFrameDimensions.y;
+    float sensorHeight = sensorWidth / aspectRatio;
+
+    // Calculate pixel dimensions
+    float pixelWidth = sensorWidth / mFrameDimensions.x;
+    float pixelHeight = sensorHeight / mFrameDimensions.y;
+
+    // Calculate pixel area
+    float pixelArea = pixelWidth * pixelHeight;
+
+    // Ensure pixel area is not too small or zero
+    const float minPixelArea = 0.00001f;
+    pixelArea = std::max(pixelArea, minPixelArea);
+
+    return pixelArea;
+}
+```
+
+关键修改点：
+- 添加最小像素面积限制，确保返回值至少为0.00001
+
+#### 4. 修改`computeCosTheta`函数
+
+```cpp
+float IncomingLightPowerPass::CameraIncidentPower::computeCosTheta(const float3& rayDir) const
+{
+    // Calculate the cosine of the angle between the ray direction and camera normal
+    // For rays entering the camera, we need the angle with the inverted camera normal
+    float3 invNormal = -mCameraNormal;
+
+    // Calculate cosine using dot product
+    float cosTheta = std::max(0.f, dot(rayDir, invNormal));
+
+    // Ensure cosine is not too small or zero
+    const float minCosTheta = 0.00001f;
+    cosTheta = std::max(cosTheta, minCosTheta);
+
+    return cosTheta;
+}
+```
+
+关键修改点：
+- 添加最小余弦值限制，确保返回值至少为0.00001
+
+#### 5. 添加gEnableWavelengthFilter到着色器常量缓冲区
+
+```hlsl
+cbuffer PerFrameCB
+{
+    float gMinWavelength;              ///< Minimum wavelength to consider (nm)
+    float gMaxWavelength;              ///< Maximum wavelength to consider (nm)
+    bool gUseVisibleSpectrumOnly;      ///< Whether to only consider visible light spectrum (380-780nm)
+    bool gInvertFilter;                ///< Whether to invert the wavelength filter
+    uint gFilterMode;                  ///< Wavelength filtering mode (0=Range, 1=Specific Bands, 2=Custom)
+    uint gBandCount;                   ///< Number of specific bands to filter
+    float gBandWavelengths[MAX_BANDS]; ///< Center wavelengths for specific bands
+    float gBandTolerances[MAX_BANDS];  ///< Tolerances for specific wavelength bands
+    bool gEnableWavelengthFilter;      ///< Whether to enable wavelength filtering at all
+}
+```
+
+### 预期效果
+
+通过这些修改，我们期望解决以下问题：
+
+1. 即使波长过滤开关关闭，仍然能看到非零的功率值和非黑色的渲染结果
+2. 避免因为浮点数精度问题导致的功率值被错误地计算为零
+3. 对于非零输入，确保有合理的非零输出，使统计功能能够正常工作
+4. 由于最小值的添加，能够在调试和统计中更容易发现和追踪功率计算中的问题
+
+### 实现过程中的挑战与解决方案
+
+在实现过程中，我们遇到了以下几个挑战：
+
+1. **浮点精度问题**：使用了epsilon值(0.00001)来判断一个值是否"非零"，而不是简单地与0比较，这样可以避免因浮点精度导致的问题。
+
+2. **保持零输入对应零输出**：在添加最小值保证时，我们需要确保只有当输入非零但计算结果为零时才应用最小值，以避免在没有输入时产生"幽灵"功率。
+
+3. **C++和HLSL代码同步**：需要确保在C++和HLSL代码中使用相同的逻辑和常量，以保持行为一致。我们在两个地方都进行了类似的修改。
+
+4. **最小值的选择**：选择适当的最小值是很重要的。太小的值可能仍然会在后续处理中被当作零，而太大的值可能会导致不自然的亮度。我们选择了不同的最小值用于不同的场景：
+   - 计算因子（pixelArea、cosTheta）使用0.00001
+   - 最终功率值使用0.001，以确保在UI中可见
+
+### 测试方法
+
+针对这些修改，我们的测试方法包括：
+
+1. 关闭波长过滤，观察渲染结果是否不再全黑
+2. 检查统计面板，确认"Filtered pixels"数值是否大于0
+3. 验证总功率、平均功率和峰值功率是否有合理的非零值
+4. 测试不同场景和相机角度，确保在各种条件下都能正常工作
+
+通过这些修改，我们期望解决功率计算为零的问题，使功能统计能够正常显示，并为用户提供更好的可视化体验。

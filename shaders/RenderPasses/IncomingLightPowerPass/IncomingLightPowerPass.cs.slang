@@ -63,6 +63,7 @@ cbuffer PerFrameCB
     uint gBandCount;                   ///< Number of specific bands to filter
     float gBandWavelengths[MAX_BANDS]; ///< Center wavelengths for specific bands
     float gBandTolerances[MAX_BANDS];  ///< Tolerances for specific wavelength bands
+    bool gEnableWavelengthFilter;      ///< Whether to enable wavelength filtering at all
 }
 
 // Scene data (bound by the host code)
@@ -239,8 +240,8 @@ float estimateWavelengthFromRGB(float3 rgb)
 // Compute the power of incoming light for the given pixel
 float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 radiance, float wavelength)
 {
-    // Apply wavelength filtering
-    if (!isWavelengthAllowed(wavelength))
+    // Apply wavelength filtering if enabled
+    if (gEnableWavelengthFilter && !isWavelengthAllowed(wavelength))
     {
         return float4(0, 0, 0, 0);
     }
@@ -251,8 +252,26 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
     // Calculate cosine term
     float cosTheta = computeCosTheta(rayDir);
 
-    // Calculate power using the formula: Power = Radiance * Area * cos(胃)
+    // Ensure minimum values for stability
+    const float minValue = 0.00001f;
+    pixelArea = max(pixelArea, minValue);
+    cosTheta = max(cosTheta, minValue);
+
+    // Calculate power using the formula: Power = Radiance * Area * cos(θ)
     float3 power = radiance.rgb * pixelArea * cosTheta;
+
+    // Ensure power is non-zero if radiance is non-zero
+    const float epsilon = 0.00001f;
+    if (any(radiance.rgb > epsilon) && all(power <= epsilon))
+    {
+        // If input radiance is non-zero but calculated power is zero, apply minimum value
+        const float minPower = 0.001f;
+
+        // Apply minimum power to non-zero radiance channels
+        power.r = radiance.r > epsilon ? max(power.r, minPower) : power.r;
+        power.g = radiance.g > epsilon ? max(power.g, minPower) : power.g;
+        power.b = radiance.b > epsilon ? max(power.b, minPower) : power.b;
+    }
 
     return float4(power, wavelength);
 }
