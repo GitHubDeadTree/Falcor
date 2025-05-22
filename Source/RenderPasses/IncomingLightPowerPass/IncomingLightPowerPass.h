@@ -64,6 +64,9 @@ public:
     float getMaxWavelength() const { return mMaxWavelength; }
     void setMaxWavelength(float maxWavelength) { mMaxWavelength = maxWavelength; mNeedRecompile = true; }
 
+    float getPixelAreaScale() const { return mPixelAreaScale; }
+    void setPixelAreaScale(float scale) { mPixelAreaScale = scale; mNeedRecompile = true; }
+
     FilterMode getFilterMode() const { return mFilterMode; }
     void setFilterMode(FilterMode mode) { mFilterMode = mode; mNeedRecompile = true; }
 
@@ -156,6 +159,7 @@ private:
     std::vector<float> mBandWavelengths; ///< Specific wavelength bands to filter
     std::vector<float> mBandTolerances;  ///< Tolerances for specific wavelength bands
     static constexpr float kDefaultTolerance = 5.0f; ///< Default tolerance for specific bands in nm
+    float mPixelAreaScale = 1000.0f;     ///< Scale factor for pixel area calculation
 
     // UI variables
     bool mEnabled = true;                ///< Enable/disable the pass
@@ -178,6 +182,7 @@ private:
     static const std::string kInvertFilter;          ///< Invert filter parameter name
     static const std::string kFilterMode;            ///< Filter mode parameter name
     static const std::string kBandCount;             ///< Band count parameter name
+    static const std::string kPixelAreaScale;        ///< Pixel area scale factor parameter name
     static const std::string kOutputDebug;           ///< Debug output texture name
     static const std::string kDebugInputData;        ///< Debug input data texture name
     static const std::string kDebugCalculation;      ///< Debug calculation texture name

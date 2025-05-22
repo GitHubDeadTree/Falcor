@@ -29,6 +29,7 @@ namespace
     const std::string kInvertFilter = "gInvertFilter";      // Whether to invert the filter
     const std::string kFilterMode = "gFilterMode";          // Wavelength filtering mode
     const std::string kBandCount = "gBandCount";            // Number of specific bands to filter
+    const std::string kPixelAreaScale = "gPixelAreaScale";  // Scale factor for pixel area
 }
 
 // Define constants
@@ -50,6 +51,7 @@ const std::string IncomingLightPowerPass::kUseVisibleSpectrumOnly = "gUseVisible
 const std::string IncomingLightPowerPass::kInvertFilter = "gInvertFilter";
 const std::string IncomingLightPowerPass::kFilterMode = "gFilterMode";
 const std::string IncomingLightPowerPass::kBandCount = "gBandCount";
+const std::string IncomingLightPowerPass::kPixelAreaScale = "gPixelAreaScale";
 
 // Camera parameter names
 const std::string IncomingLightPowerPass::kCameraInvViewProj = "gCameraInvViewProj";
@@ -436,6 +438,7 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     var[kPerFrameCB][kInvertFilter] = mInvertFilter;
     var[kPerFrameCB][kFilterMode] = (uint32_t)mFilterMode;
     var[kPerFrameCB]["gEnableWavelengthFilter"] = mEnableWavelengthFilter;
+    var[kPerFrameCB][kPixelAreaScale] = mPixelAreaScale;
 
     // Set camera data
     if (mpScene && mpScene->getCamera())
@@ -812,6 +815,14 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
 {
     bool changed = false;
     changed |= widget.checkbox("Enabled", mEnabled);
+
+    // Add pixel area scale control
+    auto pixelAreaGroup = widget.group("Pixel Area Adjustment", true);
+    if (pixelAreaGroup)
+    {
+        changed |= widget.slider("Pixel Area Scale", mPixelAreaScale, 1.0f, 10000.0f);
+        widget.tooltip("Scales the calculated pixel area to make power values more visible.\nDefault: 1000.0");
+    }
 
     auto filterGroup = widget.group("Wavelength Filter", true);
     if (filterGroup)

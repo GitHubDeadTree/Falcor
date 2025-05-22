@@ -70,6 +70,7 @@ cbuffer PerFrameCB
     uint gBandCount;                   ///< Number of specific bands to filter
     float gBandWavelengths[MAX_BANDS]; ///< Center wavelengths for specific bands
     float gBandTolerances[MAX_BANDS];  ///< Tolerances for specific wavelength bands
+    float gPixelAreaScale;             ///< Scale factor for pixel area (default: 1000.0)
 
     // Camera data
     float4x4 gCameraInvViewProj;       ///< Camera inverse view-projection matrix
@@ -207,16 +208,18 @@ float computePixelArea(uint2 dimensions)
     float pixelWidth = sensorWidth / float(dimensions.x);
     float pixelHeight = sensorHeight / float(dimensions.y);
 
-    // Return pixel area
-    return pixelWidth * pixelHeight;
+    // Return pixel area with scaling factor
+    return pixelWidth * pixelHeight * gPixelAreaScale;
 }
 
 // Compute the cosine term based on ray direction and camera normal
 float computeCosTheta(float3 rayDir)
 {
-    // TEMPORARY DEBUG: Force cosTheta to 1.0 to test if the issue is in this calculation
-    // Comment out the normal calculation for now
-    /*
+    // 不再使用实际计算的角度，而是返回固定值1.0
+    // 这会使所有的光线计算忽略入射角的影响
+    return 1.0f;
+
+    /* 原始计算代码（已注释）
     // Calculate camera normal (forward direction)
     float3 cameraNormal = normalize(gCameraTarget - gCameraPosition);
 
@@ -235,9 +238,6 @@ float computeCosTheta(float3 rayDir)
 
     return cosTheta;
     */
-
-    // Return 1.0 for all rays to test if CosTheta calculation is the issue
-    return 1.0f;
 }
 
 // Compute dominant wavelength from RGB color if wavelength data is not provided
@@ -379,45 +379,13 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
     // Calculate power using the formula: Power = Radiance * Area * cos(θ)
     // Make sure radiance is non-negative (defensive programming)
     float3 safeRadiance = max(radiance.rgb, 0.0f);
-    originalPower = safeRadiance * pixelArea * cosTheta;
+    float3 power = safeRadiance * pixelArea * cosTheta;
 
     // Store the original calculation result for debug pixels
     if (isDebugPixel) {
-        // Store original calculation before forcing high values
-        gDebugOutput[pixel] = float4(originalPower, wavelength);
+        // Store original calculation
+        gDebugOutput[pixel] = float4(power, wavelength);
     }
-
-    // FORCE HIGH POWER VALUE - Force the physically calculated values to be large
-    // Get normalized color to maintain the original color proportion
-    float3 normalizedColor;
-    float maxComponent = max(max(originalPower.r, originalPower.g), originalPower.b);
-
-    if (maxComponent > 0.0001f)
-    {
-        // Normalize based on original calculation to maintain color ratio
-        normalizedColor = originalPower / maxComponent;
-    }
-    else
-    {
-        // If power is essentially zero, use the original radiance for color
-        maxComponent = max(safeRadiance.r, max(safeRadiance.g, safeRadiance.b));
-        if (maxComponent > 0.0001f)
-        {
-            normalizedColor = safeRadiance / maxComponent;
-        }
-        else
-        {
-            // Default to white if no meaningful color information
-            normalizedColor = float3(1.0f, 1.0f, 1.0f);
-        }
-    }
-
-    // Apply high power value while maintaining color proportions
-    const float forcedPowerValue = 20.0f;
-    float3 power = normalizedColor * forcedPowerValue;
-
-    // Ensure power is never too small
-    power = max(power, float3(5.0f, 5.0f, 5.0f));
 
     // Return power with the wavelength
     return float4(power, wavelength > 0.0f ? wavelength : 550.0f);

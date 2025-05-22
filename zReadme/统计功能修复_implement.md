@@ -1880,3 +1880,101 @@ if (isDebugPixel) {
 3. 是否有任何纹理格式转换导致数据解释错误
 
 通过这种方式，我们不仅解决了当前功率计算不正确的问题，而且增强了代码的健壮性，使其能够处理不符合预期的输入数据。
+
+# 入射光功率计算调节功能实现
+
+## 功能实现
+
+为了解决入射光功率计算中像素面积(PixelArea)过小的问题，我们实现了一个调节系数功能，允许通过UI界面动态调整像素面积的缩放因子。
+
+### 实现的功能
+
+1. 添加了新的缩放系数变量 `gPixelAreaScale`，默认值为 1000.0
+2. 在UI界面中添加了滑块控件，允许用户在运行时调整该值(范围: 1.0 - 10000.0)
+3. 修改了 `computePixelArea` 函数，使用该缩放因子放大计算出的像素面积
+4. 所有修改保持代码风格一致，并提供了适当的注释和工具提示
+
+### 代码修改详情
+
+#### 1. 修改 HLSL Shader 文件
+
+在 `IncomingLightPowerPass.cs.slang` 中添加了缩放变量并修改了像素面积计算:
+
+```57:59:Source/RenderPasses/IncomingLightPowerPass/IncomingLightPowerPass.cs.slang
+    float gBandWavelengths[MAX_BANDS]; ///< Center wavelengths for specific bands
+    float gBandTolerances[MAX_BANDS];  ///< Tolerances for specific wavelength bands
+    float gPixelAreaScale;             ///< Scale factor for pixel area (default: 1000.0)
+```
+
+修改像素面积计算函数:
+
+```163:164:Source/RenderPasses/IncomingLightPowerPass/IncomingLightPowerPass.cs.slang
+    // Return pixel area with scaling factor
+    return pixelWidth * pixelHeight * gPixelAreaScale;
+```
+
+#### 2. 修改 C++ 头文件
+
+在 `IncomingLightPowerPass.h` 中添加成员变量和访问方法:
+
+```123:124:Source/RenderPasses/IncomingLightPowerPass/IncomingLightPowerPass.h
+    float getPixelAreaScale() const { return mPixelAreaScale; }
+    void setPixelAreaScale(float scale) { mPixelAreaScale = scale; mNeedRecompile = true; }
+```
+
+```174:174:Source/RenderPasses/IncomingLightPowerPass/IncomingLightPowerPass.h
+    float mPixelAreaScale = 1000.0f;     ///< Scale factor for pixel area calculation
+```
+
+#### 3. 修改 C++ 实现文件
+
+在 `IncomingLightPowerPass.cpp` 中添加常量字符串:
+
+```24:24:Source/RenderPasses/IncomingLightPowerPass/IncomingLightPowerPass.cpp
+    const std::string kPixelAreaScale = "gPixelAreaScale";  // Scale factor for pixel area
+```
+
+添加类内常量声明:
+
+```41:41:Source/RenderPasses/IncomingLightPowerPass/IncomingLightPowerPass.cpp
+const std::string IncomingLightPowerPass::kPixelAreaScale = "gPixelAreaScale";
+```
+
+在执行函数中设置变量值:
+
+```461:461:Source/RenderPasses/IncomingLightPowerPass/IncomingLightPowerPass.cpp
+    var[kPerFrameCB][kPixelAreaScale] = mPixelAreaScale;
+```
+
+添加UI控件:
+
+```814:819:Source/RenderPasses/IncomingLightPowerPass/IncomingLightPowerPass.cpp
+    // Add pixel area scale control
+    auto pixelAreaGroup = widget.group("Pixel Area Adjustment", true);
+    if (pixelAreaGroup)
+    {
+        changed |= widget.slider("Pixel Area Scale", mPixelAreaScale, 1.0f, 10000.0f);
+        widget.tooltip("Scales the calculated pixel area to make power values more visible.\nDefault: 1000.0");
+    }
+```
+
+## 修复的问题
+
+在此之前，计算得到的像素面积非常小(通常在 10^-6 数量级)，这导致最终计算的功率值也非常小，难以在图像中观察到。通过引入缩放因子，我们可以使功率值放大到合适的范围，使结果更易于可视化和分析。
+
+## 使用方法
+
+1. 在界面中找到 "Pixel Area Adjustment" 折叠面板
+2. 使用滑块调整 "Pixel Area Scale" 值
+3. 较大的值会使功率计算结果更亮，较小的值会使结果更暗
+4. 默认值 1000.0 适用于大多数场景，但可以根据具体需求进行调整
+
+## 实现效果
+
+通过这个调节功能，我们可以:
+
+1. 动态调整像素面积缩放，无需修改代码重新编译
+2. 优化渲染结果的可视性，使弱信号也能清晰显示
+3. 更准确地分析和比较不同波长范围的光功率分布
+
+这个功能使入射光功率的计算和可视化更加灵活，便于用户根据具体需求进行调整，提高了系统的实用性。
