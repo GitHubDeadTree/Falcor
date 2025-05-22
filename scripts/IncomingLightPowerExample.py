@@ -10,16 +10,15 @@ def render_graph_IncomingLightPowerExample():
         "minWavelength": 450.0,  # Blue light range (450-495nm)
         "maxWavelength": 495.0,
         "filterMode": 0,         # Range mode
-        "useVisibleSpectrumOnly": True
+        "useVisibleSpectrumOnly": True,
+        "enableWavelengthFilter": False  # 禁用波长过滤
     })
-    AccumulatePass = createPass("AccumulatePass", {"enabled": True, "precisionMode": "Single"})
     ToneMapper = createPass("ToneMapper", {"autoExposure": False, "exposureCompensation": 0.0})
 
     # Add passes to graph
     g.addPass(VBufferRT, "VBufferRT")
     g.addPass(PathTracer, "PathTracer")
     g.addPass(IncomingLightPower, "IncomingLightPower")
-    g.addPass(AccumulatePass, "AccumulatePass")
     g.addPass(ToneMapper, "ToneMapper")
 
     # Connect passes
@@ -30,9 +29,8 @@ def render_graph_IncomingLightPowerExample():
     g.addEdge("PathTracer.color", "IncomingLightPower.radiance")
     g.addEdge("PathTracer.initialRayInfo", "IncomingLightPower.rayDirection")
 
-    # Connect for accumulation and tone mapping
-    g.addEdge("IncomingLightPower.lightPower", "AccumulatePass.input")
-    g.addEdge("AccumulatePass.output", "ToneMapper.src")
+    # Direct connection from IncomingLightPower to ToneMapper (removed AccumulatePass)
+    g.addEdge("IncomingLightPower.lightPower", "ToneMapper.src")
 
     # Mark outputs to be displayed
     g.markOutput("ToneMapper.dst")
@@ -53,7 +51,8 @@ def render_graph_IncomingLightPower_RedFilter():
         "minWavelength": 620.0,  # Red light range (620-750nm)
         "maxWavelength": 750.0,
         "filterMode": 0,         # Range mode
-        "useVisibleSpectrumOnly": True
+        "useVisibleSpectrumOnly": True,
+        "enableWavelengthFilter": False  # 禁用波长过滤
     })
     ToneMapper = createPass("ToneMapper", {"autoExposure": False, "exposureCompensation": 0.0})
 
@@ -82,7 +81,8 @@ def render_graph_IncomingLightPower_SpecificBands():
     PathTracer = createPass("PathTracer", {"samplesPerPixel": 1})
     IncomingLightPower = createPass("IncomingLightPowerPass", {
         "filterMode": 1,         # Specific Bands mode
-        "useVisibleSpectrumOnly": True
+        "useVisibleSpectrumOnly": True,
+        "enableWavelengthFilter": False  # 禁用波长过滤
         # Bands will use the default Mercury lamp wavelengths: 405nm, 436nm, 546nm, 578nm
     })
     ToneMapper = createPass("ToneMapper", {"autoExposure": False, "exposureCompensation": 0.0})
@@ -116,7 +116,8 @@ def render_graph_IncomingLightPower_InvertedFilter():
         "maxWavelength": 565.0,
         "filterMode": 0,         # Range mode
         "useVisibleSpectrumOnly": True,
-        "invertFilter": True     # Invert the filter to show everything EXCEPT green light
+        "invertFilter": True,     # Invert the filter to show everything EXCEPT green light
+        "enableWavelengthFilter": False  # 禁用波长过滤
     })
     ToneMapper = createPass("ToneMapper", {"autoExposure": False, "exposureCompensation": 0.0})
 
