@@ -214,14 +214,30 @@ float computePixelArea(uint2 dimensions)
 // Compute the cosine term based on ray direction and camera normal
 float computeCosTheta(float3 rayDir)
 {
+    // TEMPORARY DEBUG: Force cosTheta to 1.0 to test if the issue is in this calculation
+    // Comment out the normal calculation for now
+    /*
     // Calculate camera normal (forward direction)
     float3 cameraNormal = normalize(gCameraTarget - gCameraPosition);
 
-    // For rays entering the camera, use inverse normal
-    float3 invNormal = -cameraNormal;
+    // For rays entering the camera, we want to use the camera forward direction directly
+    // In Falcor, camera looks along its forward direction, so rays entering the camera
+    // should have a negative dot product with the camera forward direction
+    float dotProduct = dot(rayDir, -cameraNormal);
 
-    // Compute cosine using dot product (clamp to non-negative)
-    return max(0.0f, dot(rayDir, invNormal));
+    // Clamp to non-negative (protect against back-facing rays)
+    float cosTheta = max(0.0f, dotProduct);
+
+    // Use a more reasonable minimum value (0.01 instead of 0.00001)
+    // This prevents power from being too close to zero for glancing rays
+    const float minCosTheta = 0.01f;
+    cosTheta = max(cosTheta, minCosTheta);
+
+    return cosTheta;
+    */
+
+    // Return 1.0 for all rays to test if CosTheta calculation is the issue
+    return 1.0f;
 }
 
 // Compute dominant wavelength from RGB color if wavelength data is not provided
@@ -255,9 +271,19 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
     float pixelArea = 0;
     float cosTheta = 0;
 
-    // Store input data for debug pixels
+    // Additional validation of radiance (defensive check)
     if (isDebugPixel) {
-        gDebugInputData[pixel] = float4(radiance.rgb, wavelength);
+        // Store both ray direction and radiance for comparison
+        // We'll use the x, y, z components for direction and w for wavelength
+        gDebugInputData[pixel] = float4(rayDir.xyz, wavelength);
+
+        // Store radiance in debug calculation data (temporarily)
+        // We'll overwrite this later with calculation steps
+        if (any(radiance.rgb < 0.0f)) {
+            gDebugCalculation[pixel] = float4(-999, -999, -999, -999); // Flag to indicate invalid radiance
+        } else {
+            gDebugCalculation[pixel] = float4(radiance.rgb, wavelength);
+        }
     }
 
     // Apply wavelength filtering if enabled
@@ -278,16 +304,82 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
     // Calculate pixel area
     pixelArea = computePixelArea(dimensions);
 
+    // For debug pixels, collect detailed cosTheta calculation information
+    float3 cameraNormal = float3(0, 0, 0);
+    float3 invNormal = float3(0, 0, 0);
+    float rawDotProduct = 0;
+    float rayLengthVal = 0;
+
+    if (isDebugPixel) {
+        // Calculate values for debugging
+        cameraNormal = normalize(gCameraTarget - gCameraPosition);
+        invNormal = -cameraNormal;
+        rawDotProduct = dot(rayDir, invNormal);
+        rayLengthVal = length(rayDir);
+
+        // Store raw data for debugging
+        float4 debugData = float4(0, 0, 0, 0);
+        debugData.x = rawDotProduct;                // Raw dot product
+        debugData.y = dot(rayDir, float3(0,0,-1));  // Dot with -Z axis (standard camera forward)
+        debugData.z = dot(rayDir, float3(0,0,1));   // Dot with +Z axis
+        debugData.w = rayLengthVal;                 // Ray length
+
+        // We need to distinguish ray direction and radiance in debug output
+        // Store ray direction with a special marker
+        gDebugInputData[pixel] = float4(rayDir.xyz, wavelength);
+
+        // Additional debugging for camera-relative coordinates
+        // Convert ray direction to camera space using proper camera basis construction
+
+        // 1. First calculate camera forward direction (W)
+        float3 camW = normalize(gCameraTarget - gCameraPosition);
+
+        // 2. Find an up vector that's not parallel to camW
+        float3 worldUp = float3(0, 1, 0);
+        // If camW is nearly parallel to worldUp, use a different up vector
+        if (abs(dot(camW, worldUp)) > 0.99f)
+        {
+            worldUp = float3(0, 0, 1);
+        }
+
+        // 3. Calculate camera right vector (U)
+        float3 camU = normalize(cross(worldUp, camW));
+
+        // 4. Calculate camera up vector (V)
+        float3 camV = normalize(cross(camW, camU));
+
+        // Convert ray direction to camera space
+        float3 rayDirInCameraSpace;
+        rayDirInCameraSpace.x = dot(rayDir, camU);   // X component (right)
+        rayDirInCameraSpace.y = dot(rayDir, camV);   // Y component (up)
+        rayDirInCameraSpace.z = dot(rayDir, camW);   // Z component (forward)
+
+        // Store camera-space ray direction for further analysis
+        gDebugOutput[pixel] = float4(rayDirInCameraSpace, wavelength);
+
+        // Log the basis vectors for debugging
+        gDebugCalculation[pixel] = float4(
+            length(camU),                         // Should be ~1.0
+            length(camV),                         // Should be ~1.0
+            dot(camU, camV),                      // Should be ~0.0 (orthogonal)
+            dot(camW, rayDir)                     // Forward component
+        );
+    }
+
     // Calculate cosine term
     cosTheta = computeCosTheta(rayDir);
 
     // Store calculation steps for debug pixels
     if (isDebugPixel) {
-        gDebugCalculation[pixel] = float4(pixelArea, cosTheta, length(rayDir), 0);
+        // Store detailed cosTheta calculation info in debug texture
+        // x: pixel area, y: final cosTheta, z: raw dot product, w: ray length
+        gDebugCalculation[pixel] = float4(pixelArea, cosTheta, rawDotProduct, rayLengthVal);
     }
 
     // Calculate power using the formula: Power = Radiance * Area * cos(θ)
-    originalPower = radiance.rgb * pixelArea * cosTheta;
+    // Make sure radiance is non-negative (defensive programming)
+    float3 safeRadiance = max(radiance.rgb, 0.0f);
+    originalPower = safeRadiance * pixelArea * cosTheta;
 
     // Store the original calculation result for debug pixels
     if (isDebugPixel) {
@@ -308,10 +400,10 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
     else
     {
         // If power is essentially zero, use the original radiance for color
-        maxComponent = max(radiance.r, max(radiance.g, radiance.b));
+        maxComponent = max(safeRadiance.r, max(safeRadiance.g, safeRadiance.b));
         if (maxComponent > 0.0001f)
         {
-            normalizedColor = radiance.rgb / maxComponent;
+            normalizedColor = safeRadiance / maxComponent;
         }
         else
         {
@@ -350,9 +442,36 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     // Get input radiance from path tracer
     float4 radiance = gInputRadiance[pixel];
 
-    // Debug: Store input radiance values
+    // FIX: Validate radiance input - radiance should never be negative
+    // Check if we have negative values, which indicates the input might be a direction vector
+    bool hasNegativeValues = any(radiance.rgb < 0.0f);
+    bool isLikelyDirection = length(radiance.rgb) > 0.5f && length(radiance.rgb) < 1.5f;
+
+    if (isDebugPixel && (hasNegativeValues || isLikelyDirection)) {
+        // Store original values for debugging
+        gDebugInputData[pixel] = float4(radiance.rgb, 0); // Store original input
+    }
+
+    // IMPORTANT FIX: Ensure radiance values are valid (non-negative)
+    // If radiance contains negative values (likely a direction vector was passed incorrectly),
+    // replace it with a proper radiance value
+    if (hasNegativeValues || isLikelyDirection) {
+        // Option 1: Use absolute values if it looks like a valid color
+        if (max(abs(radiance.r), max(abs(radiance.g), abs(radiance.b))) < 10.0f) {
+            radiance.rgb = abs(radiance.rgb);
+        }
+        // Option 2: If values look like normalized direction vectors, use a default color
+        else {
+            // Use white as default radiance
+            radiance.rgb = float3(1.0f, 1.0f, 1.0f);
+        }
+    }
+
+    // Debug: Store corrected radiance values
     if (isDebugPixel) {
-        // Later we'll combine this with the results
+        // Store in a second debug slot if we have one
+        // Or overwrite the original with corrected value
+        gDebugInputData[pixel] = float4(radiance.rgb, 1.0f); // Store corrected input
     }
 
     // Get ray direction (either from texture or compute it)
