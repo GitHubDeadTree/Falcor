@@ -37,7 +37,7 @@
 #include "Utils/Logger.h"
 #include "Utils/StringUtils.h"
 #include "Utils/UI/SpectrumUI.h"
-
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui.h>
 
 #include <map>
