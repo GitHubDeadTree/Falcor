@@ -534,232 +534,117 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
             const float4* inputValues = reinterpret_cast<const float4*>(inputData.data());
             const float4* calcValues = reinterpret_cast<const float4*>(calcData.data());
 
-            // First, log camera information for debugging CosTheta calculations
-            if (mpScene && mpScene->getCamera())
-            {
-                float3 cameraPos = mpScene->getCamera()->getPosition();
-                float3 cameraTarget = mpScene->getCamera()->getTarget();
-                float3 cameraNormal = normalize(cameraTarget - cameraPos);
-                float3 invNormal = -cameraNormal;
+            // Log debug data for first 4 pixels (2x2 grid)
+            logInfo("DEBUG - SLANG SHADER OUTPUT - Raw Debug Values:");
 
-                logInfo(fmt::format("DEBUG - CAMERA INFO: Position=({0:.6f}, {1:.6f}, {2:.6f})",
-                                   cameraPos.x, cameraPos.y, cameraPos.z));
-                logInfo(fmt::format("DEBUG - CAMERA INFO: Target=({0:.6f}, {1:.6f}, {2:.6f})",
-                                   cameraTarget.x, cameraTarget.y, cameraTarget.z));
-                logInfo(fmt::format("DEBUG - CAMERA INFO: Forward Normal=({0:.6f}, {1:.6f}, {2:.6f}), Length={3:.6f}",
-                                   cameraNormal.x, cameraNormal.y, cameraNormal.z, length(cameraNormal)));
-                logInfo(fmt::format("DEBUG - CAMERA INFO: Inverse Normal=({0:.6f}, {1:.6f}, {2:.6f})",
-                                   invNormal.x, invNormal.y, invNormal.z));
-
-                // Also check camera orientation to verify how the coordinate system is set up
-                float3 cameraUp = mpScene->getCamera()->getUpVector();
-
-                // Check if camera forward is nearly parallel to world up
-                float upDotForward = dot(cameraNormal, float3(0, 1, 0));
-                if (std::abs(upDotForward) > 0.99f)
-                {
-                    logInfo(fmt::format("DEBUG - CAMERA WARNING: Camera forward is nearly parallel to world up (dot={0:.6f})",
-                                    upDotForward));
-                }
-
-                // Construct proper camera basis
-                float3 worldUp = float3(0, 1, 0);
-                if (std::abs(upDotForward) > 0.99f)
-                {
-                    worldUp = float3(0, 0, 1); // Use a different up vector
-                    logInfo("DEBUG - CAMERA INFO: Using alternate world up vector (0,0,1)");
-                }
-
-                float3 cameraRight = normalize(cross(worldUp, cameraNormal));
-                float3 computedUp = normalize(cross(cameraNormal, cameraRight));
-
-                logInfo(fmt::format("DEBUG - CAMERA ORIENTATION: Up=({0:.6f}, {1:.6f}, {2:.6f})",
-                                  computedUp.x, computedUp.y, computedUp.z));
-                logInfo(fmt::format("DEBUG - CAMERA ORIENTATION: Right=({0:.6f}, {1:.6f}, {2:.6f})",
-                                  cameraRight.x, cameraRight.y, cameraRight.z));
-
-                // Check basis orthogonality
-                logInfo(fmt::format("DEBUG - CAMERA BASIS: Right·Up={0:.6f}, Up·Forward={1:.6f}, Forward·Right={2:.6f}",
-                                  dot(cameraRight, computedUp),
-                                  dot(computedUp, cameraNormal),
-                                  dot(cameraNormal, cameraRight)));
-            }
-
-            // Also try to get ray directions from the input texture if available
-            const auto& pInputRayDirection = renderData.getTexture(kInputRayDirection);
-            if (pInputRayDirection)
-            {
-                logInfo("DEBUG - Reading ray directions from input texture");
-                std::vector<uint8_t> rayDirData = pRenderContext->readTextureSubresource(pInputRayDirection.get(), 0);
-
-                if (!rayDirData.empty())
-                {
-                    const float3* rayDirs = reinterpret_cast<const float3*>(rayDirData.data());
-
-                    for (uint32_t y = 0; y < 2; y++)
-                    {
-                        for (uint32_t x = 0; x < 2; x++)
-                        {
-                            uint32_t pixelIndex = y * pInputRayDirection->getWidth() + x;
-
-                            if (pixelIndex < rayDirData.size() / sizeof(float3))
-                            {
-                                const float3& rayDir = rayDirs[pixelIndex];
-                                logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - INPUT RAY DIR: ({2:.8f}, {3:.8f}, {4:.8f})",
-                                                 x, y, rayDir.x, rayDir.y, rayDir.z));
-
-                                // Calculate dot product with camera inverse normal for comparison
-                                if (mpScene && mpScene->getCamera())
-                                {
-                                    float3 cameraPos = mpScene->getCamera()->getPosition();
-                                    float3 cameraTarget = mpScene->getCamera()->getTarget();
-                                    float3 cameraNormal = normalize(cameraTarget - cameraPos);
-                                    float3 invNormal = -cameraNormal;
-
-                                    float dotProduct = dot(rayDir, invNormal);
-                                    logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - DIRECT DOT PRODUCT: {2:.8f}",
-                                                     x, y, dotProduct));
-                                }
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    logInfo("DEBUG - Input ray direction texture not available, will use computed ray directions");
-                }
-            }
-
-            // Output debug info for first 4 pixels
             for (uint32_t y = 0; y < 2; y++)
             {
                 for (uint32_t x = 0; x < 2; x++)
                 {
                     uint32_t pixelIndex = y * pDebugOutput->getWidth() + x;
 
-                    if (pixelIndex < debugData.size() / sizeof(float4))
+                    if (pixelIndex < debugData.size() / sizeof(float4) &&
+                        pixelIndex < inputData.size() / sizeof(float4) &&
+                        pixelIndex < calcData.size() / sizeof(float4))
                     {
-                        const float4& pixelData = debugValues[pixelIndex];
+                        const float4& debugPixelData = debugValues[pixelIndex];
                         const float4& inputPixelData = inputValues[pixelIndex];
                         const float4& calcPixelData = calcValues[pixelIndex];
 
-                        // Extract camera-space ray direction (now stored in debugOutput)
-                        float3 rayDirInCameraSpace = float3(pixelData.x, pixelData.y, pixelData.z);
+                        // First pixel has special values directly from the shader
+                        if (x == 0 && y == 0) {
 
-                        // Check if this pixel was filtered out (special value for filtered rays)
-                        if (pixelData.x == -1 && pixelData.y == -1 && pixelData.z == -1)
-                        {
-                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}]: FILTERED OUT (wavelength = {2:.2f}nm)",
-                                              x, y, pixelData.w));
-                        }
-                        else
-                        {
-                            // Get ray direction from input data (now stored in debugInputData)
-                            float3 rayDir = float3(inputPixelData.x, inputPixelData.y, inputPixelData.z);
-                            float wavelength = inputPixelData.w;
+                            logInfo(fmt::format("DEBUG - Pixel [0,0] - SHADER POWER CALCULATION:"));
+                            // Get camera normal and wavelength from debug output
+                            float3 cameraNormal = float3(debugPixelData.x, debugPixelData.y, debugPixelData.z);
+                            float wavelength = debugPixelData.w;
 
-                            // Log raw ray direction
-                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - RAY DIRECTION: World=({2:.8f}, {3:.8f}, {4:.8f})",
-                                               x, y, rayDir.x, rayDir.y, rayDir.z));
+                            // Get computation details from calculation texture
+                            float dotProduct = calcPixelData.x;
+                            float rawCosTheta = calcPixelData.y;
+                            float finalCosTheta = calcPixelData.z;
+                            float pixelArea = calcPixelData.w;
 
-                            // Log camera-space ray direction
-                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - RAY DIRECTION IN CAMERA SPACE: ({2:.8f}, {3:.8f}, {4:.8f})",
-                                               x, y,
-                                               rayDirInCameraSpace.x, rayDirInCameraSpace.y, rayDirInCameraSpace.z));
+                            // For pixel [0,0], the calculation texture also contains the calculation components
+                            float radiance = calcPixelData.x;
+                            float pixelArea2 = calcPixelData.y;
+                            float cosTheta2 = calcPixelData.z;
+                            float power = calcPixelData.w;
 
-                            // Log radiance data
-                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - INPUT: Radiance=({2:.8f}, {3:.8f}, {4:.8f}), Wavelength={5:.2f}nm",
-                                               x, y,
-                                               inputPixelData.x, inputPixelData.y, inputPixelData.z, wavelength));
+                            // Log original values
+                            logInfo(fmt::format("  - CAMERA NORMAL: ({0:.8f}, {1:.8f}, {2:.8f})",
+                                cameraNormal.x, cameraNormal.y, cameraNormal.z));
+                            logInfo(fmt::format("  - DOT PRODUCT: {0:.8f}", dotProduct));
+                            logInfo(fmt::format("  - RAW COSTHETA: {0:.8f}", rawCosTheta));
+                            logInfo(fmt::format("  - FINAL COSTHETA: {0:.8f}", finalCosTheta));
+                            logInfo(fmt::format("  - PIXEL AREA: {0:.8f}", pixelArea));
+                            logInfo(fmt::format("  - RADIANCE: {0:.8f}", radiance));
+                            logInfo(fmt::format("  - POWER: {0:.8f}", power));
 
-                            // Log calculation steps with enhanced cosTheta details
-                            // calcPixelData: x=pixelArea, y=finalCosTheta, z=rawDotProduct, w=rayLength
-                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - CALCULATION: PixelArea={2:.8f}, CosTheta={3:.8f}, RawDotProduct={4:.8f}, RayLength={5:.8f}",
-                                               x, y,
-                                               calcPixelData.x, calcPixelData.y, calcPixelData.z, calcPixelData.w));
-
-                            // Analysis of CosTheta being zero
-                            if (std::abs(calcPixelData.z) < 0.0001f) {
-                                logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - COSTHETA ANALYSIS: Raw dot product is {2:.8f} which suggests the ray direction and camera inverse normal are perpendicular",
-                                                  x, y, calcPixelData.z));
-
-                                // Additional analysis of camera-space coordinates
-                                if (std::abs(rayDirInCameraSpace.z) < 0.0001f) {
-                                    logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - CAMERA SPACE ANALYSIS: Ray is perpendicular to camera forward direction (z={2:.8f})",
-                                                  x, y, rayDirInCameraSpace.z));
-                                }
-
-                                // Check if ray is aligned with camera plane (X-Y plane in camera space)
-                                float rayAlignmentWithCameraPlane = std::abs(rayDirInCameraSpace.x) + std::abs(rayDirInCameraSpace.y);
-                                if (rayAlignmentWithCameraPlane > 0.9f) {
-                                    logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - CAMERA SPACE ANALYSIS: Ray is primarily in camera X-Y plane, X={2:.8f}, Y={3:.8f}",
-                                                  x, y, rayDirInCameraSpace.x, rayDirInCameraSpace.y));
-                                }
-
-                                // Try to compute ray direction to confirm this
-                                if (mpScene && mpScene->getCamera())
-                                {
-                                    float2 pixelCenter = float2(x, y) + 0.5f;
-                                    float2 ndc = pixelCenter / float2(mFrameDim) * 2.f - 1.f;
-
-                                    const float4x4 invViewProj = mpScene->getCamera()->getInvViewProjMatrix();
-                                    const float3 cameraPos = mpScene->getCamera()->getPosition();
-
-                                    float4 worldPos = mul(invViewProj, float4(ndc.x, -ndc.y, 1.f, 1.f));
-                                    worldPos /= worldPos.w;
-
-                                    float3 computedRayDir = normalize(float3(worldPos.x, worldPos.y, worldPos.z) - cameraPos);
-
-                                    logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - COMPUTED RAY DIR: ({2:.8f}, {3:.8f}, {4:.8f})",
-                                                      x, y, computedRayDir.x, computedRayDir.y, computedRayDir.z));
-
-                                    // Calculate dot product with inverse normal
-                                    float3 cameraTarget = mpScene->getCamera()->getTarget();
-                                    float3 cameraNormal = normalize(cameraTarget - cameraPos);
-                                    float3 invNormal = -cameraNormal;
-
-                                    float dotProduct = dot(computedRayDir, invNormal);
-                                    float cosTheta = std::max(0.0f, dotProduct);
-                                    // Use the same minimum value as in the shader
-                                    const float minCosTheta = 0.01f;
-                                    cosTheta = std::max(cosTheta, minCosTheta);
-
-                                    logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - RECOMPUTED DOT: {2:.8f}, FINAL COS THETA: {3:.8f}",
-                                                      x, y, dotProduct, cosTheta));
-
-                                    // Convert to camera space using proper camera basis
-                                    float3 worldUp = float3(0, 1, 0);
-                                    float upDotForward = dot(cameraNormal, worldUp);
-                                    if (std::abs(upDotForward) > 0.99f)
-                                    {
-                                        worldUp = float3(0, 0, 1); // Use a different up vector
-                                    }
-
-                                    float3 cameraRight = normalize(cross(worldUp, cameraNormal));
-                                    float3 cameraUp = normalize(cross(cameraNormal, cameraRight));
-
-                                    float3 computedRayDirInCameraSpace;
-                                    computedRayDirInCameraSpace.x = dot(computedRayDir, cameraRight);
-                                    computedRayDirInCameraSpace.y = dot(computedRayDir, cameraUp);
-                                    computedRayDirInCameraSpace.z = dot(computedRayDir, cameraNormal);
-
-                                    logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - RAY IN CAMERA SPACE: ({2:.8f}, {3:.8f}, {4:.8f})",
-                                                      x, y,
-                                                      computedRayDirInCameraSpace.x,
-                                                      computedRayDirInCameraSpace.y,
-                                                      computedRayDirInCameraSpace.z));
-                                }
+                            // Check if pixel area values match
+                            if (std::abs(pixelArea - pixelArea2) > 0.00001f) {
+                                logInfo(fmt::format("  - PIXEL AREA MISMATCH: First calc={0:.8f}, Second calc={1:.8f}",
+                                    pixelArea, pixelArea2));
                             }
 
-                            // Log calculation formula
-                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - FORMULA: Power = Radiance * PixelArea * CosTheta",
-                                              x, y));
+                            // Check if cosTheta values match
+                            if (std::abs(finalCosTheta - cosTheta2) > 0.00001f) {
+                                logInfo(fmt::format("  - COSTHETA MISMATCH: First calc={0:.8f}, Second calc={1:.8f}",
+                                    finalCosTheta, cosTheta2));
+                            }
 
-                            // Log calculation result
-                            logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - RESULT: {2:.8f} * {3:.8f} * {4:.8f} = ({5:.8f}, {6:.8f}, {7:.8f})",
-                                              x, y,
-                                              inputPixelData.x, calcPixelData.x, calcPixelData.y,
-                                              pixelData.x, pixelData.y, pixelData.z));
+                            // Check if power calculation is correct
+                            float expectedPower = radiance * pixelArea * finalCosTheta;
+                            float powerDiff = std::abs(expectedPower - power);
+                            logInfo(fmt::format("  - POWER CALCULATION CHECK: {0:.8f} * {1:.8f} * {2:.8f} = {3:.8f} (Expected: {4:.8f}, Diff: {5:.8f})",
+                                radiance, pixelArea, finalCosTheta, power, expectedPower, powerDiff));
+                        }
+
+                        // Special debug data for pixel [1,1] (contains power calculation for pixel [0,0])
+                        if (x == 1 && y == 1) {
+                            // Get power calculation values
+                            float rPower = inputPixelData.x;
+                            float gPower = inputPixelData.y;
+                            float bPower = inputPixelData.z;
+                            float wavelength = inputPixelData.w;
+
+                            logInfo(fmt::format("DEBUG - SPECIAL POWER CALCULATION FOR PIXEL [0,0]:"));
+                            logInfo(fmt::format("  - RGB POWER: ({0:.8f}, {1:.8f}, {2:.8f})",
+                                rPower, gPower, bPower));
+                            logInfo(fmt::format("  - WAVELENGTH: {0:.2f}", wavelength));
+                        }
+
+                        // Log raw debug data from shader
+                        logInfo(fmt::format("DEBUG - Pixel [{0},{1}] - FROM SHADER:", x, y));
+
+                        // Ray direction (from input data texture)
+                        logInfo(fmt::format("  - RAY DIR: ({0:.8f}, {1:.8f}, {2:.8f}), Length={3:.8f}",
+                            inputPixelData.x, inputPixelData.y, inputPixelData.z, inputPixelData.w));
+
+                        // Camera normal (from debug output texture)
+                        logInfo(fmt::format("  - CAMERA NORMAL: ({0:.8f}, {1:.8f}, {2:.8f}), Wavelength={3:.2f}",
+                            debugPixelData.x, debugPixelData.y, debugPixelData.z, debugPixelData.w));
+
+                        // CosTheta calculation (from calculation texture)
+                        logInfo(fmt::format("  - COSTHETA CALC: DotProduct={0:.8f}, RawCosTheta={1:.8f}, FinalCosTheta={2:.8f}, PixelArea={3:.8f}",
+                            calcPixelData.x, calcPixelData.y, calcPixelData.z, calcPixelData.w));
+
+                        // Ensure we also have the power texture
+                        if (pOutputPower)
+                        {
+                            std::vector<uint8_t> powerData = pRenderContext->readTextureSubresource(pOutputPower.get(), 0);
+                            if (!powerData.empty())
+                            {
+                                const float4* powerValues = reinterpret_cast<const float4*>(powerData.data());
+                                if (pixelIndex < powerData.size() / sizeof(float4))
+                                {
+                                    const float4& pixelPower = powerValues[pixelIndex];
+
+                                    // Show the final power calculated from the shader
+                                    logInfo(fmt::format("  - FINAL POWER: ({0:.8f}, {1:.8f}, {2:.8f}), Wavelength={3:.2f}",
+                                        pixelPower.x, pixelPower.y, pixelPower.z, pixelPower.w));
+                                }
+                            }
                         }
                     }
                 }
