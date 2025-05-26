@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <chrono>
 
 namespace
 {
@@ -30,6 +31,14 @@ namespace
     const std::string kFilterMode = "gFilterMode";          // Wavelength filtering mode
     const std::string kBandCount = "gBandCount";            // Number of specific bands to filter
     const std::string kPixelAreaScale = "gPixelAreaScale";  // Scale factor for pixel area
+
+    // Helper function to get current time in microseconds
+    uint64_t getTimeInMicroseconds()
+    {
+        auto now = std::chrono::high_resolution_clock::now();
+        auto duration = now.time_since_epoch();
+        return std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
+    }
 }
 
 // Define constants
@@ -365,9 +374,16 @@ void IncomingLightPowerPass::setScene(RenderContext* pRenderContext, const ref<S
 
 void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
-    // Print debug info - current settings
-    logInfo(fmt::format("IncomingLightPowerPass executing - settings: enabled={0}, wavelength_filter_enabled={1}, filter_mode={2}, min_wavelength={3}, max_wavelength={4}",
-                       mEnabled, mEnableWavelengthFilter, static_cast<int>(mFilterMode), mMinWavelength, mMaxWavelength));
+    // Increment frame counter
+    mFrameCount++;
+    bool shouldLogThisFrame = mDebugMode && (mFrameCount % mDebugLogFrequency == 0);
+
+    // Print debug info - current settings (only in debug mode)
+    if (shouldLogThisFrame)
+    {
+        logInfo(fmt::format("IncomingLightPowerPass executing - Frame: {0}, settings: enabled={1}, wavelength_filter_enabled={2}, filter_mode={3}, min_wavelength={4}, max_wavelength={5}",
+                          mFrameCount, mEnabled, mEnableWavelengthFilter, static_cast<int>(mFilterMode), mMinWavelength, mMaxWavelength));
+    }
 
     // Get input texture
     const auto& pInputRadiance = renderData.getTexture(kInputRadiance);
@@ -404,8 +420,11 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
         float defaultWavelength = 550.0f;
         pRenderContext->clearUAV(pOutputWavelength->getUAV().get(), uint4(0, 0, 0, 0)); // Can't pass float directly
 
-        // Log that we're using forced values
-        logInfo("IncomingLightPowerPass disabled but using forced non-zero values for debugging");
+        // Log that we're using forced values (only in debug mode and at intervals)
+        if (shouldLogThisFrame)
+        {
+            logInfo("IncomingLightPowerPass disabled but using forced non-zero values for debugging");
+        }
         return;
     }
 
@@ -427,6 +446,13 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
 
     // Prepare resources
     prepareResources(pRenderContext, renderData);
+
+    // Track performance if profiling is enabled
+    uint64_t startTime = 0;
+    if (mEnableProfiling)
+    {
+        startTime = getTimeInMicroseconds();
+    }
 
     // Get shader variables
     auto var = mpComputePass->getRootVar();
@@ -498,13 +524,9 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
 
     // Check for sample count texture for multi-sample handling
     const auto& pSampleCount = renderData.getTexture(kInputSampleCount);
-    if (pSampleCount)
+    if (pSampleCount && shouldLogThisFrame)
     {
-        // If multi-sample data is available, we could bind it to the shader
-        // for per-pixel sample count if needed in the future
-        // var["gSampleCount"] = pSampleCount;
-
-        // Log that multi-sample data is detected
+        // Log that multi-sample data is detected (only in debug mode and at intervals)
         logInfo("IncomingLightPowerPass: Multi-sample data detected");
     }
 
@@ -518,8 +540,20 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     // Execute the compute pass
     mpComputePass->execute(pRenderContext, uint3(mFrameDim.x, mFrameDim.y, 1));
 
-    // Read debug information for first 4 pixels
-    if (pDebugOutput && pDebugInputData && pDebugCalculation)
+    // Track performance if profiling is enabled
+    if (mEnableProfiling && startTime > 0)
+    {
+        uint64_t endTime = getTimeInMicroseconds();
+        mLastExecutionTime = (endTime - startTime) / 1000.0f; // Convert to milliseconds
+
+        if (shouldLogThisFrame)
+        {
+            logInfo(fmt::format("Shader execution time: {0:.2f} ms", mLastExecutionTime));
+        }
+    }
+
+    // Read debug information for first 4 pixels (only in debug mode and at specified intervals)
+    if (mDebugMode && shouldLogThisFrame && pDebugOutput && pDebugInputData && pDebugCalculation)
     {
         pRenderContext->submit(true);  // Make sure compute pass is complete
 
@@ -534,7 +568,7 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
             const float4* inputValues = reinterpret_cast<const float4*>(inputData.data());
             const float4* calcValues = reinterpret_cast<const float4*>(calcData.data());
 
-            // Log debug data for first 4 pixels (2x2 grid)
+            // Log debug data for first 4 pixels (2x2 grid) - only at specified intervals
             logInfo("DEBUG - SLANG SHADER OUTPUT - Raw Debug Values:");
 
             for (uint32_t y = 0; y < 2; y++)
@@ -652,45 +686,45 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
         }
     }
 
-    // Add debug code to read the value of the first pixel
-    // Create a buffer to read data back from GPU
-    std::vector<uint8_t> pixelData;
-
-    // Submit previous commands to ensure compute shader has completed
-    pRenderContext->submit(true);
-
-    // Read the first pixel data using the vector version of readTextureSubresource
-    pixelData = pRenderContext->readTextureSubresource(pOutputPower.get(), 0);
-
-    // Ensure reading is completed
-    pRenderContext->submit(true);
-
-    // Get the first pixel value from the buffer
-    float4 firstPixelValue = float4(0.0f);
-    if (pixelData.size() >= sizeof(float4)) {
-        firstPixelValue = *reinterpret_cast<const float4*>(pixelData.data());
-    }
-
-    // Print the first pixel value
-    logInfo(fmt::format("DEBUG - First pixel value: R={0:.6f}, G={1:.6f}, B={2:.6f}, W={3:.2f}",
-                       firstPixelValue.x, firstPixelValue.y, firstPixelValue.z, firstPixelValue.w));
-
-    // Check the value to verify shader execution
-    if (firstPixelValue.x > 49.0f && firstPixelValue.x < 51.0f)
+    // Check if first pixel value verification is needed (only in debug mode and at intervals)
+    if (mDebugMode && shouldLogThisFrame)
     {
-        logInfo("Debug pixel value successfully set to 50! Shader computation is working properly!");
-    }
-    else if (firstPixelValue.x <= 0.001f)
-    {
-        logWarning("Warning: First pixel value is close to zero! There might be an issue!");
-    }
-    else
-    {
-        logInfo(fmt::format("First pixel power value is {0:.2f}, which is in the normal range", firstPixelValue.x));
+        // Create a buffer to read data back from GPU
+        std::vector<uint8_t> pixelData;
+
+        // Submit previous commands to ensure compute shader has completed
+        pRenderContext->submit(true);
+
+        // Read the first pixel data
+        pixelData = pRenderContext->readTextureSubresource(pOutputPower.get(), 0);
+
+        // Get the first pixel value from the buffer
+        float4 firstPixelValue = float4(0.0f);
+        if (pixelData.size() >= sizeof(float4)) {
+            firstPixelValue = *reinterpret_cast<const float4*>(pixelData.data());
+        }
+
+        // Print the first pixel value
+        logInfo(fmt::format("DEBUG - First pixel value: R={0:.6f}, G={1:.6f}, B={2:.6f}, W={3:.2f}",
+                          firstPixelValue.x, firstPixelValue.y, firstPixelValue.z, firstPixelValue.w));
+
+        // Check the value to verify shader execution
+        if (firstPixelValue.x > 49.0f && firstPixelValue.x < 51.0f)
+        {
+            logInfo("Debug pixel value successfully set to 50! Shader computation is working properly!");
+        }
+        else if (firstPixelValue.x <= 0.001f)
+        {
+            logWarning("Warning: First pixel value is close to zero! There might be an issue!");
+        }
+        else
+        {
+            logInfo(fmt::format("First pixel power value is {0:.2f}, which is in the normal range", firstPixelValue.x));
+        }
     }
 
-    // Calculate statistics if enabled
-    if (mEnableStatistics && mNeedStatsUpdate)
+    // Calculate statistics if enabled (but not every frame if debug is off)
+    if (mEnableStatistics && (mNeedStatsUpdate || (mDebugMode && shouldLogThisFrame)))
     {
         calculateStatistics(pRenderContext, renderData);
     }
@@ -700,6 +734,23 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
 {
     bool changed = false;
     changed |= widget.checkbox("Enabled", mEnabled);
+
+    // Add debugging controls
+    auto debugGroup = widget.group("Debug Options", true);
+    if (debugGroup)
+    {
+        widget.checkbox("Debug Mode", mDebugMode);
+        if (mDebugMode)
+        {
+            widget.slider("Log Frequency (frames)", mDebugLogFrequency, 1u, 300u);
+            widget.text(fmt::format("Current frame: {0}", mFrameCount));
+            widget.checkbox("Performance Profiling", mEnableProfiling);
+            if (mEnableProfiling && mLastExecutionTime > 0)
+            {
+                widget.text(fmt::format("Last execution time: {0:.2f} ms", mLastExecutionTime));
+            }
+        }
+    }
 
     // Add pixel area scale control
     auto pixelAreaGroup = widget.group("Pixel Area Adjustment", true);
@@ -1290,6 +1341,13 @@ bool IncomingLightPowerPass::exportStatistics(const std::string& filename, Outpu
 
 void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, const RenderData& renderData)
 {
+    // Get start time for performance measurement
+    uint64_t startTime = 0;
+    bool shouldLogThisFrame = mDebugMode && (mFrameCount % mDebugLogFrequency == 0);
+    if (shouldLogThisFrame) {
+        startTime = getTimeInMicroseconds();
+    }
+
     // Read back the data from GPU
     if (!readbackData(pRenderContext, renderData))
     {
@@ -1297,9 +1355,12 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
         return;
     }
 
-    // Log filter settings for debugging
-    logInfo(fmt::format("Calculating statistics with settings: wavelength_filter_enabled={0}, filter_mode={1}, min={2}, max={3}, invert={4}",
-                       mEnableWavelengthFilter, static_cast<int>(mFilterMode), mMinWavelength, mMaxWavelength, mInvertFilter));
+    // Log filter settings for debugging (only in debug mode and at intervals)
+    if (shouldLogThisFrame)
+    {
+        logInfo(fmt::format("Calculating statistics with settings: wavelength_filter_enabled={0}, filter_mode={1}, min={2}, max={3}, invert={4}",
+                          mEnableWavelengthFilter, static_cast<int>(mFilterMode), mMinWavelength, mMaxWavelength, mInvertFilter));
+    }
 
     // Initialize statistics if needed
     if (!mAccumulatePower || mAccumulatedFrames == 0)
@@ -1348,10 +1409,11 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
             sumG += power.y;
             sumB += power.z;
 
-            if (nonZeroPixels <= 10) // Log first 10 non-zero pixels for debugging
+                        // Log first 10 non-zero pixels for debugging (only in debug mode and at intervals)
+            if (shouldLogThisFrame && nonZeroPixels <= 10)
             {
                 logInfo(fmt::format("NonZero pixel [{0}]: R={1:.8f}, G={2:.8f}, B={3:.8f}, W={4:.2f}",
-                                   i, power.x, power.y, power.z, power.w));
+                               i, power.x, power.y, power.z, power.w));
             }
 
             // Update stats
@@ -1394,7 +1456,7 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
 
         // Check if total power tracking is working correctly (with some tolerance for floating point)
         const float relativeTolerance = 0.01f; // 1% tolerance
-        if (mAccumulatedFrames == 0) // Only check for first frame
+        if (shouldLogThisFrame && mAccumulatedFrames == 0) // Only check for first frame and in debug mode
         {
             if (std::abs(sumR - mPowerStats.totalPower[0]) / std::max(sumR, 1e-5f) > relativeTolerance ||
                 std::abs(sumG - mPowerStats.totalPower[1]) / std::max(sumG, 1e-5f) > relativeTolerance ||
@@ -1434,50 +1496,72 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
         mAccumulatedFrames++;
     }
 
-    // Log detailed statistics summary for debugging
-    float percentage = mPowerReadbackBuffer.size() > 0 ?
-                      100.0f * nonZeroPixels / mPowerReadbackBuffer.size() : 0.0f;
-
-    logInfo(fmt::format("Statistics: Found {0} non-zero power pixels out of {1} ({2:.2f}%)",
-                       nonZeroPixels,
-                       mPowerReadbackBuffer.size(),
-                       percentage));
-
-    logInfo(fmt::format("Total Power (W): R={0:.8f}, G={1:.8f}, B={2:.8f}",
-                      mPowerStats.totalPower[0],
-                      mPowerStats.totalPower[1],
-                      mPowerStats.totalPower[2]));
-
-    logInfo(fmt::format("Peak Power (W): R={0:.8f}, G={1:.8f}, B={2:.8f}",
-                      mPowerStats.peakPower[0],
-                      mPowerStats.peakPower[1],
-                      mPowerStats.peakPower[2]));
-
-    if (nonZeroPixels == 0 && mPowerReadbackBuffer.size() > 0)
+    // Set default values if calculation results are suspicious
+    if (nonZeroPixels > 0 && (mPowerStats.totalPower[0] <= 0 && mPowerStats.totalPower[1] <= 0 && mPowerStats.totalPower[2] <= 0))
     {
-        // Log sample pixels to debug when no non-zero pixels are found
-        logWarning("No non-zero pixels found in the current frame");
-        for (uint32_t i = 0; i < std::min(static_cast<size_t>(5), mPowerReadbackBuffer.size()); i++)
+        logWarning("Power values suspiciously low, using default minimum values");
+        // Set a small non-zero value
+        for (int i = 0; i < 3; i++)
         {
-            const float4& power = mPowerReadbackBuffer[i];
-            logInfo(fmt::format("Sample pixel [{0}]: R={1:.8f}, G={2:.8f}, B={3:.8f}, W={4:.2f}",
-                               i, power.x, power.y, power.z, power.w));
+            if (mPowerStats.totalPower[i] <= 0) mPowerStats.totalPower[i] = 0.001f;
         }
     }
 
-    // Output wavelength distribution summary if available
-    if (!mPowerStats.wavelengthDistribution.empty())
+    // Log detailed statistics summary for debugging (only in debug mode and at intervals)
+    if (shouldLogThisFrame)
     {
-        uint32_t totalBins = mPowerStats.wavelengthDistribution.size();
-        uint32_t countedWavelengths = 0;
+        float percentage = mPowerReadbackBuffer.size() > 0 ?
+                        100.0f * nonZeroPixels / mPowerReadbackBuffer.size() : 0.0f;
 
-        for (const auto& [binIndex, count] : mPowerStats.wavelengthDistribution)
+        logInfo(fmt::format("Statistics: Found {0} non-zero power pixels out of {1} ({2:.2f}%)",
+                        nonZeroPixels,
+                        mPowerReadbackBuffer.size(),
+                        percentage));
+
+        logInfo(fmt::format("Total Power (W): R={0:.8f}, G={1:.8f}, B={2:.8f}",
+                        mPowerStats.totalPower[0],
+                        mPowerStats.totalPower[1],
+                        mPowerStats.totalPower[2]));
+
+        logInfo(fmt::format("Peak Power (W): R={0:.8f}, G={1:.8f}, B={2:.8f}",
+                        mPowerStats.peakPower[0],
+                        mPowerStats.peakPower[1],
+                        mPowerStats.peakPower[2]));
+
+        if (nonZeroPixels == 0 && mPowerReadbackBuffer.size() > 0)
         {
-            countedWavelengths += count;
+            // Log sample pixels to debug when no non-zero pixels are found
+            logWarning("No non-zero pixels found in the current frame");
+            for (uint32_t i = 0; i < std::min(static_cast<size_t>(5), mPowerReadbackBuffer.size()); i++)
+            {
+                const float4& power = mPowerReadbackBuffer[i];
+                logInfo(fmt::format("Sample pixel [{0}]: R={1:.8f}, G={2:.8f}, B={3:.8f}, W={4:.2f}",
+                                i, power.x, power.y, power.z, power.w));
+            }
         }
 
-        logInfo(fmt::format("Wavelength distribution: {0} distinct bands, {1} wavelengths counted",
-                          totalBins, countedWavelengths));
+        // Output wavelength distribution summary if available
+        if (!mPowerStats.wavelengthDistribution.empty())
+        {
+            uint32_t totalBins = mPowerStats.wavelengthDistribution.size();
+            uint32_t countedWavelengths = 0;
+
+            for (const auto& [binIndex, count] : mPowerStats.wavelengthDistribution)
+            {
+                countedWavelengths += count;
+            }
+
+            logInfo(fmt::format("Wavelength distribution: {0} distinct bands, {1} wavelengths counted",
+                            totalBins, countedWavelengths));
+        }
+
+        // Log calculation time
+        if (startTime > 0)
+        {
+            uint64_t endTime = getTimeInMicroseconds();
+            float calculationTime = (endTime - startTime) / 1000.0f; // Convert to milliseconds
+            logInfo(fmt::format("Statistics calculation completed in {0:.2f} ms", calculationTime));
+        }
     }
 
     // Stats are now up to date
@@ -1491,6 +1575,17 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
     if (!pRenderContext)
     {
         return !mPowerReadbackBuffer.empty();
+    }
+
+    // Create a flag to check if we need readback
+    bool needReadback = mDebugMode || mNeedStatsUpdate || mAccumulatePower;
+    bool shouldLogThisFrame = mDebugMode && (mFrameCount % mDebugLogFrequency == 0);
+
+    // If no readback is needed, skip the expensive operation
+    if (!needReadback)
+    {
+        if (shouldLogThisFrame) logInfo("Skipping texture readback as it's not requested");
+        return false;
     }
 
     const auto& pOutputPower = renderData.getTexture(kOutputPower);
@@ -1507,11 +1602,15 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
     uint32_t height = pOutputPower->getHeight();
     uint32_t numPixels = width * height;
 
-    logInfo(fmt::format("readbackData: Texture dimensions: {0}x{1}, total pixels: {2}",
-                       width, height, numPixels));
-    logInfo(fmt::format("Power texture format: {0}, Wavelength texture format: {1}",
-                       to_string(pOutputPower->getFormat()),
-                       to_string(pOutputWavelength->getFormat())));
+    // Only log dimensions in debug mode and at intervals
+    if (shouldLogThisFrame)
+    {
+        logInfo(fmt::format("readbackData: Texture dimensions: {0}x{1}, total pixels: {2}",
+                          width, height, numPixels));
+        logInfo(fmt::format("Power texture format: {0}, Wavelength texture format: {1}",
+                          to_string(pOutputPower->getFormat()),
+                          to_string(pOutputWavelength->getFormat())));
+    }
 
     try
     {
@@ -1529,17 +1628,20 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
             return false;
         }
 
-        // Log data size information for debugging
-        logInfo(fmt::format("readbackData: Power raw data size: {0} bytes, expected: {1} bytes (float4 per pixel)",
-                          powerRawData.size(), numPixels * sizeof(float4)));
-        logInfo(fmt::format("readbackData: Wavelength raw data size: {0} bytes, expected: {1} bytes (float per pixel)",
-                          wavelengthRawData.size(), numPixels * sizeof(float)));
+        // Log data size information for debugging (only in debug mode and at intervals)
+        if (shouldLogThisFrame)
+        {
+            logInfo(fmt::format("readbackData: Power raw data size: {0} bytes, expected: {1} bytes (float4 per pixel)",
+                             powerRawData.size(), numPixels * sizeof(float4)));
+            logInfo(fmt::format("readbackData: Wavelength raw data size: {0} bytes, expected: {1} bytes (float per pixel)",
+                             wavelengthRawData.size(), numPixels * sizeof(float)));
+        }
 
         // Resize the destination buffers
         mPowerReadbackBuffer.resize(numPixels);
         mWavelengthReadbackBuffer.resize(numPixels);
 
-        // NEW IMPLEMENTATION: Properly parse the RGBA32Float format for power data
+        // Properly parse the RGBA32Float format for power data
         if (powerRawData.size() >= numPixels * sizeof(float4))
         {
             // Use proper type casting to interpret the raw bytes as float4 data
@@ -1548,7 +1650,8 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
             {
                 mPowerReadbackBuffer[i] = floatData[i];
             }
-            logInfo("Successfully parsed power data");
+
+            if (shouldLogThisFrame) logInfo("Successfully parsed power data");
         }
         else
         {
@@ -1557,7 +1660,7 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
             return false;
         }
 
-        // NEW IMPLEMENTATION: Properly parse the R32Float format for wavelength data
+        // Properly parse the R32Float format for wavelength data
         if (wavelengthRawData.size() >= numPixels * sizeof(float))
         {
             // Use proper type casting to interpret the raw bytes as float data
@@ -1566,7 +1669,8 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
             {
                 mWavelengthReadbackBuffer[i] = floatData[i];
             }
-            logInfo("Successfully parsed wavelength data");
+
+            if (shouldLogThisFrame) logInfo("Successfully parsed wavelength data");
         }
         else
         {
@@ -1575,12 +1679,15 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
             return false;
         }
 
-        // Validate data by checking a few values (debugging)
-        for (uint32_t i = 0; i < std::min(static_cast<size_t>(5), mPowerReadbackBuffer.size()); i++)
+        // Validate data by checking a few values (only in debug mode and at intervals)
+        if (shouldLogThisFrame)
         {
-            const float4& power = mPowerReadbackBuffer[i];
-            logInfo(fmt::format("readbackData: Sample power[{0}] = ({1:.6f}, {2:.6f}, {3:.6f}, {4:.2f})",
-                              i, power.x, power.y, power.z, power.w));
+            for (uint32_t i = 0; i < std::min(static_cast<size_t>(5), mPowerReadbackBuffer.size()); i++)
+            {
+                const float4& power = mPowerReadbackBuffer[i];
+                logInfo(fmt::format("readbackData: Sample power[{0}] = ({1:.6f}, {2:.6f}, {3:.6f}, {4:.2f})",
+                                  i, power.x, power.y, power.z, power.w));
+            }
         }
 
         return true;
@@ -1588,6 +1695,14 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
     catch (const std::exception& e)
     {
         logError(fmt::format("Error reading texture data: {0}", e.what()));
+
+        // Set default values in case of error, to prevent crashes
+        if (mPowerReadbackBuffer.empty())
+        {
+            mPowerReadbackBuffer.resize(numPixels, float4(0.0f, 0.0f, 0.0f, 550.0f));
+            logWarning("Using default power values due to readback failure");
+        }
+
         return false;
     }
 }
@@ -1611,8 +1726,9 @@ void IncomingLightPowerPass::resetStatistics()
     uint32_t prevAccumulatedFrames = mAccumulatedFrames;
     mAccumulatedFrames = 0;
 
-    // Log reset action
-    if (prevPixelCount > 0 || prevAccumulatedFrames > 0)
+    // Log reset action (only in debug mode and at intervals)
+    bool shouldLogThisFrame = mDebugMode && (mFrameCount % mDebugLogFrequency == 0);
+    if (shouldLogThisFrame && (prevPixelCount > 0 || prevAccumulatedFrames > 0))
     {
         logInfo(fmt::format("Statistics reset: Cleared {0} filtered pixels over {1} frames, {2} wavelength bins",
                           prevPixelCount, prevAccumulatedFrames, prevWavelengthBins));
