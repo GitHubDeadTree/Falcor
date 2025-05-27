@@ -188,7 +188,51 @@ namespace Falcor
 
     float PointLight::getPower() const
     {
-        return luminance(mData.intensity) * 4.f * (float)M_PI;
+        // Check if power was manually set
+        if (mPowerManuallySet)
+        {
+            logInfo("DEBUG: getPower mode = manual");
+            logInfo("DEBUG: Returning manual power = {}", mManualPower);
+            return mManualPower;
+        }
+
+        // Calculate power from current intensity
+        logInfo("DEBUG: getPower mode = calculated");
+        float intensityMagnitude = luminance(mData.intensity);
+        logInfo("DEBUG: Intensity magnitude = {}", intensityMagnitude);
+
+        // Calculate solid angle based on opening angle
+        float solidAngle;
+        if (mData.openingAngle >= (float)M_PI)
+        {
+            // Isotropic point light: Ω = 4π
+            solidAngle = 4.0f * (float)M_PI;
+            logInfo("DEBUG: Opening angle = {}, using isotropic formula", mData.openingAngle);
+        }
+        else
+        {
+            // Spot light: Ω = 2π(1 - cos(θc))
+            solidAngle = 2.0f * (float)M_PI * (1.0f - mData.cosOpeningAngle);
+            logInfo("DEBUG: Opening angle = {}, cos = {}, using spot light formula",
+                   mData.openingAngle, mData.cosOpeningAngle);
+        }
+
+        logInfo("DEBUG: Solid angle = {}", solidAngle);
+
+        // Calculate power: Φ = I * Ω
+        float power;
+        if (solidAngle > 0.0f && std::isfinite(intensityMagnitude))
+        {
+            power = intensityMagnitude * solidAngle;
+        }
+        else
+        {
+            logError("ERROR: Power calculation failed, returning default 1.0W");
+            power = 1.0f;
+        }
+
+        logInfo("DEBUG: Calculated power = {}", power);
+        return power;
     }
 
     void PointLight::renderUI(Gui::Widgets& widget)
@@ -202,18 +246,136 @@ namespace Falcor
         if (widget.var("Opening Angle", openingAngle, 0.f, (float)M_PI)) setOpeningAngle(openingAngle);
         float penumbraAngle = getPenumbraAngle();
         if (widget.var("Penumbra Width", penumbraAngle, 0.f, (float)M_PI)) setPenumbraAngle(penumbraAngle);
+
+        // Power control UI section
+        widget.separator();
+
+        // Display current mode
+        std::string modeText = mPowerManuallySet ? "Power-driven" : "Intensity-driven";
+        widget.text("Control Mode: " + modeText);
+        logInfo("DEBUG: UI displaying mode: {}", modeText);
+
+        // Power input control
+        float currentPower = getPower();
+        logInfo("DEBUG: Power UI widget value = {}", currentPower);
+
+        if (widget.var("Power (Watts)", currentPower, 0.0f, 10000.0f))
+        {
+            // Input validation for UI widget
+            if (currentPower < 0.0f)
+            {
+                logError("ERROR: UI power widget error, showing default");
+                currentPower = 0.0f;
+            }
+            if (!std::isfinite(currentPower))
+            {
+                logError("ERROR: UI power widget error, showing default");
+                currentPower = 1.0f;
+            }
+
+            logInfo("DEBUG: User changed power via UI to {}", currentPower);
+            setPower(currentPower);
+        }
+
+        // Show tooltip with power information
+        widget.tooltip("Total radiant power in watts. When set, light switches to power-driven mode.\n"
+                      "Opening angle changes will preserve power and adjust intensity accordingly.");
     }
 
     void PointLight::setOpeningAngle(float openingAngle)
     {
+        // Input validation and debug logging
+        float oldAngle = mData.openingAngle;
+        logInfo("DEBUG: setOpeningAngle called with angle = {}", openingAngle);
+
+        // Validate and clamp input angle
+        if (!std::isfinite(openingAngle))
+        {
+            logError("PointLight::setOpeningAngle - Invalid opening angle {}, keeping {}", openingAngle, oldAngle);
+            return;
+        }
+
         openingAngle = std::clamp(openingAngle, 0.f, (float)M_PI);
         if (openingAngle == mData.openingAngle) return;
 
+        logInfo("DEBUG: Opening angle changed from {} to {}", oldAngle, openingAngle);
+
+        // Store old angle for power preservation logic
+        float previousAngle = mData.openingAngle;
+
+        // Update angle data
         mData.openingAngle = openingAngle;
         mData.penumbraAngle = std::min(mData.penumbraAngle, openingAngle);
 
         // Prepare an auxiliary cosine of the opening angle to quickly check whether we're within the cone of a spot light.
         mData.cosOpeningAngle = std::cos(openingAngle);
+
+        // If power was manually set, preserve power and recalculate intensity
+        if (mPowerManuallySet)
+        {
+            logInfo("DEBUG: Power is manually set, recalculating intensity for new angle");
+
+            // Calculate new solid angle
+            float newSolidAngle;
+            if (mData.openingAngle >= (float)M_PI)
+            {
+                // Isotropic point light: Ω = 4π
+                newSolidAngle = 4.0f * (float)M_PI;
+                logInfo("DEBUG: New opening angle = {}, using isotropic formula", mData.openingAngle);
+            }
+            else
+            {
+                // Spot light: Ω = 2π(1 - cos(θc))
+                newSolidAngle = 2.0f * (float)M_PI * (1.0f - mData.cosOpeningAngle);
+                logInfo("DEBUG: New opening angle = {}, cos = {}, using spot light formula",
+                       mData.openingAngle, mData.cosOpeningAngle);
+            }
+
+            logInfo("DEBUG: Preserving power = {}, new solid angle = {}", mManualPower, newSolidAngle);
+
+            // Calculate new intensity magnitude: I = Φ / Ω
+            float newIntensityMagnitude;
+            if (newSolidAngle > 0.0f)
+            {
+                newIntensityMagnitude = mManualPower / newSolidAngle;
+            }
+            else
+            {
+                logError("PointLight::setOpeningAngle - Invalid new solid angle, using default intensity 1.0");
+                newIntensityMagnitude = 1.0f;
+            }
+
+            logInfo("DEBUG: Calculated new intensity magnitude = {}", newIntensityMagnitude);
+
+            // Preserve color ratio while adjusting intensity magnitude
+            float3 currentIntensity = mData.intensity;
+            float currentMagnitude = luminance(currentIntensity);
+
+            if (currentMagnitude > 0.0f)
+            {
+                // Preserve color ratio
+                mData.intensity = currentIntensity * (newIntensityMagnitude / currentMagnitude);
+                logInfo("DEBUG: Preserved color ratio, new intensity = ({}, {}, {})",
+                       mData.intensity.x, mData.intensity.y, mData.intensity.z);
+            }
+            else
+            {
+                // Current intensity is zero, set to white light
+                mData.intensity = float3(newIntensityMagnitude);
+                logInfo("DEBUG: Current intensity was zero, setting to white light");
+            }
+
+            // Validate final result
+            if (!all(isfinite(mData.intensity)))
+            {
+                logError("ERROR: Intensity recalculation failed, using default intensity");
+                mData.intensity = float3(1.0f);
+            }
+        }
+        else
+        {
+            logInfo("DEBUG: Intensity-driven mode, no power preservation needed");
+        }
     }
 
     void PointLight::setPenumbraAngle(float angle)
@@ -221,6 +383,111 @@ namespace Falcor
         angle = std::clamp(angle, 0.0f, mData.openingAngle);
         if (mData.penumbraAngle == angle) return;
         mData.penumbraAngle = angle;
+    }
+
+        void PointLight::setPower(float power)
+    {
+        // Input validation and debug logging
+        if (power < 0.0f)
+        {
+            logWarning("PointLight::setPower - Invalid negative power value: {}. Using 0.0.", power);
+            power = 0.0f;
+        }
+        if (!std::isfinite(power))
+        {
+            logError("PointLight::setPower - Non-finite power value detected. Using default 1.0W.");
+            power = 1.0f;
+        }
+
+        logInfo("DEBUG: setPower called with power = {}", power);
+
+        // Store the manual power value and set the flag
+        mManualPower = power;
+        mPowerManuallySet = true;
+
+        // Calculate solid angle based on opening angle
+        float solidAngle;
+        if (mData.openingAngle >= (float)M_PI)
+        {
+            // Isotropic point light: Ω = 4π
+            solidAngle = 4.0f * (float)M_PI;
+            logInfo("DEBUG: Opening angle = {}, using isotropic formula", mData.openingAngle);
+        }
+        else
+        {
+            // Spot light: Ω = 2π(1 - cos(θc))
+            solidAngle = 2.0f * (float)M_PI * (1.0f - mData.cosOpeningAngle);
+            logInfo("DEBUG: Opening angle = {}, cos = {}, using spot light formula",
+                   mData.openingAngle, mData.cosOpeningAngle);
+        }
+
+        logInfo("DEBUG: Solid angle = {}", solidAngle);
+
+        // Calculate intensity magnitude: I = Φ / Ω
+        float intensityMagnitude;
+        if (solidAngle > 0.0f)
+        {
+            intensityMagnitude = power / solidAngle;
+        }
+        else
+        {
+            logError("PointLight::setPower - Invalid solid angle, using default intensity 1.0");
+            intensityMagnitude = 1.0f;
+        }
+
+        logInfo("DEBUG: Calculated intensity magnitude = {}", intensityMagnitude);
+
+        // Preserve color ratio while adjusting intensity magnitude
+        float3 currentIntensity = mData.intensity;
+        float currentMagnitude = luminance(currentIntensity);
+
+        logInfo("DEBUG: Current magnitude = {}, preserving color ratio", currentMagnitude);
+
+        if (currentMagnitude > 0.0f)
+        {
+            // Preserve color ratio
+            mData.intensity = currentIntensity * (intensityMagnitude / currentMagnitude);
+        }
+        else
+        {
+            // Current intensity is zero, set to white light
+            mData.intensity = float3(intensityMagnitude);
+            logInfo("DEBUG: Current intensity was zero, setting to white light");
+        }
+
+        // Validate final result
+        if (!all(isfinite(mData.intensity)))
+        {
+            logError("ERROR: Power calculation failed, using default intensity");
+            mData.intensity = float3(1.0f);
+        }
+    }
+
+    void PointLight::setIntensity(const float3& intensity)
+    {
+        // Input validation and debug logging
+        logInfo("DEBUG: setIntensity called with intensity = ({}, {}, {})", intensity.x, intensity.y, intensity.z);
+
+        // Validate input intensity
+        if (any(intensity < 0.0f))
+        {
+            logWarning("PointLight::setIntensity - Negative intensity components detected. Using absolute values.");
+        }
+        if (!all(isfinite(intensity)))
+        {
+            logError("PointLight::setIntensity - Non-finite intensity values detected. Using default intensity.");
+            Light::setIntensity(float3(1.0f));
+            mPowerManuallySet = false;
+            logInfo("DEBUG: Switching from power-driven to intensity-driven mode");
+            return;
+        }
+
+        // Call parent class method to set the intensity
+        Light::setIntensity(abs(intensity));
+
+        // Switch to intensity-driven mode
+        mPowerManuallySet = false;
+        logInfo("DEBUG: Switching from power-driven to intensity-driven mode");
     }
 
     void PointLight::updateFromAnimation(const float4x4& transform)
@@ -416,6 +683,36 @@ namespace Falcor
         pointLight.def_property("direction", &PointLight::getWorldDirection, &PointLight::setWorldDirection);
         pointLight.def_property("openingAngle", &PointLight::getOpeningAngle, &PointLight::setOpeningAngle);
         pointLight.def_property("penumbraAngle", &PointLight::getPenumbraAngle, &PointLight::setPenumbraAngle);
+
+                // Power attribute bindings
+        logInfo("DEBUG: Registering Python power property binding");
+        try
+        {
+            pointLight.def_property("power",
+                [](const PointLight& light) -> float {
+                    logInfo("DEBUG: Python script accessing power property");
+                    logInfo("DEBUG: Python get power = {}", light.getPower());
+                    return light.getPower();
+                },
+                [](PointLight& light, float power) {
+                    logInfo("DEBUG: Python script accessing power property");
+                    logInfo("DEBUG: Python set power = {}", power);
+                    light.setPower(power);
+                });
+
+            // Power mode status binding (read-only)
+            pointLight.def_property_readonly("isPowerManuallySet",
+                [](const PointLight& light) -> bool {
+                    logInfo("DEBUG: Python script accessing isPowerManuallySet property");
+                    bool result = light.isPowerManuallySet();
+                    logInfo("DEBUG: Python isPowerManuallySet = {}", result);
+                    return result;
+                });
+        }
+        catch (const std::exception& e)
+        {
+            logError("ERROR: Python binding registration failed for power property: {}", e.what());
+        }
 
         pybind11::class_<DirectionalLight, Light, ref<DirectionalLight>> directionalLight(m, "DirectionalLight");
         directionalLight.def(pybind11::init(&DirectionalLight::create), "name"_a = "");

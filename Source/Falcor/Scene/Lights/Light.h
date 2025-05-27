@@ -195,7 +195,28 @@ namespace Falcor
         */
         float getOpeningAngle() const { return mData.openingAngle; }
 
+        /** Set the light's power (radiant flux).
+            When power is set, intensity will be calculated based on the opening angle.
+            \param[in] power Total radiant power in watts.
+        */
+        void setPower(float power);
+
+        /** Check if power was manually set.
+            \return True if power was set manually, false if calculated from intensity.
+        */
+        bool isPowerManuallySet() const { return mPowerManuallySet; }
+
+        /** Set the light intensity.
+            When intensity is set manually, power calculation mode is switched to intensity-driven.
+            \param[in] intensity RGB intensity values.
+        */
+        void setIntensity(const float3& intensity) override;
+
         void updateFromAnimation(const float4x4& transform) override;
+
+    private:
+        bool mPowerManuallySet = false;  ///< Flag to track if power was manually set
+        float mManualPower = 0.0f;       ///< Manually set power value
     };
 
 
