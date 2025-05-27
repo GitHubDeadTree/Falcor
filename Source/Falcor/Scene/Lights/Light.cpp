@@ -36,6 +36,12 @@ namespace Falcor
 {
     static_assert(sizeof(LightData) % 16 == 0, "LightData size should be a multiple of 16B");
 
+    // PointLight static members
+    bool PointLight::sDebugUIEnabled = false;
+
+    // Debug logging macro for PointLight
+    #define POINTLIGHT_LOG_DEBUG(...) do { if (PointLight::sDebugUIEnabled) { logInfo(__VA_ARGS__); } } while(0)
+
     // Light
 
     void Light::setActive(bool active)
@@ -191,15 +197,15 @@ namespace Falcor
         // Check if power was manually set
         if (mPowerManuallySet)
         {
-            logInfo("DEBUG: getPower mode = manual");
-            logInfo("DEBUG: Returning manual power = {}", mManualPower);
+            POINTLIGHT_LOG_DEBUG("DEBUG: getPower mode = manual");
+            POINTLIGHT_LOG_DEBUG("DEBUG: Returning manual power = {}", mManualPower);
             return mManualPower;
         }
 
         // Calculate power from current intensity
-        logInfo("DEBUG: getPower mode = calculated");
+        POINTLIGHT_LOG_DEBUG("DEBUG: getPower mode = calculated");
         float intensityMagnitude = luminance(mData.intensity);
-        logInfo("DEBUG: Intensity magnitude = {}", intensityMagnitude);
+        POINTLIGHT_LOG_DEBUG("DEBUG: Intensity magnitude = {}", intensityMagnitude);
 
         // Calculate solid angle based on opening angle
         float solidAngle;
@@ -207,17 +213,17 @@ namespace Falcor
         {
             // Isotropic point light: Ω = 4π
             solidAngle = 4.0f * (float)M_PI;
-            logInfo("DEBUG: Opening angle = {}, using isotropic formula", mData.openingAngle);
+            POINTLIGHT_LOG_DEBUG("DEBUG: Opening angle = {}, using isotropic formula", mData.openingAngle);
         }
         else
         {
             // Spot light: Ω = 2π(1 - cos(θc))
             solidAngle = 2.0f * (float)M_PI * (1.0f - mData.cosOpeningAngle);
-            logInfo("DEBUG: Opening angle = {}, cos = {}, using spot light formula",
+            POINTLIGHT_LOG_DEBUG("DEBUG: Opening angle = {}, cos = {}, using spot light formula",
                    mData.openingAngle, mData.cosOpeningAngle);
         }
 
-        logInfo("DEBUG: Solid angle = {}", solidAngle);
+        POINTLIGHT_LOG_DEBUG("DEBUG: Solid angle = {}", solidAngle);
 
         // Calculate power: Φ = I * Ω
         float power;
@@ -231,7 +237,7 @@ namespace Falcor
             power = 1.0f;
         }
 
-        logInfo("DEBUG: Calculated power = {}", power);
+        POINTLIGHT_LOG_DEBUG("DEBUG: Calculated power = {}", power);
         return power;
     }
 
@@ -250,14 +256,18 @@ namespace Falcor
         // Power control UI section
         widget.separator();
 
+        // Debug UI toggle control
+        widget.separator();
+        widget.checkbox("Enable Debug Output", sDebugUIEnabled);
+
         // Display current mode
         std::string modeText = mPowerManuallySet ? "Power-driven" : "Intensity-driven";
         widget.text("Control Mode: " + modeText);
-        logInfo("DEBUG: UI displaying mode: {}", modeText);
+        POINTLIGHT_LOG_DEBUG("DEBUG: UI displaying mode: {}", modeText);
 
         // Power input control
         float currentPower = getPower();
-        logInfo("DEBUG: Power UI widget value = {}", currentPower);
+        POINTLIGHT_LOG_DEBUG("DEBUG: Power UI widget value = {}", currentPower);
 
         if (widget.var("Power (Watts)", currentPower, 0.0f, 10000.0f))
         {
@@ -273,7 +283,7 @@ namespace Falcor
                 currentPower = 1.0f;
             }
 
-            logInfo("DEBUG: User changed power via UI to {}", currentPower);
+            POINTLIGHT_LOG_DEBUG("DEBUG: User changed power via UI to {}", currentPower);
             setPower(currentPower);
         }
 
@@ -286,7 +296,7 @@ namespace Falcor
     {
         // Input validation and debug logging
         float oldAngle = mData.openingAngle;
-        logInfo("DEBUG: setOpeningAngle called with angle = {}", openingAngle);
+        POINTLIGHT_LOG_DEBUG("DEBUG: setOpeningAngle called with angle = {}", openingAngle);
 
         // Validate and clamp input angle
         if (!std::isfinite(openingAngle))
@@ -298,7 +308,7 @@ namespace Falcor
         openingAngle = std::clamp(openingAngle, 0.f, (float)M_PI);
         if (openingAngle == mData.openingAngle) return;
 
-        logInfo("DEBUG: Opening angle changed from {} to {}", oldAngle, openingAngle);
+        POINTLIGHT_LOG_DEBUG("DEBUG: Opening angle changed from {} to {}", oldAngle, openingAngle);
 
         // Store old angle for power preservation logic
         float previousAngle = mData.openingAngle;
@@ -313,7 +323,7 @@ namespace Falcor
         // If power was manually set, preserve power and recalculate intensity
         if (mPowerManuallySet)
         {
-            logInfo("DEBUG: Power is manually set, recalculating intensity for new angle");
+            POINTLIGHT_LOG_DEBUG("DEBUG: Power is manually set, recalculating intensity for new angle");
 
             // Calculate new solid angle
             float newSolidAngle;
@@ -321,17 +331,17 @@ namespace Falcor
             {
                 // Isotropic point light: Ω = 4π
                 newSolidAngle = 4.0f * (float)M_PI;
-                logInfo("DEBUG: New opening angle = {}, using isotropic formula", mData.openingAngle);
+                POINTLIGHT_LOG_DEBUG("DEBUG: New opening angle = {}, using isotropic formula", mData.openingAngle);
             }
             else
             {
                 // Spot light: Ω = 2π(1 - cos(θc))
                 newSolidAngle = 2.0f * (float)M_PI * (1.0f - mData.cosOpeningAngle);
-                logInfo("DEBUG: New opening angle = {}, cos = {}, using spot light formula",
+                POINTLIGHT_LOG_DEBUG("DEBUG: New opening angle = {}, cos = {}, using spot light formula",
                        mData.openingAngle, mData.cosOpeningAngle);
             }
 
-            logInfo("DEBUG: Preserving power = {}, new solid angle = {}", mManualPower, newSolidAngle);
+            POINTLIGHT_LOG_DEBUG("DEBUG: Preserving power = {}, new solid angle = {}", mManualPower, newSolidAngle);
 
             // Calculate new intensity magnitude: I = Φ / Ω
             float newIntensityMagnitude;
@@ -345,7 +355,7 @@ namespace Falcor
                 newIntensityMagnitude = 1.0f;
             }
 
-            logInfo("DEBUG: Calculated new intensity magnitude = {}", newIntensityMagnitude);
+            POINTLIGHT_LOG_DEBUG("DEBUG: Calculated new intensity magnitude = {}", newIntensityMagnitude);
 
             // Preserve color ratio while adjusting intensity magnitude
             float3 currentIntensity = mData.intensity;
@@ -355,14 +365,14 @@ namespace Falcor
             {
                 // Preserve color ratio
                 mData.intensity = currentIntensity * (newIntensityMagnitude / currentMagnitude);
-                logInfo("DEBUG: Preserved color ratio, new intensity = ({}, {}, {})",
+                POINTLIGHT_LOG_DEBUG("DEBUG: Preserved color ratio, new intensity = ({}, {}, {})",
                        mData.intensity.x, mData.intensity.y, mData.intensity.z);
             }
             else
             {
                 // Current intensity is zero, set to white light
                 mData.intensity = float3(newIntensityMagnitude);
-                logInfo("DEBUG: Current intensity was zero, setting to white light");
+                POINTLIGHT_LOG_DEBUG("DEBUG: Current intensity was zero, setting to white light");
             }
 
             // Validate final result
@@ -374,7 +384,7 @@ namespace Falcor
         }
         else
         {
-            logInfo("DEBUG: Intensity-driven mode, no power preservation needed");
+            POINTLIGHT_LOG_DEBUG("DEBUG: Intensity-driven mode, no power preservation needed");
         }
     }
 
@@ -399,7 +409,7 @@ namespace Falcor
             power = 1.0f;
         }
 
-        logInfo("DEBUG: setPower called with power = {}", power);
+        POINTLIGHT_LOG_DEBUG("DEBUG: setPower called with power = {}", power);
 
         // Store the manual power value and set the flag
         mManualPower = power;
@@ -411,17 +421,17 @@ namespace Falcor
         {
             // Isotropic point light: Ω = 4π
             solidAngle = 4.0f * (float)M_PI;
-            logInfo("DEBUG: Opening angle = {}, using isotropic formula", mData.openingAngle);
+            POINTLIGHT_LOG_DEBUG("DEBUG: Opening angle = {}, using isotropic formula", mData.openingAngle);
         }
         else
         {
             // Spot light: Ω = 2π(1 - cos(θc))
             solidAngle = 2.0f * (float)M_PI * (1.0f - mData.cosOpeningAngle);
-            logInfo("DEBUG: Opening angle = {}, cos = {}, using spot light formula",
+            POINTLIGHT_LOG_DEBUG("DEBUG: Opening angle = {}, cos = {}, using spot light formula",
                    mData.openingAngle, mData.cosOpeningAngle);
         }
 
-        logInfo("DEBUG: Solid angle = {}", solidAngle);
+        POINTLIGHT_LOG_DEBUG("DEBUG: Solid angle = {}", solidAngle);
 
         // Calculate intensity magnitude: I = Φ / Ω
         float intensityMagnitude;
@@ -435,13 +445,13 @@ namespace Falcor
             intensityMagnitude = 1.0f;
         }
 
-        logInfo("DEBUG: Calculated intensity magnitude = {}", intensityMagnitude);
+        POINTLIGHT_LOG_DEBUG("DEBUG: Calculated intensity magnitude = {}", intensityMagnitude);
 
         // Preserve color ratio while adjusting intensity magnitude
         float3 currentIntensity = mData.intensity;
         float currentMagnitude = luminance(currentIntensity);
 
-        logInfo("DEBUG: Current magnitude = {}, preserving color ratio", currentMagnitude);
+        POINTLIGHT_LOG_DEBUG("DEBUG: Current magnitude = {}, preserving color ratio", currentMagnitude);
 
         if (currentMagnitude > 0.0f)
         {
@@ -452,7 +462,7 @@ namespace Falcor
         {
             // Current intensity is zero, set to white light
             mData.intensity = float3(intensityMagnitude);
-            logInfo("DEBUG: Current intensity was zero, setting to white light");
+            POINTLIGHT_LOG_DEBUG("DEBUG: Current intensity was zero, setting to white light");
         }
 
         // Validate final result
@@ -466,7 +476,7 @@ namespace Falcor
     void PointLight::setIntensity(const float3& intensity)
     {
         // Input validation and debug logging
-        logInfo("DEBUG: setIntensity called with intensity = ({}, {}, {})", intensity.x, intensity.y, intensity.z);
+        POINTLIGHT_LOG_DEBUG("DEBUG: setIntensity called with intensity = ({}, {}, {})", intensity.x, intensity.y, intensity.z);
 
         // Validate input intensity
         if (any(intensity < 0.0f))
@@ -478,7 +488,7 @@ namespace Falcor
             logError("PointLight::setIntensity - Non-finite intensity values detected. Using default intensity.");
             Light::setIntensity(float3(1.0f));
             mPowerManuallySet = false;
-            logInfo("DEBUG: Switching from power-driven to intensity-driven mode");
+            POINTLIGHT_LOG_DEBUG("DEBUG: Switching from power-driven to intensity-driven mode");
             return;
         }
 
@@ -487,7 +497,7 @@ namespace Falcor
 
         // Switch to intensity-driven mode
         mPowerManuallySet = false;
-        logInfo("DEBUG: Switching from power-driven to intensity-driven mode");
+        POINTLIGHT_LOG_DEBUG("DEBUG: Switching from power-driven to intensity-driven mode");
     }
 
     void PointLight::updateFromAnimation(const float4x4& transform)
@@ -685,27 +695,27 @@ namespace Falcor
         pointLight.def_property("penumbraAngle", &PointLight::getPenumbraAngle, &PointLight::setPenumbraAngle);
 
                 // Power attribute bindings
-        logInfo("DEBUG: Registering Python power property binding");
+        POINTLIGHT_LOG_DEBUG("DEBUG: Registering Python power property binding");
         try
         {
             pointLight.def_property("power",
                 [](const PointLight& light) -> float {
-                    logInfo("DEBUG: Python script accessing power property");
-                    logInfo("DEBUG: Python get power = {}", light.getPower());
+                    POINTLIGHT_LOG_DEBUG("DEBUG: Python script accessing power property");
+                    POINTLIGHT_LOG_DEBUG("DEBUG: Python get power = {}", light.getPower());
                     return light.getPower();
                 },
                 [](PointLight& light, float power) {
-                    logInfo("DEBUG: Python script accessing power property");
-                    logInfo("DEBUG: Python set power = {}", power);
+                    POINTLIGHT_LOG_DEBUG("DEBUG: Python script accessing power property");
+                    POINTLIGHT_LOG_DEBUG("DEBUG: Python set power = {}", power);
                     light.setPower(power);
                 });
 
             // Power mode status binding (read-only)
             pointLight.def_property_readonly("isPowerManuallySet",
                 [](const PointLight& light) -> bool {
-                    logInfo("DEBUG: Python script accessing isPowerManuallySet property");
+                    POINTLIGHT_LOG_DEBUG("DEBUG: Python script accessing isPowerManuallySet property");
                     bool result = light.isPowerManuallySet();
-                    logInfo("DEBUG: Python isPowerManuallySet = {}", result);
+                    POINTLIGHT_LOG_DEBUG("DEBUG: Python isPowerManuallySet = {}", result);
                     return result;
                 });
         }

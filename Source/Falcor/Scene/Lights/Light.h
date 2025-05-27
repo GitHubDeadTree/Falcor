@@ -214,6 +214,9 @@ namespace Falcor
 
         void updateFromAnimation(const float4x4& transform) override;
 
+    public:
+        static bool sDebugUIEnabled;     ///< Global flag to control debug output (default false)
+
     private:
         bool mPowerManuallySet = false;  ///< Flag to track if power was manually set
         float mManualPower = 0.0f;       ///< Manually set power value
