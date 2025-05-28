@@ -2037,6 +2037,8 @@ namespace Falcor
                 }
             }
 
+            if (widget.button("Load Viewpoints", true)) loadViewpoints();
+
             Gui::DropdownList viewpoints;
             viewpoints.push_back({ 0, "Default Viewpoint" });
             for (uint32_t viewId = 1; viewId < (uint32_t)mViewpoints.size(); viewId++)
@@ -2418,6 +2420,121 @@ namespace Falcor
         camera->setTarget(viewpoint.target);
         camera->setUpVector(viewpoint.up);
         mCurrentViewpoint = index;
+    }
+
+    bool Scene::parseFloat3FromString(const std::string& str, const std::string& prefix, float3& result)
+    {
+        try
+        {
+            // Find the prefix pattern like "position = float3("
+            std::string pattern = prefix + " = float3(";
+            size_t startPos = str.find(pattern);
+            if (startPos == std::string::npos)
+            {
+                return false;
+            }
+
+            startPos += pattern.length();
+            size_t endPos = str.find(')', startPos);
+            if (endPos == std::string::npos)
+            {
+                return false;
+            }
+
+            // Extract the content between parentheses
+            std::string values = str.substr(startPos, endPos - startPos);
+
+            // Parse three float values separated by commas
+            std::vector<std::string> tokens;
+            std::stringstream ss(values);
+            std::string token;
+            while (std::getline(ss, token, ','))
+            {
+                // Remove leading and trailing whitespace
+                token.erase(0, token.find_first_not_of(" \t"));
+                token.erase(token.find_last_not_of(" \t") + 1);
+                tokens.push_back(token);
+            }
+
+            if (tokens.size() != 3)
+            {
+                return false;
+            }
+
+            // Convert to floats
+            result.x = std::stof(tokens[0]);
+            result.y = std::stof(tokens[1]);
+            result.z = std::stof(tokens[2]);
+
+            return true;
+        }
+        catch (const std::exception&)
+        {
+            result = float3(0.0f, 0.0f, 0.0f);
+            return false;
+        }
+    }
+
+    bool Scene::parseViewpointLine(const std::string& line, float& timePoint, float3& position, float3& target, float3& up)
+    {
+        try
+        {
+            // Find the comma that separates timePoint from Transform
+            size_t commaPos = line.find(',');
+            if (commaPos == std::string::npos)
+            {
+                logWarning("Invalid viewpoint line format: missing comma separator.");
+                return false;
+            }
+
+            // Parse timePoint
+            std::string timeStr = line.substr(0, commaPos);
+            timeStr.erase(0, timeStr.find_first_not_of(" \t"));
+            timeStr.erase(timeStr.find_last_not_of(" \t") + 1);
+            timePoint = std::stof(timeStr);
+
+            // Extract Transform part
+            std::string transformPart = line.substr(commaPos + 1);
+
+            // Check if it starts with "Transform("
+            std::string transformPrefix = "Transform(";
+            size_t transformStart = transformPart.find(transformPrefix);
+            if (transformStart == std::string::npos)
+            {
+                logWarning("Invalid viewpoint line format: missing Transform declaration.");
+                return false;
+            }
+
+            // Parse position, target, and up vectors
+            if (!parseFloat3FromString(transformPart, "position", position))
+            {
+                logWarning("Failed to parse position vector from viewpoint line.");
+                return false;
+            }
+
+            if (!parseFloat3FromString(transformPart, "target", target))
+            {
+                logWarning("Failed to parse target vector from viewpoint line.");
+                return false;
+            }
+
+            if (!parseFloat3FromString(transformPart, "up", up))
+            {
+                logWarning("Failed to parse up vector from viewpoint line.");
+                return false;
+            }
+
+            return true;
+        }
+        catch (const std::exception& e)
+        {
+            logWarning("Exception occurred while parsing viewpoint line: {}.", e.what());
+            timePoint = 0.0f;
+            position = float3(0.0f, 0.0f, 0.0f);
+            target = float3(0.0f, 0.0f, 0.0f);
+            up = float3(0.0f, 1.0f, 0.0f);
+            return false;
+        }
     }
 
     uint32_t Scene::getGeometryCount() const
@@ -4375,5 +4492,86 @@ namespace Falcor
         scene.def("get_mesh", &Scene::getMesh, "mesh_id"_a);
         scene.def("get_mesh_vertices_and_indices", getMeshVerticesAndIndicesPython, "mesh_id"_a, "buffers"_a);
         scene.def("set_mesh_vertices", setMeshVerticesPython, "mesh_id"_a, "buffers"_a);
+    }
+
+    void Scene::loadViewpoints()
+    {
+        // Open file dialog to select viewpoints file
+        std::filesystem::path path;
+        if (!openFileDialog({}, path))
+        {
+            return; // User cancelled file selection
+        }
+
+        // Try to open the file
+        std::ifstream file(path);
+        if (!file.is_open())
+        {
+            logError("Failed to open viewpoints file: '{}'.", path.string());
+            return;
+        }
+
+        // Store original viewpoints count for validation
+        size_t originalViewpointsCount = mViewpoints.size();
+
+        // Clear existing viewpoints except the default one (index 0)
+        if (mViewpoints.size() > 1)
+        {
+            mViewpoints.erase(mViewpoints.begin() + 1, mViewpoints.end());
+            mCurrentViewpoint = 0; // Reset to default viewpoint
+        }
+
+        // Read and parse file line by line
+        std::string line;
+        uint32_t lineNumber = 0;
+        uint32_t successfullyParsed = 0;
+
+        while (std::getline(file, line))
+        {
+            lineNumber++;
+
+            // Skip empty lines and lines that start with whitespace only
+            if (line.empty() || line.find_first_not_of(" \t\r\n") == std::string::npos)
+            {
+                continue;
+            }
+
+            // Parse viewpoint data from line
+            float timePoint;
+            float3 position, target, up;
+
+            if (parseViewpointLine(line, timePoint, position, target, up))
+            {
+                // Add successfully parsed viewpoint to scene
+                addViewpoint(position, target, up, mSelectedCamera);
+                successfullyParsed++;
+            }
+            else
+            {
+                logWarning("Failed to parse viewpoint at line {}: '{}'.", lineNumber, line);
+            }
+        }
+
+        file.close();
+
+        // Log results
+        if (successfullyParsed > 0)
+        {
+            logInfo("Successfully loaded {} viewpoints from file: '{}'.", successfullyParsed, path.string());
+
+            // Select the first loaded viewpoint if any were loaded
+            if (mViewpoints.size() > 1)
+            {
+                selectViewpoint(1); // Select first loaded viewpoint (index 1, since 0 is default)
+            }
+        }
+        else
+        {
+            logWarning("No valid viewpoints found in file: '{}'.", path.string());
+
+            // Restore original viewpoints if nothing was loaded successfully
+            // This is handled automatically since we only cleared after opening the file
+            // and we only added successfully parsed viewpoints
+        }
     }
 }

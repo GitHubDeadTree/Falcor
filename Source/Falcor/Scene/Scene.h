@@ -1225,6 +1225,14 @@ namespace Falcor
         void bindSelectedCamera();
         void bindParameterBlock();
 
+        /** Parse float3 values from viewpoint file format strings.
+        */
+        bool parseFloat3FromString(const std::string& str, const std::string& prefix, float3& result);
+
+        /** Parse a complete viewpoint line from file.
+        */
+        bool parseViewpointLine(const std::string& line, float& timePoint, float3& position, float3& target, float3& up);
+
         Scene(ref<Device> pDevice, SceneData&& sceneData);
 
         ref<Device> mpDevice; ///< GPU device the scene resides on.
