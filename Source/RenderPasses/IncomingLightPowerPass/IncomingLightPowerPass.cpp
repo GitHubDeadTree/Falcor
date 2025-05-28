@@ -288,6 +288,7 @@ IncomingLightPowerPass::IncomingLightPowerPass(ref<Device> pDevice, const Proper
         else if (key == "useVisibleSpectrumOnly") mUseVisibleSpectrumOnly = value;
         else if (key == "invertFilter") mInvertFilter = value;
         else if (key == "enableWavelengthFilter") mEnableWavelengthFilter = value;
+        else if (key == "statisticsFrequency") mStatisticsFrequency = value;
         else if (key == "outputPowerTexName") mOutputPowerTexName = value.operator std::string();
         else if (key == "outputWavelengthTexName") mOutputWavelengthTexName = value.operator std::string();
         else logWarning("Unknown property '{}' in IncomingLightPowerPass properties.", key);
@@ -311,6 +312,7 @@ Properties IncomingLightPowerPass::getProperties() const
     props["useVisibleSpectrumOnly"] = mUseVisibleSpectrumOnly;
     props["invertFilter"] = mInvertFilter;
     props["enableWavelengthFilter"] = mEnableWavelengthFilter;
+    props["statisticsFrequency"] = mStatisticsFrequency;
     props["outputPowerTexName"] = mOutputPowerTexName;
     props["outputWavelengthTexName"] = mOutputWavelengthTexName;
     return props;
@@ -723,8 +725,8 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
         }
     }
 
-    // Calculate statistics if enabled (but not every frame if debug is off)
-    if (mEnableStatistics && (mNeedStatsUpdate || (mDebugMode && shouldLogThisFrame)))
+    // Calculate statistics if enabled - frequency controlled execution
+    if (mEnableStatistics && (mFrameCount % mStatisticsFrequency == 0))
     {
         calculateStatistics(pRenderContext, renderData);
     }
@@ -929,6 +931,10 @@ void IncomingLightPowerPass::renderStatisticsUI(Gui::Widgets& widget)
 
         if (mEnableStatistics)
         {
+            // Statistics frequency control
+            statsChanged |= widget.slider("Statistics Frequency (frames)", mStatisticsFrequency, 1u, 60u);
+            widget.tooltip("How often to calculate statistics. 1 = every frame, 60 = every 60 frames.\nHigher values improve performance but reduce update frequency.");
+
             // Display basic statistics
             if (mPowerStats.totalPixels > 0)
             {
@@ -1578,7 +1584,8 @@ bool IncomingLightPowerPass::readbackData(RenderContext* pRenderContext, const R
     }
 
     // Create a flag to check if we need readback
-    bool needReadback = mDebugMode || mNeedStatsUpdate || mAccumulatePower;
+    bool needReadback = mDebugMode || mNeedStatsUpdate || mAccumulatePower ||
+                       (mEnableStatistics && (mFrameCount % mStatisticsFrequency == 0));
     bool shouldLogThisFrame = mDebugMode && (mFrameCount % mDebugLogFrequency == 0);
 
     // If no readback is needed, skip the expensive operation

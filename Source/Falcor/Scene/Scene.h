@@ -565,6 +565,10 @@ namespace Falcor
         */
         void selectViewpoint(uint32_t index);
 
+        /** Load viewpoints from a file.
+        */
+        void loadViewpoints();
+
         /** Returns true if there are saved viewpoints (used for dumping to config).
         */
         bool hasSavedViewpoints() { return mViewpoints.size() > 1; }
