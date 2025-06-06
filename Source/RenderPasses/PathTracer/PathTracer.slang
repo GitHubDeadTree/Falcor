@@ -46,6 +46,7 @@ import ColorType;
 import NRDHelpers;
 __exported import PathState;
 __exported import Params;
+__exported import CIRPathData;
 import Rendering.RTXDI.RTXDI;
 
 /** Interface for querying visibility in the scene.
@@ -86,6 +87,9 @@ struct PathTracer
     NRDBuffers outputNRD;                           ///< Output NRD data.
 
     RWTexture2D<float4> outputColor;                ///< Output color buffer if kSamplesPerPixel == 1.
+
+    // CIR (Channel Impulse Response) data collection
+    RWStructuredBuffer<CIRPathData> cirPathBuffer;  ///< Buffer for collecting CIR path data.
 
     /*******************************************************************
                                 Static members
@@ -167,6 +171,68 @@ struct PathTracer
             return frontFacing ? faceNormal : -faceNormal;
         }
     };
+
+    /** Validate and correct CIR path data.
+        \param[in,out] cirData CIR path data to validate and correct.
+        \param[in] pathIndex Path index for debugging.
+        \return True if data was corrected, false if it was already valid.
+    */
+    static bool validateAndCorrectCIRData(inout CIRPathData cirData, uint pathIndex)
+    {
+        bool wasValid = cirData.isValid();
+
+        if (!wasValid)
+        {
+            // Log warning about invalid data
+            if (pathIndex % 10000 == 0) // Log every 10000th path to avoid spam
+            {
+                logWarning("CIR: Invalid data detected for path " + std::to_string(pathIndex));
+                logWarning("  PathLength: " + std::to_string(cirData.pathLength));
+                logWarning("  EmissionAngle: " + std::to_string(cirData.emissionAngle));
+                logWarning("  ReceptionAngle: " + std::to_string(cirData.receptionAngle));
+                logWarning("  ReflectanceProduct: " + std::to_string(cirData.reflectanceProduct));
+                logWarning("  EmittedPower: " + std::to_string(cirData.emittedPower));
+            }
+
+            // Apply corrections
+            cirData.correctInvalidValues();
+
+            if (pathIndex % 10000 == 0)
+            {
+                logInfo("CIR: Corrected values:");
+                logInfo("  PathLength: " + std::to_string(cirData.pathLength));
+                logInfo("  EmissionAngle: " + std::to_string(cirData.emissionAngle));
+                logInfo("  ReceptionAngle: " + std::to_string(cirData.receptionAngle));
+                logInfo("  ReflectanceProduct: " + std::to_string(cirData.reflectanceProduct));
+                logInfo("  EmittedPower: " + std::to_string(cirData.emittedPower));
+            }
+        }
+
+        return !wasValid; // Return true if correction was needed
+    }
+
+    /** Log CIR buffer status and statistics.
+        \param[in] currentPathCount Current number of paths collected.
+        \param[in] maxPaths Maximum buffer capacity.
+    */
+    static void logCIRBufferStatus(uint currentPathCount, uint maxPaths)
+    {
+        if (currentPathCount % 1000 == 0) // Log every 1000 paths
+        {
+            float usagePercent = (float)currentPathCount / maxPaths * 100.0f;
+            logInfo("CIR: Buffer usage - " + std::to_string(currentPathCount) + "/" +
+                    std::to_string(maxPaths) + " (" + std::to_string(usagePercent) + "%)");
+
+            if (usagePercent > 90.0f)
+            {
+                logWarning("CIR: Buffer usage exceeds 90%");
+            }
+            else if (usagePercent > 80.0f)
+            {
+                logWarning("CIR: Buffer usage exceeds 80%");
+            }
+        }
+    }
 
     /** Set guiding data when background is hit.
     */
