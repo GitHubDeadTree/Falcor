@@ -213,10 +213,10 @@ private:
     uint32_t                        mCurrentCIRPathCount = 0;   ///< Current number of collected CIR paths.
     bool                            mCIRBufferBound = false;    ///< CIR buffer binding status to shader.
 
-private:
     // CIR buffer management functions
     void allocateCIRBuffers();
     bool bindCIRBufferToShader();
+    bool bindCIRBufferToParameterBlock(const ShaderVar& parameterBlock, const std::string& blockName) const;
     void resetCIRData();
     void logCIRBufferStatus();
 };

@@ -27,6 +27,10 @@
  **************************************************************************/
 #pragma once
 
+// CIR calculation constants
+static const uint kMaxCIRPaths = 1000000;       ///< Maximum number of CIR paths to collect
+static const bool kOutputCIRData = true;        ///< Enable CIR data collection
+
 /** CIR (Channel Impulse Response) path data structure.
 
     This structure stores the essential parameters of each light propagation path
