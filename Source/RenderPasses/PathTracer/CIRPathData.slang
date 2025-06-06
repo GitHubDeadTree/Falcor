@@ -48,7 +48,7 @@ struct CIRPathData
     /** Initialize CIR path data with default values.
         Default values represent a direct line-of-sight path with minimal parameters.
     */
-    void initDefaults()
+    [mutating] void initDefaults()
     {
         pathLength = 0.0f;          // Will be accumulated during path tracing
         emissionAngle = 0.0f;       // Perpendicular emission (0 radians)
@@ -94,7 +94,7 @@ struct CIRPathData
     /** Sanitize parameters to valid ranges if they are invalid.
         This provides robust error handling for edge cases.
     */
-    void sanitize()
+    [mutating] void sanitize()
     {
         // Clamp path length to reasonable range
         pathLength = clamp(pathLength, 0.1f, 1000.0f);

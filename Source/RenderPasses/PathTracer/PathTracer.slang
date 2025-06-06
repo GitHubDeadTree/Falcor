@@ -46,8 +46,8 @@ import ColorType;
 import NRDHelpers;
 __exported import PathState;
 __exported import Params;
-__exported import CIRPathData;
 import Rendering.RTXDI.RTXDI;
+__exported import CIRPathData;
 
 // Global CIR path collection counter
 // This is used to track the current number of collected CIR paths across all pixels
@@ -110,7 +110,7 @@ struct PathTracer
     // Additional specialization.
     static const bool kOutputGuideData = OUTPUT_GUIDE_DATA;
     static const bool kOutputInitialRayInfo = OUTPUT_INITIAL_RAY_INFO;
-    
+
     // CIR calculation parameters
     static const uint kMaxCIRPaths = 1000000;       ///< Maximum number of CIR paths to collect
     static const bool kOutputCIRData = true;        ///< Enable CIR data collection
@@ -1296,11 +1296,11 @@ struct PathTracer
     {
         // Bounds check to prevent buffer overflow
         if (slotIndex >= kMaxCIRPaths) return;
-        
+
         // Validate data before writing
         CIRPathData validatedData = cirData;
         validatedData.sanitize();
-        
+
         // Write to buffer
         gCIRPathBuffer[slotIndex] = validatedData;
     }
@@ -1313,11 +1313,11 @@ struct PathTracer
     void storeCIRPath(const PathState path, const CIRPathData cirData)
     {
         if (!shouldCollectCIRData(path)) return;
-        
+
         // Allocate slot in buffer
         uint slotIndex = allocateCIRPathSlot();
         if (slotIndex >= kMaxCIRPaths) return;
-        
+
         // Write data to buffer
         writeCIRPathData(cirData, slotIndex);
     }

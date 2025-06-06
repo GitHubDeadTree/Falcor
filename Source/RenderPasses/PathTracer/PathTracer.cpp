@@ -196,6 +196,10 @@ PathTracer::PathTracer(ref<Device> pDevice, const Properties& props)
 
     mpPixelStats = std::make_unique<PixelStats>(mpDevice);
     mpPixelDebug = std::make_unique<PixelDebug>(mpDevice);
+
+    // Initialize CIR buffer management state
+    mCurrentCIRPathCount = 0;
+    mCIRBufferBound = false;
 }
 
 void PathTracer::setProperties(const Properties& props)
@@ -913,6 +917,9 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
         mpSampleInitialRayInfo = mpDevice->createStructuredBuffer(var["sampleInitialRayInfo"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
         mVarsChanged = true;
     }
+
+    // Allocate CIR path buffer for visible light communication analysis
+    allocateCIRBuffers();
 }
 
 void PathTracer::preparePathTracer(const RenderData& renderData)
@@ -1107,6 +1114,20 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         var["sampleColor"] = mpSampleColor;
         var["sampleGuideData"] = mpSampleGuideData;
         var["sampleInitialRayInfo"] = mpSampleInitialRayInfo;
+
+        // Bind CIR path buffer for visible light communication analysis
+        var["gCIRPathBuffer"] = mpCIRPathBuffer;
+        if (mpCIRPathBuffer)
+        {
+            mCIRBufferBound = true;
+            logInfo("CIR: Buffer successfully bound to shader variable 'gCIRPathBuffer'");
+            logInfo("CIR: Bound buffer element count: {}", mpCIRPathBuffer->getElementCount());
+        }
+        else
+        {
+            mCIRBufferBound = false;
+            logWarning("CIR: Failed to bind buffer - buffer is null");
+        }
     }
 
     // Bind runtime data.
@@ -1260,8 +1281,14 @@ bool PathTracer::beginFrame(RenderContext* pRenderContext, const RenderData& ren
     mpPixelStats->beginFrame(pRenderContext, mParams.frameDim);
     mpPixelDebug->beginFrame(pRenderContext, mParams.frameDim);
 
+    // Ensure CIR buffer is properly bound
+    bindCIRBufferToShader();
+
     // Update the random seed.
     mParams.seed = mParams.useFixedSeed ? mParams.fixedSeed : mParams.frameCount;
+
+    // Reset CIR data for new frame (only reset count, keep buffer allocated)
+    mCurrentCIRPathCount = 0;
 
     mUpdateFlags = IScene::UpdateFlags::None;
 
@@ -1480,4 +1507,160 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("OUTPUT_NRD_ADDITIONAL_DATA", "0");
 
     return defines;
+}
+
+/*******************************************************************
+                     CIR Buffer Management Functions
+*******************************************************************/
+
+void PathTracer::allocateCIRBuffers()
+{
+    // Check if buffer needs reallocation
+    if (mpCIRPathBuffer && mpCIRPathBuffer->getElementCount() >= mMaxCIRPaths) return;
+
+    logInfo("CIR: Starting buffer allocation...");
+    logInfo("CIR: Requested buffer size - Elements: {}, Element size: {} bytes",
+            mMaxCIRPaths, 48u); // Estimated size: 6 floats + 1 uint + 1 uint2 = 32 bytes + padding
+    logInfo("CIR: Total buffer size: {:.2f} MB",
+            (mMaxCIRPaths * 48u) / (1024.0f * 1024.0f));
+
+    try
+    {
+        // Create CIR path data buffer with proper structure size
+        // Use reflection to get the exact struct size from the shader
+        if (mpReflectTypes)
+        {
+            auto var = mpReflectTypes->getRootVar();
+            mpCIRPathBuffer = mpDevice->createStructuredBuffer(
+                var["gCIRPathBuffer"],
+                mMaxCIRPaths,
+                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess,
+                MemoryType::DeviceLocal,
+                nullptr,
+                false
+            );
+        }
+        else
+        {
+            // Fallback: create buffer manually
+            mpCIRPathBuffer = mpDevice->createStructuredBuffer(
+                48u, // Estimated struct size
+                mMaxCIRPaths,
+                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess,
+                MemoryType::DeviceLocal,
+                nullptr,
+                false
+            );
+        }
+
+        if (!mpCIRPathBuffer)
+        {
+            logError("CIR: Failed to allocate CIR path buffer");
+            mCIRBufferBound = false;
+            return;
+        }
+
+        // Success log
+        logInfo("CIR: Buffer allocation successful");
+        logInfo("CIR: Buffer element count: {}", mpCIRPathBuffer->getElementCount());
+        logInfo("CIR: Buffer element size: {} bytes", mpCIRPathBuffer->getElementSize());
+        logInfo("CIR: Buffer total size: {:.2f} MB", mpCIRPathBuffer->getSize() / (1024.0f * 1024.0f));
+
+        mVarsChanged = true;
+        mCIRBufferBound = false; // Need to rebind after allocation
+    }
+    catch (const std::exception& e)
+    {
+        logError("CIR: Exception during buffer allocation: {}", e.what());
+        mpCIRPathBuffer = nullptr;
+        mCIRBufferBound = false;
+    }
+}
+
+bool PathTracer::bindCIRBufferToShader()
+{
+    if (!mpCIRPathBuffer)
+    {
+        logError("CIR: Cannot bind buffer - buffer not allocated");
+        mCIRBufferBound = false;
+        return false;
+    }
+
+    if (mCIRBufferBound) return true; // Already bound
+
+    try
+    {
+        // The buffer binding will be handled in bindShaderData() function
+        // This is just a state check function
+        mCIRBufferBound = true;
+        logInfo("CIR: Buffer ready for binding to shader");
+        logInfo("CIR: Buffer element count: {}", mpCIRPathBuffer->getElementCount());
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        logError("CIR: Exception during buffer binding preparation: {}", e.what());
+        mCIRBufferBound = false;
+        return false;
+    }
+}
+
+void PathTracer::resetCIRData()
+{
+    logInfo("CIR: Resetting buffer data...");
+
+    mCurrentCIRPathCount = 0;
+
+    if (!mpCIRPathBuffer)
+    {
+        logWarning("CIR: Cannot reset - buffer not allocated");
+        return;
+    }
+
+    try
+    {
+        // Clear the buffer using UAV clear
+        if (auto pRenderContext = mpDevice->getRenderContext())
+        {
+            pRenderContext->clearUAV(mpCIRPathBuffer->getUAV().get(), uint4(0));
+        }
+
+        logInfo("CIR: Buffer reset complete - path count: {}", mCurrentCIRPathCount);
+        logInfo("CIR: Buffer state - Allocated: {}, Bound: {}",
+                mpCIRPathBuffer ? "Yes" : "No",
+                mCIRBufferBound ? "Yes" : "No");
+    }
+    catch (const std::exception& e)
+    {
+        logError("CIR: Exception during buffer reset: {}", e.what());
+    }
+}
+
+void PathTracer::logCIRBufferStatus()
+{
+    logInfo("=== CIR Buffer Status ===");
+    logInfo("CIR: Buffer allocated: {}", mpCIRPathBuffer ? "Yes" : "No");
+    logInfo("CIR: Buffer bound to shader: {}", mCIRBufferBound ? "Yes" : "No");
+    logInfo("CIR: Current path count: {}", mCurrentCIRPathCount);
+    logInfo("CIR: Max path capacity: {}", mMaxCIRPaths);
+
+    if (mpCIRPathBuffer)
+    {
+        float usagePercent = static_cast<float>(mCurrentCIRPathCount) / mMaxCIRPaths * 100.0f;
+        logInfo("CIR: Buffer usage: {:.2f}%", usagePercent);
+
+        if (usagePercent > 90.0f)
+        {
+            logWarning("CIR: Buffer usage exceeds 90% - consider increasing buffer size");
+        }
+        else if (usagePercent > 80.0f)
+        {
+            logWarning("CIR: Buffer usage exceeds 80% - monitor closely");
+        }
+
+        logInfo("CIR: Buffer details:");
+        logInfo("  - Element size: {} bytes", mpCIRPathBuffer->getElementSize());
+        logInfo("  - Total size: {:.2f} MB", mpCIRPathBuffer->getSize() / (1024.0f * 1024.0f));
+    }
+    logInfo("========================");
 }
