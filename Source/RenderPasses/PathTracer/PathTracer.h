@@ -206,10 +206,4 @@ private:
     ref<Buffer>                     mpSampleNRDEmission;        ///< Compact per-sample NRD emission data.
     ref<Buffer>                     mpSampleNRDReflectance;     ///< Compact per-sample NRD reflectance data.
     ref<Buffer>                     mpSampleInitialRayInfo;     ///< Per-sample initial ray direction and intensity buffer.
-
-    // CIR (Channel Impulse Response) data collection buffers
-    ref<Buffer>                     mpCIRPathBuffer;            ///< Buffer for CIR path data collection.
-    uint32_t                        mMaxCIRPaths = 1000000;     ///< Maximum number of CIR paths to store.
-    uint32_t                        mCurrentCIRPathCount = 0;   ///< Current number of collected CIR paths.
-    bool                            mCIRBufferBound = false;    ///< Whether CIR buffer is bound to shader.
 };

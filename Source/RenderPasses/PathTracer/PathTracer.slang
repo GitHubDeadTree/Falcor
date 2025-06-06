@@ -49,6 +49,10 @@ __exported import Params;
 __exported import CIRPathData;
 import Rendering.RTXDI.RTXDI;
 
+// Global CIR path collection counter
+// This is used to track the current number of collected CIR paths across all pixels
+static uint gCIRPathCount = 0;
+
 /** Interface for querying visibility in the scene.
     This is used in `handleHit`.
 */
@@ -88,8 +92,8 @@ struct PathTracer
 
     RWTexture2D<float4> outputColor;                ///< Output color buffer if kSamplesPerPixel == 1.
 
-    // CIR (Channel Impulse Response) data collection
-    RWStructuredBuffer<CIRPathData> cirPathBuffer;  ///< Buffer for collecting CIR path data.
+    // CIR (Channel Impulse Response) calculation outputs
+    RWStructuredBuffer<CIRPathData> gCIRPathBuffer; ///< Output buffer for CIR path data collection.
 
     /*******************************************************************
                                 Static members
@@ -106,6 +110,10 @@ struct PathTracer
     // Additional specialization.
     static const bool kOutputGuideData = OUTPUT_GUIDE_DATA;
     static const bool kOutputInitialRayInfo = OUTPUT_INITIAL_RAY_INFO;
+    
+    // CIR calculation parameters
+    static const uint kMaxCIRPaths = 1000000;       ///< Maximum number of CIR paths to collect
+    static const bool kOutputCIRData = true;        ///< Enable CIR data collection
 
     /** Types of samplable lights.
     */
@@ -171,68 +179,6 @@ struct PathTracer
             return frontFacing ? faceNormal : -faceNormal;
         }
     };
-
-    /** Validate and correct CIR path data.
-        \param[in,out] cirData CIR path data to validate and correct.
-        \param[in] pathIndex Path index for debugging.
-        \return True if data was corrected, false if it was already valid.
-    */
-    static bool validateAndCorrectCIRData(inout CIRPathData cirData, uint pathIndex)
-    {
-        bool wasValid = cirData.isValid();
-
-        if (!wasValid)
-        {
-            // Log warning about invalid data
-            if (pathIndex % 10000 == 0) // Log every 10000th path to avoid spam
-            {
-                logWarning("CIR: Invalid data detected for path " + std::to_string(pathIndex));
-                logWarning("  PathLength: " + std::to_string(cirData.pathLength));
-                logWarning("  EmissionAngle: " + std::to_string(cirData.emissionAngle));
-                logWarning("  ReceptionAngle: " + std::to_string(cirData.receptionAngle));
-                logWarning("  ReflectanceProduct: " + std::to_string(cirData.reflectanceProduct));
-                logWarning("  EmittedPower: " + std::to_string(cirData.emittedPower));
-            }
-
-            // Apply corrections
-            cirData.correctInvalidValues();
-
-            if (pathIndex % 10000 == 0)
-            {
-                logInfo("CIR: Corrected values:");
-                logInfo("  PathLength: " + std::to_string(cirData.pathLength));
-                logInfo("  EmissionAngle: " + std::to_string(cirData.emissionAngle));
-                logInfo("  ReceptionAngle: " + std::to_string(cirData.receptionAngle));
-                logInfo("  ReflectanceProduct: " + std::to_string(cirData.reflectanceProduct));
-                logInfo("  EmittedPower: " + std::to_string(cirData.emittedPower));
-            }
-        }
-
-        return !wasValid; // Return true if correction was needed
-    }
-
-    /** Log CIR buffer status and statistics.
-        \param[in] currentPathCount Current number of paths collected.
-        \param[in] maxPaths Maximum buffer capacity.
-    */
-    static void logCIRBufferStatus(uint currentPathCount, uint maxPaths)
-    {
-        if (currentPathCount % 1000 == 0) // Log every 1000 paths
-        {
-            float usagePercent = (float)currentPathCount / maxPaths * 100.0f;
-            logInfo("CIR: Buffer usage - " + std::to_string(currentPathCount) + "/" +
-                    std::to_string(maxPaths) + " (" + std::to_string(usagePercent) + "%)");
-
-            if (usagePercent > 90.0f)
-            {
-                logWarning("CIR: Buffer usage exceeds 90%");
-            }
-            else if (usagePercent > 80.0f)
-            {
-                logWarning("CIR: Buffer usage exceeds 80%");
-            }
-        }
-    }
 
     /** Set guiding data when background is hit.
     */
@@ -1302,5 +1248,77 @@ struct PathTracer
 
             outputNRD.sampleRadiance[outIdx] = data;
         }
+    }
+
+    /*******************************************************************
+                          CIR Data Collection Functions
+    *******************************************************************/
+
+    /** Initialize CIR path data with default values.
+        \param[out] cirData CIR path data structure to initialize.
+        \param[in] path Current path state.
+    */
+    void initializeCIRData(inout CIRPathData cirData, const PathState path)
+    {
+        cirData.initDefaults();
+        cirData.pixelCoord = path.getPixel();
+        cirData.pathIndex = path.id; // Use path ID as unique identifier
+    }
+
+    /** Check if CIR data collection should be enabled for this path.
+        CIR data is collected for all active paths to ensure comprehensive analysis.
+        \param[in] path Current path state.
+        \return True if CIR data should be collected for this path.
+    */
+    bool shouldCollectCIRData(const PathState path)
+    {
+        if (!kOutputCIRData) return false;
+        if (!path.isActive()) return false;
+        if (gCIRPathCount >= kMaxCIRPaths) return false;
+        return true;
+    }
+
+    /** Atomically allocate a slot in the CIR path buffer.
+        \return Index in the CIR buffer, or kMaxCIRPaths if buffer is full.
+    */
+    uint allocateCIRPathSlot()
+    {
+        uint slotIndex;
+        InterlockedAdd(gCIRPathCount, 1, slotIndex);
+        return slotIndex;
+    }
+
+    /** Write CIR path data to the global buffer with bounds checking.
+        \param[in] cirData CIR path data to write.
+        \param[in] slotIndex Buffer index to write to.
+    */
+    void writeCIRPathData(const CIRPathData cirData, uint slotIndex)
+    {
+        // Bounds check to prevent buffer overflow
+        if (slotIndex >= kMaxCIRPaths) return;
+        
+        // Validate data before writing
+        CIRPathData validatedData = cirData;
+        validatedData.sanitize();
+        
+        // Write to buffer
+        gCIRPathBuffer[slotIndex] = validatedData;
+    }
+
+    /** Collect and store CIR data for a terminated path.
+        This function should be called when a path terminates at a receiver.
+        \param[in] path The terminated path state.
+        \param[in] cirData Collected CIR parameters for this path.
+    */
+    void storeCIRPath(const PathState path, const CIRPathData cirData)
+    {
+        if (!shouldCollectCIRData(path)) return;
+        
+        // Allocate slot in buffer
+        uint slotIndex = allocateCIRPathSlot();
+        if (slotIndex >= kMaxCIRPaths) return;
+        
+        // Write data to buffer
+        writeCIRPathData(cirData, slotIndex);
     }
 };
