@@ -42,6 +42,9 @@
 
 using namespace Falcor;
 
+// Forward declaration for CIR path data structure
+struct CIRPathData;
+
 /** Fast path tracer.
 */
 class PathTracer : public RenderPass
@@ -233,4 +236,5 @@ private:
     uint32_t mLastCIRCheckFrame = 0;             ///< Last frame when CIR data was checked
     bool mCIRDebugEnabled = true;                ///< Enable CIR debugging output
     std::string mCIROutputDirectory = "cir_debug_output"; ///< Directory for CIR debug files
+    mutable uint32_t mFrameCount = 0;            ///< Frame counter for CIR debugging
 };

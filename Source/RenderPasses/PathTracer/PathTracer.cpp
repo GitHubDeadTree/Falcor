@@ -85,6 +85,7 @@ namespace
     const std::string kOutputNRDDeltaTransmissionPathLength = "nrdDeltaTransmissionPathLength";
     const std::string kOutputNRDDeltaTransmissionPosW = "nrdDeltaTransmissionPosW";
     const std::string kOutputNRDResidualRadianceHitDist = "nrdResidualRadianceHitDist";
+    const std::string kOutputCIRData = "cirData"; // CIR path data buffer for VLC analysis
 
     const Falcor::ChannelList kOutputChannels =
     {
@@ -154,6 +155,20 @@ namespace
     const std::string kOutputSize = "outputSize";
     const std::string kFixedOutputSize = "fixedOutputSize";
     const std::string kColorFormat = "colorFormat";
+
+    // CIR path data structure for CPU-side processing
+    // This mirrors the GPU CIRPathData structure with compatible memory layout
+    struct CIRPathDataCPU
+    {
+        float pathLength;           ///< Total propagation distance of the path (meters)
+        float emissionAngle;        ///< Emission angle at LED surface (radians)
+        float receptionAngle;       ///< Reception angle at photodiode surface (radians)
+        float reflectanceProduct;   ///< Product of all surface reflectances along the path
+        uint32_t reflectionCount;   ///< Number of reflections in the path
+        float emittedPower;         ///< Emitted optical power (watts)
+        uint32_t pixelCoordX;       ///< X coordinate of pixel where path terminates
+        uint32_t pixelCoordY;       ///< Y coordinate of pixel where path terminates
+    };
 }
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
@@ -404,6 +419,13 @@ RenderPassReflection PathTracer::reflect(const CompileData& compileData)
 
     addRenderPassInputs(reflector, kInputChannels);
     addRenderPassOutputs(reflector, kOutputChannels, ResourceBindFlags::UnorderedAccess, sz);
+    
+    // Add CIR data buffer as structured buffer output for VLC analysis
+    reflector.addOutput(kOutputCIRData, "CIR path data buffer for VLC analysis")
+        .bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource)
+        .rawBuffer(mMaxCIRPaths * sizeof(CIRPathDataCPU))
+        .flags(RenderPassReflection::Field::Flags::Optional);
+    
     return reflector;
 }
 
@@ -493,6 +515,32 @@ void PathTracer::execute(RenderContext* pRenderContext, const RenderData& render
 
     // Prepare resources.
     prepareResources(pRenderContext, renderData);
+
+    // Bind CIR data buffer to output channel if connected
+    if (auto pCIROutput = renderData.getResource(kOutputCIRData))
+    {
+        // Use the output buffer as our CIR path buffer
+        if (auto pBuffer = pCIROutput->asBuffer())
+        {
+            mpCIRPathBuffer = pBuffer;
+            mCIRBufferBound = true;
+            logInfo("CIR: Buffer bound to output channel - Size: {} MB", 
+                    pBuffer->getSize() / (1024 * 1024));
+        }
+        else
+        {
+            logWarning("CIR: Output resource is not a buffer");
+            mCIRBufferBound = false;
+        }
+    }
+    else
+    {
+        // CIR output not connected, use internal buffer if available
+        if (mpCIRPathBuffer)
+        {
+            logInfo("CIR: Using internal buffer - output channel not connected");
+        }
+    }
 
     // Prepare the path tracer parameter block.
     // This should be called after all resources have been created.
@@ -1796,18 +1844,6 @@ void PathTracer::logCIRBufferStatus()
                      CIR Data Verification and Debugging Functions
 *******************************************************************/
 
-struct CIRPathDataCPU
-{
-    float pathLength;           
-    float emissionAngle;        
-    float receptionAngle;       
-    float reflectanceProduct;   
-    uint32_t reflectionCount;   
-    float emittedPower;         
-    uint32_t pixelCoordX;       
-    uint32_t pixelCoordY;       
-};
-
 void PathTracer::dumpCIRDataToFile(RenderContext* pRenderContext)
 {
     if (!mpCIRPathBuffer || mCurrentCIRPathCount == 0)
@@ -2133,3 +2169,5 @@ void PathTracer::triggerCIRDataVerification(RenderContext* pRenderContext)
         }
     }
 }
+
+
