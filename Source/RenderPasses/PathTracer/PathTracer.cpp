@@ -704,7 +704,7 @@ bool PathTracer::renderDebugUI(Gui::Widgets& widget)
     {
         mpPixelDebug->renderUI(group);
 
-        dirty |= group.var("Color format", mStaticParams.colorFormat);
+        dirty |= group.dropdown("Color format", mStaticParams.colorFormat);
 
         if (mpPixelStats)
         {
@@ -717,13 +717,8 @@ bool PathTracer::renderDebugUI(Gui::Widgets& widget)
             cirGroup.checkbox("Enable CIR debugging", mCIRDebugEnabled);
             cirGroup.tooltip("Enable/disable CIR data collection debugging output");
 
-            if (cirGroup.var("Check interval (frames)", mCIRFrameCheckInterval, 1u, 1000u))
-            {
-                cirGroup.tooltip("Number of frames between CIR data verification checks");
-            }
-
-            cirGroup.var("Output directory", mCIROutputDirectory);
-            cirGroup.tooltip("Directory for CIR debug output files");
+            dirty |= cirGroup.var("Check interval (frames)", mCIRFrameCheckInterval, 1u, 1000u);
+            cirGroup.tooltip("Number of frames between CIR data verification checks");
 
             if (cirGroup.button("Dump CIR Data"))
             {
@@ -1201,14 +1196,23 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         var["sampleGuideData"] = mpSampleGuideData;
         var["sampleInitialRayInfo"] = mpSampleInitialRayInfo;
 
-        // Bind CIR buffer directly to shader variable
+        // Conditionally bind CIR buffer - only for shaders that support it
         if (mpCIRPathBuffer)
         {
-            var["gCIRPathBuffer"] = mpCIRPathBuffer;
-            logInfo("CIR: Buffer bound to shader variable 'gCIRPathBuffer' - element count: {}", mpCIRPathBuffer->getElementCount());
-            // Update path count for tracking
-            var["gCIRMaxPaths"] = mMaxCIRPaths;
-            var["gCurrentCIRPathCount"] = mCurrentCIRPathCount;
+            // Check if the shader variable supports gCIRPathBuffer before binding
+            try
+            {
+                // Test if the variable exists by attempting to access it
+                auto cirVar = var["gCIRPathBuffer"];
+                cirVar = mpCIRPathBuffer;
+                logInfo("CIR: Buffer bound to shader variable 'gCIRPathBuffer' - element count: {}", mpCIRPathBuffer->getElementCount());
+                logInfo("CIR: Buffer capacity: {} paths, Current count: {}", mMaxCIRPaths, mCurrentCIRPathCount);
+            }
+            catch (const std::exception&)
+            {
+                // gCIRPathBuffer not defined in this shader - skip binding
+                logInfo("CIR: Shader does not support gCIRPathBuffer - skipping binding (normal for GeneratePaths)");
+            }
         }
         else
         {
