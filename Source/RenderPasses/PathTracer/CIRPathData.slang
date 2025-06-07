@@ -37,6 +37,8 @@ static const bool kOutputCIRData = true;        ///< Enable CIR data collection
     needed for calculating the Channel Impulse Response in visible light communication systems.
     Each path represents light traveling from an LED transmitter through possible reflections
     to a photodiode receiver.
+    
+    Memory layout fix: Using separate uint fields instead of uint2 for better CPU-GPU compatibility
 */
 struct CIRPathData
 {
@@ -46,7 +48,8 @@ struct CIRPathData
     float reflectanceProduct;   ///< r_i product: Product of all surface reflectances along the path [0,1]
     uint reflectionCount;       ///< K_i: Number of reflections in the path
     float emittedPower;         ///< P_t: Emitted optical power (watts)
-    uint2 pixelCoord;          ///< Pixel coordinates where the path terminates
+    uint pixelX;               ///< Pixel X coordinate (separated for better CPU-GPU memory alignment)
+    uint pixelY;               ///< Pixel Y coordinate (separated for better CPU-GPU memory alignment)
     uint pathIndex;            ///< Unique index identifier for this path
 
     /** Initialize CIR path data with default values.
@@ -60,7 +63,8 @@ struct CIRPathData
         reflectanceProduct = 1.0f;  // No reflections initially, so product = 1
         reflectionCount = 0;        // No reflections initially
         emittedPower = 1.0f;        // Default 1 watt emission power
-        pixelCoord = uint2(0, 0);   // Origin pixel
+        pixelX = 0;                 // Origin pixel X
+        pixelY = 0;                 // Origin pixel Y
         pathIndex = 0;              // Will be set when path is created
     }
 

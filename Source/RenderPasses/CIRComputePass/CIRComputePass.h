@@ -29,6 +29,7 @@
 #include "Falcor.h"
 #include "RenderGraph/RenderPass.h"
 #include "RenderGraph/RenderPassHelpers.h"
+#include "Core/API/Fence.h"
 #include <memory>
 
 using namespace Falcor;
@@ -40,6 +41,7 @@ using namespace Falcor;
     to a photodiode receiver.
     
     Note: This structure must match exactly with the PathTracer CPU CIRPathDataCPU structure
+    Memory layout fix: Using separate uint32_t fields instead of uint64_t to match GPU uint2
 */
 struct CIRPathData
 {
@@ -49,13 +51,14 @@ struct CIRPathData
     float reflectanceProduct;   // r_i product: Product of all surface reflectances along the path [0,1]
     uint32_t reflectionCount;   // K_i: Number of reflections in the path
     float emittedPower;         // P_t: Emitted optical power (watts)
-    uint64_t pixelCoord;        // Pixel coordinates packed as uint64_t (equivalent to GPU uint2)
+    uint32_t pixelX;            // Pixel X coordinate (separated for better memory alignment)
+    uint32_t pixelY;            // Pixel Y coordinate (separated for better memory alignment)
     uint32_t pathIndex;         // Unique index identifier for this path
 
-    // Helper methods for pixel coordinate access (matching CPU structure)
-    uint32_t getPixelX() const { return static_cast<uint32_t>(pixelCoord & 0xFFFFFFFF); }
-    uint32_t getPixelY() const { return static_cast<uint32_t>((pixelCoord >> 32) & 0xFFFFFFFF); }
-    void setPixelCoord(uint32_t x, uint32_t y) { pixelCoord = static_cast<uint64_t>(y) << 32 | x; }
+    // Helper methods for pixel coordinate access (for backward compatibility)
+    uint32_t getPixelX() const { return pixelX; }
+    uint32_t getPixelY() const { return pixelY; }
+    void setPixelCoord(uint32_t x, uint32_t y) { pixelX = x; pixelY = y; }
 
     /** Validate that all CIR parameters are within expected physical ranges.
         \return True if all parameters are valid, false otherwise.
@@ -154,6 +157,9 @@ private:
     
     // Input data output control
     bool mOutputInputData = false;    // Flag to control per-frame input data output
+    
+    // GPU-CPU synchronization for data transfer
+    ref<Fence> mpSyncFence;           // Fence for GPU-CPU synchronization during buffer readback
 
     // Parameter validation constants
     static constexpr float kMinTimeResolution = 1e-12f;    // Minimum time resolution (1 picosecond)

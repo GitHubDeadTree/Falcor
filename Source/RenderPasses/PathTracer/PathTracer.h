@@ -37,6 +37,7 @@
 #include "Rendering/Materials/TexLODTypes.slang"
 #include "Rendering/Utils/PixelStats.h"
 #include "Rendering/RTXDI/RTXDI.h"
+#include "Core/API/Fence.h"
 
 #include "Params.slang"
 
@@ -86,6 +87,12 @@ public:
     void outputCIRSampleData(RenderContext* pRenderContext, uint32_t sampleCount = 10);
     bool hasValidCIRData() const;
     void triggerCIRDataVerification(RenderContext* pRenderContext);
+
+    // GPU-CPU synchronized CIR data reading functions
+    void dumpCIRDataToFileWithSync(RenderContext* pRenderContext);
+    void logCIRStatisticsWithSync(RenderContext* pRenderContext);
+    void verifyCIRDataIntegrityWithSync(RenderContext* pRenderContext);
+    void outputCIRSampleDataWithSync(RenderContext* pRenderContext, uint32_t sampleCount = 10);
 
 private:
     struct TracePass
@@ -239,4 +246,7 @@ private:
     bool mCIRDebugEnabled = true;                ///< Enable CIR debugging output
     std::string mCIROutputDirectory = "cir_debug_output"; ///< Directory for CIR debug files
     mutable uint32_t mFrameCount = 0;            ///< Frame counter for CIR debugging
+
+    // GPU-CPU synchronization for CIR data reading
+    ref<Fence> mpCIRSyncFence;                   ///< Fence for GPU-CPU synchronization during CIR buffer readback
 };

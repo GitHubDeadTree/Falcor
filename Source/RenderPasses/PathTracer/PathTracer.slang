@@ -1312,7 +1312,9 @@ struct PathTracer
     void initializeCIRData(inout CIRPathData cirData, const PathState path)
     {
         cirData.initDefaults();
-        cirData.pixelCoord = path.getPixel();
+        uint2 pixel = path.getPixel();
+        cirData.pixelX = pixel.x;
+        cirData.pixelY = pixel.y;
         cirData.pathIndex = path.id; // Use path ID as unique identifier
     }
 
@@ -1520,7 +1522,8 @@ struct PathTracer
         {
             // If data is still invalid after sanitization, use defaults
             validatedData.initDefaults();
-            validatedData.pixelCoord = cirData.pixelCoord;
+            validatedData.pixelX = cirData.pixelX;
+            validatedData.pixelY = cirData.pixelY;
             validatedData.pathIndex = cirData.pathIndex;
         }
 
@@ -1552,7 +1555,9 @@ struct PathTracer
         testData.reflectanceProduct = 0.75f;           // 75% reflectance product - reasonable after 2 reflections
         testData.reflectionCount = 2;                  // 2 reflections - typical for indoor VLC scenarios
         testData.emittedPower = 10.0f;                 // 10 watts emitted power - high-power LED typical value
-        testData.pixelCoord = path.getPixel();         // Keep actual pixel coordinates for spatial verification
+        uint2 pixel = path.getPixel();
+        testData.pixelX = pixel.x;                     // Keep actual pixel X coordinate for spatial verification
+        testData.pixelY = pixel.y;                     // Keep actual pixel Y coordinate for spatial verification
         testData.pathIndex = slotIndex;                // Use actual slot index for uniqueness verification
         
         // Ensure test data is within valid ranges

@@ -73,6 +73,17 @@ CIRComputePass::CIRComputePass(ref<Device> pDevice, const Properties& props) : R
     // Log initial parameter status
     logParameterStatus();
 
+    // Create GPU-CPU synchronization fence
+    mpSyncFence = mpDevice->createFence();
+    if (!mpSyncFence)
+    {
+        logError("CIR: Failed to create synchronization fence");
+    }
+    else
+    {
+        logInfo("CIR: Synchronization fence created successfully");
+    }
+
     // Create CIR result buffer
     createCIRBuffer();
 
@@ -178,18 +189,26 @@ void CIRComputePass::execute(RenderContext* pRenderContext, const RenderData& re
         return;
     }
 
-    // Task 2.3: Clear output buffer and overflow counter
-    pRenderContext->clearUAV(pOutputCIR->getUAV().get(), uint4(0));  // Clear as uint
-    if (mpOverflowCounter)
-    {
-        pRenderContext->clearUAV(mpOverflowCounter->getUAV().get(), uint4(0));
-    }
+    // TEMPORARILY DISABLED: Clear output buffer and overflow counter 
+    // This was causing zero data issue - moved to after input data processing
+    // pRenderContext->clearUAV(pOutputCIR->getUAV().get(), uint4(0));  // Clear as uint
+    // if (mpOverflowCounter)
+    // {
+    //     pRenderContext->clearUAV(mpOverflowCounter->getUAV().get(), uint4(0));
+    // }
 
     // Calculate number of paths to process
     uint32_t pathCount = 0;
     if (pInputPathData)
     {
         pathCount = pInputPathData->getElementCount();
+    }
+
+    // Process input data BEFORE clearing any buffers to avoid zero data issue
+    if (mOutputInputData && pInputPathData && pathCount > 0)
+    {
+        logInfo("CIR: Processing input data first to avoid zero data issue");
+        outputInputData(pRenderContext, pInputPathData, pathCount);
     }
 
     // Set shader variables through cbuffer
@@ -243,11 +262,16 @@ void CIRComputePass::execute(RenderContext* pRenderContext, const RenderData& re
         logInfo("CIR: CIR bins: {}, Time resolution: {:.2e}s", mCIRBins, mTimeResolution);
     }
 
-    // Output input data per frame if enabled
-    if (mOutputInputData && pInputPathData && pathCount > 0)
-    {
-        outputInputData(pRenderContext, pInputPathData, pathCount);
-    }
+    // Input data processing has been moved to earlier in the function
+    // to avoid zero data issue caused by buffer clearing
+    
+    // OPTIONAL: Clear output buffer AFTER processing input data
+    // This can be re-enabled if needed for next frame preparation
+    // pRenderContext->clearUAV(pOutputCIR->getUAV().get(), uint4(0));
+    // if (mpOverflowCounter)
+    // {
+    //     pRenderContext->clearUAV(mpOverflowCounter->getUAV().get(), uint4(0));
+    // }
 }
 
 void CIRComputePass::renderUI(Gui::Widgets& widget)
@@ -815,6 +839,12 @@ void CIRComputePass::validateCIRResults(RenderContext* pRenderContext, const ref
         return;
     }
 
+    if (!mpSyncFence)
+    {
+        logError("CIR: Cannot validate CIR results - synchronization fence is not available");
+        return;
+    }
+
     try
     {
         // Read back overflow counter for diagnostics
@@ -836,6 +866,11 @@ void CIRComputePass::validateCIRResults(RenderContext* pRenderContext, const ref
         {
             // Copy data from GPU buffer to ReadBack buffer
             pRenderContext->copyResource(pReadbackBuffer.get(), pCIRBuffer.get());
+            
+            // Critical GPU-CPU Synchronization for validation
+            uint64_t fenceValue = pRenderContext->signal(mpSyncFence.get());
+            pRenderContext->submit(false);  // Submit without waiting
+            mpSyncFence->wait(fenceValue);  // Wait for GPU completion
             
             // Map ReadBack buffer using correct API (no parameters needed)
             const uint32_t* pData = static_cast<const uint32_t*>(pReadbackBuffer->map());
@@ -1101,6 +1136,12 @@ std::vector<float> CIRComputePass::readFullCIRData(RenderContext* pRenderContext
         return cirData;
     }
 
+    if (!mpSyncFence)
+    {
+        logError("CIR: Cannot read CIR data - synchronization fence is not available");
+        return cirData;
+    }
+
     try
     {
         // Create ReadBack buffer for full CIR data
@@ -1120,6 +1161,11 @@ std::vector<float> CIRComputePass::readFullCIRData(RenderContext* pRenderContext
         // Copy CIR data from GPU to ReadBack buffer
         pRenderContext->copyResource(pReadbackBuffer.get(), pCIRBuffer.get());
 
+        // Critical GPU-CPU Synchronization for CIR data readback
+        uint64_t fenceValue = pRenderContext->signal(mpSyncFence.get());
+        pRenderContext->submit(false);  // Submit without waiting
+        mpSyncFence->wait(fenceValue);  // Wait for GPU completion
+
         // Map and read data
         const uint32_t* pData = static_cast<const uint32_t*>(pReadbackBuffer->map());
         if (!pData)
@@ -1137,7 +1183,7 @@ std::vector<float> CIRComputePass::readFullCIRData(RenderContext* pRenderContext
 
         pReadbackBuffer->unmap();
         
-        logInfo("CIR: Successfully read {} bins of CIR data from GPU", mCIRBins);
+        logInfo("CIR: Successfully read {} bins of CIR data from GPU with sync", mCIRBins);
     }
     catch (const std::exception& e)
     {
@@ -1405,6 +1451,12 @@ void CIRComputePass::outputInputData(RenderContext* pRenderContext, const ref<Bu
         return;
     }
 
+    if (!mpSyncFence)
+    {
+        logError("CIR: Cannot output input data - synchronization fence is not available");
+        return;
+    }
+
     try
     {
         // Limit the number of paths to output to avoid extremely large files
@@ -1446,7 +1498,13 @@ void CIRComputePass::outputInputData(RenderContext* pRenderContext, const ref<Bu
         // Copy data from GPU buffer to ReadBack buffer (only the portion we need)
         pRenderContext->copyBufferRegion(pReadbackBuffer.get(), 0, pInputPathData.get(), 0, actualCopySize);
         
-        // Map ReadBack buffer (no parameters needed)
+        // Critical GPU-CPU Synchronization: Ensure GPU operations complete before CPU reads
+        // This is the key fix for the zero data problem mentioned in the documentation
+        uint64_t fenceValue = pRenderContext->signal(mpSyncFence.get());
+        pRenderContext->submit(false);  // Submit without waiting
+        mpSyncFence->wait(fenceValue);  // Wait for GPU completion on CPU side
+        
+        // Now it's safe to map and read the buffer
         const CIRPathData* pData = static_cast<const CIRPathData*>(pReadbackBuffer->map());
         if (!pData)
         {
@@ -1464,7 +1522,7 @@ void CIRComputePass::outputInputData(RenderContext* pRenderContext, const ref<Bu
         // Save data to file
         saveInputDataToFile(pathData, filename, mFrameCount);
 
-        logInfo("CIR: Input data output completed for frame {} ({} paths)", mFrameCount, actualPathCount);
+        logInfo("CIR: Input data output completed for frame {} ({} paths) with GPU-CPU sync", mFrameCount, actualPathCount);
     }
     catch (const std::exception& e)
     {

@@ -158,6 +158,7 @@ namespace
 
     // CIR path data structure for CPU-side processing
     // This mirrors the GPU CIRPathData structure with compatible memory layout
+    // Memory layout fix: Using separate uint32_t fields instead of uint64_t to match GPU uint2
     struct CIRPathDataCPU
     {
         float pathLength;           ///< Total propagation distance of the path (meters)
@@ -166,13 +167,14 @@ namespace
         float reflectanceProduct;   ///< Product of all surface reflectances along the path
         uint32_t reflectionCount;   ///< Number of reflections in the path
         float emittedPower;         ///< Emitted optical power (watts)
-        uint64_t pixelCoord;        ///< Pixel coordinates packed as uint64_t (equivalent to GPU uint2)
+        uint32_t pixelX;            ///< Pixel X coordinate (separated for better memory alignment)
+        uint32_t pixelY;            ///< Pixel Y coordinate (separated for better memory alignment)
         uint32_t pathIndex;         ///< Unique index identifier for this path
         
-        // Helper methods for pixel coordinate access
-        uint32_t getPixelX() const { return static_cast<uint32_t>(pixelCoord & 0xFFFFFFFF); }
-        uint32_t getPixelY() const { return static_cast<uint32_t>((pixelCoord >> 32) & 0xFFFFFFFF); }
-        void setPixelCoord(uint32_t x, uint32_t y) { pixelCoord = static_cast<uint64_t>(y) << 32 | x; }
+        // Helper methods for pixel coordinate access (for backward compatibility)
+        uint32_t getPixelX() const { return pixelX; }
+        uint32_t getPixelY() const { return pixelY; }
+        void setPixelCoord(uint32_t x, uint32_t y) { pixelX = x; pixelY = y; }
     };
 }
 
@@ -229,6 +231,17 @@ PathTracer::PathTracer(ref<Device> pDevice, const Properties& props)
     
     // Allocate CIR buffers for visible light communication analysis
     allocateCIRBuffers();
+
+    // Create GPU-CPU synchronization fence for CIR data readback
+    mpCIRSyncFence = mpDevice->createFence();
+    if (!mpCIRSyncFence)
+    {
+        logError("PathTracer: Failed to create CIR synchronization fence - CIR data readback will not be synchronized");
+    }
+    else
+    {
+        logInfo("PathTracer: CIR synchronization fence created successfully");
+    }
 }
 
 void PathTracer::setProperties(const Properties& props)
@@ -2205,25 +2218,49 @@ void PathTracer::triggerCIRDataVerification(RenderContext* pRenderContext)
 
         logInfo("CIR: Performing periodic data verification (Frame {})", frameCounter);
         
-        // Perform comprehensive verification
+        // Perform comprehensive verification using synchronized functions
         logCIRBufferStatus();
-        logCIRStatistics(pRenderContext);
         
-        if (hasValidCIRData())
+        // Use synchronized version if fence is available, otherwise fall back to non-synchronized
+        if (mpCIRSyncFence)
         {
-            outputCIRSampleData(pRenderContext, 5); // Show 5 sample entries
-            verifyCIRDataIntegrity(pRenderContext);
+            logInfo("CIR: Using synchronized verification functions");
+            logCIRStatisticsWithSync(pRenderContext);
             
-            // Dump data to file every 10 check intervals
-            if ((frameCounter / mCIRFrameCheckInterval) % 10 == 0)
+            if (hasValidCIRData())
             {
-                dumpCIRDataToFile(pRenderContext);
+                outputCIRSampleDataWithSync(pRenderContext, 5); // Show 5 sample entries
+                verifyCIRDataIntegrityWithSync(pRenderContext);
+                
+                // Dump data to file every 10 check intervals using synchronized version
+                if ((frameCounter / mCIRFrameCheckInterval) % 10 == 0)
+                {
+                    dumpCIRDataToFileWithSync(pRenderContext);
+                }
             }
         }
         else
         {
-            logWarning("CIR: No valid CIR data detected during verification");
+            logWarning("CIR: Synchronization fence not available, using non-synchronized verification functions");
+            logCIRStatistics(pRenderContext);
+            
+            if (hasValidCIRData())
+            {
+                outputCIRSampleData(pRenderContext, 5); // Show 5 sample entries
+                verifyCIRDataIntegrity(pRenderContext);
+                
+                // Dump data to file every 10 check intervals
+                if ((frameCounter / mCIRFrameCheckInterval) % 10 == 0)
+                {
+                    dumpCIRDataToFile(pRenderContext);
+                }
+            }
         }
+    }
+    
+    if (!hasValidCIRData())
+    {
+        logWarning("CIR: No valid CIR data detected during verification");
     }
 }
 
@@ -2251,6 +2288,355 @@ void PathTracer::resetGPUCIRPathCounter(RenderContext* pRenderContext)
     catch (const std::exception& e)
     {
         logError("CIR: Exception during GPU path counter reset: {}", e.what());
+    }
+}
+
+/*******************************************************************
+                     GPU-CPU Synchronized CIR Data Reading Functions
+*******************************************************************/
+
+void PathTracer::dumpCIRDataToFileWithSync(RenderContext* pRenderContext)
+{
+    if (!mpCIRPathBuffer || mCurrentCIRPathCount == 0)
+    {
+        logWarning("PathTracer: Cannot dump CIR data - no valid CIR data available");
+        return;
+    }
+
+    if (!mpCIRSyncFence)
+    {
+        logError("PathTracer: Cannot dump CIR data - synchronization fence not available");
+        return;
+    }
+
+    logInfo("PathTracer: Starting synchronized CIR data dump to file...");
+    logInfo("PathTracer: Dumping {} paths from buffer", mCurrentCIRPathCount);
+
+    try
+    {
+        // Critical GPU-CPU Synchronization: Ensure GPU operations complete before CPU reads
+        // This is the key fix for the zero data problem mentioned in the documentation
+        uint64_t fenceValue = pRenderContext->signal(mpCIRSyncFence.get());
+        pRenderContext->submit(false);  // Submit without waiting
+        mpCIRSyncFence->wait(fenceValue);  // Wait for GPU completion on CPU side
+        
+        logInfo("PathTracer: GPU-CPU synchronization completed successfully");
+
+        // Create output directory if it doesn't exist
+        std::filesystem::create_directories(mCIROutputDirectory);
+
+        // Read buffer data from GPU - now synchronized
+        const CIRPathDataCPU* pData = static_cast<const CIRPathDataCPU*>(
+            mpCIRPathBuffer->map()
+        );
+
+        if (!pData)
+        {
+            logError("PathTracer: Failed to map buffer for reading after synchronization");
+            return;
+        }
+
+        // Generate output filename with timestamp
+        auto now = std::time(nullptr);
+        std::stringstream filename;
+        filename << mCIROutputDirectory << "/pathtracer_cir_data_frame_" << std::put_time(std::localtime(&now), "%Y%m%d_%H%M%S") << ".csv";
+
+        std::ofstream file(filename.str());
+        if (!file.is_open())
+        {
+            logError("PathTracer: Failed to open output file: {}", filename.str());
+            mpCIRPathBuffer->unmap();
+            return;
+        }
+
+        // Write CSV header
+        file << "PathIndex,PathLength(m),EmissionAngle(deg),ReceptionAngle(deg),ReflectanceProduct,ReflectionCount,EmittedPower(W),PixelX,PixelY\n";
+
+        // Process and validate data
+        uint32_t validPaths = 0;
+        uint32_t invalidPaths = 0;
+        float totalPathLength = 0.0f;
+        float minPathLength = FLT_MAX;
+        float maxPathLength = 0.0f;
+
+        for (uint32_t i = 0; i < std::min(mCurrentCIRPathCount, mMaxCIRPaths); ++i)
+        {
+            const auto& data = pData[i];
+
+            // Validate data integrity
+            bool isValid = true;
+            if (data.pathLength <= 0.0f || data.pathLength > 1000.0f ||
+                data.emissionAngle < 0.0f || data.emissionAngle > float(M_PI) ||
+                data.receptionAngle < 0.0f || data.receptionAngle > float(M_PI) ||
+                data.reflectanceProduct < 0.0f || data.reflectanceProduct > 1.0f ||
+                data.emittedPower < 0.0f || std::isnan(data.emittedPower) || std::isinf(data.emittedPower))
+            {
+                isValid = false;
+                invalidPaths++;
+            }
+            else
+            {
+                validPaths++;
+                totalPathLength += data.pathLength;
+                minPathLength = std::min(minPathLength, data.pathLength);
+                maxPathLength = std::max(maxPathLength, data.pathLength);
+            }
+
+            // Write to file (include invalid data for analysis)
+            file << i << ","
+                 << data.pathLength << ","
+                 << (data.emissionAngle * 180.0f / float(M_PI)) << ","
+                 << (data.receptionAngle * 180.0f / float(M_PI)) << ","
+                 << data.reflectanceProduct << ","
+                 << data.reflectionCount << ","
+                 << data.emittedPower << ","
+                 << data.getPixelX() << ","
+                 << data.getPixelY() << "\n";
+        }
+
+        file.close();
+        mpCIRPathBuffer->unmap();
+
+        // Log comprehensive statistics
+        logInfo("PathTracer: Synchronized CIR data dump completed successfully");
+        logInfo("PathTracer: Output file: {}", filename.str());
+        logInfo("PathTracer: Total paths processed: {}", mCurrentCIRPathCount);
+        logInfo("PathTracer: Valid paths: {}", validPaths);
+        logInfo("PathTracer: Invalid paths: {}", invalidPaths);
+        logInfo("PathTracer: Data integrity: {:.2f}%", (float)validPaths / mCurrentCIRPathCount * 100.0f);
+
+        if (validPaths > 0)
+        {
+            logInfo("PathTracer: Path length statistics:");
+            logInfo("  - Average: {:.3f}m", totalPathLength / validPaths);
+            logInfo("  - Minimum: {:.3f}m", minPathLength);
+            logInfo("  - Maximum: {:.3f}m", maxPathLength);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("PathTracer: Exception during synchronized CIR data dump: {}", e.what());
+        // Note: Buffer will be automatically unmapped when function exits
+    }
+}
+
+void PathTracer::logCIRStatisticsWithSync(RenderContext* pRenderContext)
+{
+    if (!mpCIRPathBuffer || mCurrentCIRPathCount == 0)
+    {
+        logInfo("PathTracer: No CIR statistics available - no data collected");
+        return;
+    }
+
+    if (!mpCIRSyncFence)
+    {
+        logError("PathTracer: Cannot read CIR statistics - synchronization fence not available");
+        return;
+    }
+
+    try
+    {
+        // Critical GPU-CPU Synchronization for statistics reading
+        uint64_t fenceValue = pRenderContext->signal(mpCIRSyncFence.get());
+        pRenderContext->submit(false);  // Submit without waiting
+        mpCIRSyncFence->wait(fenceValue);  // Wait for GPU completion
+        
+        logInfo("=== PathTracer Synchronized CIR Data Statistics ===");
+        logInfo("PathTracer: Collection status:");
+        logInfo("  - Buffer allocated: {}", mpCIRPathBuffer ? "Yes" : "No");
+        logInfo("  - Buffer bound: {}", mCIRBufferBound ? "Yes" : "No");
+        logInfo("  - Paths collected: {}", mCurrentCIRPathCount);
+        logInfo("  - Buffer capacity: {}", mMaxCIRPaths);
+        logInfo("  - Usage percentage: {:.2f}%", (float)mCurrentCIRPathCount / mMaxCIRPaths * 100.0f);
+        logInfo("  - Synchronization fence: {}", mpCIRSyncFence ? "Available" : "Not Available");
+
+        if (mpCIRPathBuffer)
+        {
+            // Calculate element size from total size and element count
+            uint32_t elementSize = mpCIRPathBuffer->getElementCount() > 0 ? 
+                static_cast<uint32_t>(mpCIRPathBuffer->getSize()) / mpCIRPathBuffer->getElementCount() : 0;
+            
+            logInfo("PathTracer: Buffer technical details:");
+            logInfo("  - Element size: {} bytes", elementSize);
+            logInfo("  - Total size: {:.2f} MB", mpCIRPathBuffer->getSize() / (1024.0f * 1024.0f));
+            logInfo("  - Memory used: {:.2f} KB", (mCurrentCIRPathCount * elementSize) / 1024.0f);
+        }
+
+        logInfo("==============================");
+    }
+    catch (const std::exception& e)
+    {
+        logError("PathTracer: Exception during synchronized CIR statistics: {}", e.what());
+    }
+}
+
+void PathTracer::verifyCIRDataIntegrityWithSync(RenderContext* pRenderContext)
+{
+    if (!mpCIRPathBuffer || mCurrentCIRPathCount == 0)
+    {
+        logWarning("PathTracer: Cannot verify CIR data integrity - no data available");
+        return;
+    }
+
+    if (!mpCIRSyncFence)
+    {
+        logError("PathTracer: Cannot verify CIR data integrity - synchronization fence not available");
+        return;
+    }
+
+    logInfo("PathTracer: Starting synchronized CIR data integrity verification...");
+
+    try
+    {
+        // Critical GPU-CPU Synchronization for integrity verification
+        uint64_t fenceValue = pRenderContext->signal(mpCIRSyncFence.get());
+        pRenderContext->submit(false);  // Submit without waiting
+        mpCIRSyncFence->wait(fenceValue);  // Wait for GPU completion
+        
+        logInfo("PathTracer: GPU-CPU synchronization completed for integrity verification");
+
+        const CIRPathDataCPU* pData = static_cast<const CIRPathDataCPU*>(
+            mpCIRPathBuffer->map()
+        );
+
+        if (!pData)
+        {
+            logError("PathTracer: Failed to map buffer for synchronized verification");
+            return;
+        }
+
+        uint32_t validPaths = 0;
+        uint32_t pathLengthErrors = 0;
+        uint32_t angleErrors = 0;
+        uint32_t reflectanceErrors = 0;
+        uint32_t powerErrors = 0;
+
+        // Verify each path
+        for (uint32_t i = 0; i < std::min(mCurrentCIRPathCount, mMaxCIRPaths); ++i)
+        {
+            const auto& data = pData[i];
+            bool pathValid = true;
+
+            // Check path length (should be in reasonable range)
+            if (data.pathLength <= 0.0f || data.pathLength > 1000.0f)
+            {
+                pathLengthErrors++;
+                pathValid = false;
+            }
+
+            // Check emission and reception angles (should be 0 to PI)
+            if (data.emissionAngle < 0.0f || data.emissionAngle > float(M_PI) ||
+                data.receptionAngle < 0.0f || data.receptionAngle > float(M_PI))
+            {
+                angleErrors++;
+                pathValid = false;
+            }
+
+            // Check reflectance product (should be 0 to 1)
+            if (data.reflectanceProduct < 0.0f || data.reflectanceProduct > 1.0f)
+            {
+                reflectanceErrors++;
+                pathValid = false;
+            }
+
+            // Check emitted power (should be positive and finite)
+            if (data.emittedPower < 0.0f || std::isnan(data.emittedPower) || std::isinf(data.emittedPower))
+            {
+                powerErrors++;
+                pathValid = false;
+            }
+
+            if (pathValid) validPaths++;
+        }
+
+        mpCIRPathBuffer->unmap();
+
+        // Report verification results
+        logInfo("PathTracer: Synchronized data integrity verification completed");
+        logInfo("PathTracer: Total paths checked: {}", mCurrentCIRPathCount);
+        logInfo("PathTracer: Valid paths: {}", validPaths);
+        logInfo("PathTracer: Overall integrity: {:.2f}%", (float)validPaths / mCurrentCIRPathCount * 100.0f);
+
+        if (pathLengthErrors > 0 || angleErrors > 0 || reflectanceErrors > 0 || powerErrors > 0)
+        {
+            logWarning("PathTracer: Data integrity issues detected after synchronization:");
+            if (pathLengthErrors > 0) logWarning("  - Path length errors: {}", pathLengthErrors);
+            if (angleErrors > 0) logWarning("  - Angle errors: {}", angleErrors);
+            if (reflectanceErrors > 0) logWarning("  - Reflectance errors: {}", reflectanceErrors);
+            if (powerErrors > 0) logWarning("  - Power errors: {}", powerErrors);
+        }
+        else
+        {
+            logInfo("PathTracer: All synchronized data passed integrity checks!");
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("PathTracer: Exception during synchronized data verification: {}", e.what());
+        // Note: Buffer will be automatically unmapped when function exits
+    }
+}
+
+void PathTracer::outputCIRSampleDataWithSync(RenderContext* pRenderContext, uint32_t sampleCount)
+{
+    if (!mpCIRPathBuffer || mCurrentCIRPathCount == 0)
+    {
+        logInfo("PathTracer: No synchronized CIR sample data available");
+        return;
+    }
+
+    if (!mpCIRSyncFence)
+    {
+        logError("PathTracer: Cannot read CIR sample data - synchronization fence not available");
+        return;
+    }
+
+    sampleCount = std::min(sampleCount, mCurrentCIRPathCount);
+    logInfo("PathTracer: Outputting {} synchronized CIR sample data entries:", sampleCount);
+
+    try
+    {
+        // Critical GPU-CPU Synchronization for sample data reading
+        uint64_t fenceValue = pRenderContext->signal(mpCIRSyncFence.get());
+        pRenderContext->submit(false);  // Submit without waiting
+        mpCIRSyncFence->wait(fenceValue);  // Wait for GPU completion
+        
+        logInfo("PathTracer: GPU-CPU synchronization completed for sample data reading");
+
+        const CIRPathDataCPU* pData = static_cast<const CIRPathDataCPU*>(
+            mpCIRPathBuffer->map()
+        );
+
+        if (!pData)
+        {
+            logError("PathTracer: Failed to map buffer for synchronized sample output");
+            return;
+        }
+
+        for (uint32_t i = 0; i < sampleCount; ++i)
+        {
+            const auto& data = pData[i];
+            
+            logInfo("PathTracer: Sync Sample {}: Length={:.3f}m, EmissionAngle={:.1f}deg, ReceptionAngle={:.1f}deg, Reflectance={:.3f}, Reflections={}, Power={:.6f}W, Pixel=({},{})",
+                i,
+                data.pathLength,
+                data.emissionAngle * 180.0f / float(M_PI),
+                data.receptionAngle * 180.0f / float(M_PI),
+                data.reflectanceProduct,
+                data.reflectionCount,
+                data.emittedPower,
+                data.getPixelX(),
+                data.getPixelY()
+            );
+        }
+
+        mpCIRPathBuffer->unmap();
+        logInfo("PathTracer: Synchronized sample data output completed successfully");
+    }
+    catch (const std::exception& e)
+    {
+        logError("PathTracer: Exception during synchronized sample output: {}", e.what());
+        // Note: Buffer will be automatically unmapped when function exits
     }
 }
 
