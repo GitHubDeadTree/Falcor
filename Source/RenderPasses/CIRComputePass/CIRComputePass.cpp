@@ -242,6 +242,12 @@ void CIRComputePass::execute(RenderContext* pRenderContext, const RenderData& re
         logInfo("CIR: Lambertian order calculated as {:.3f}", lambertianOrder);
         logInfo("CIR: CIR bins: {}, Time resolution: {:.2e}s", mCIRBins, mTimeResolution);
     }
+
+    // Output input data per frame if enabled
+    if (mOutputInputData && pInputPathData && pathCount > 0)
+    {
+        outputInputData(pRenderContext, pInputPathData, pathCount);
+    }
 }
 
 void CIRComputePass::renderUI(Gui::Widgets& widget)
@@ -361,6 +367,22 @@ void CIRComputePass::renderUI(Gui::Widgets& widget)
         // Calculate and display Lambertian order
         float lambertianOrder = -logf(2.0f) / logf(cosf(mHalfPowerAngle));
         widget.text("Lambertian Order: " + std::to_string(lambertianOrder));
+    }
+
+    // Debug Output section
+    if (widget.group("Debug Output", false))
+    {
+        if (widget.checkbox("Output Input Data Per Frame", mOutputInputData))
+        {
+            logInfo("CIR: Input data output per frame {}", mOutputInputData ? "enabled" : "disabled");
+        }
+        widget.tooltip("Enable per-frame output of input path data to CSV files");
+        
+        if (mOutputInputData)
+        {
+            widget.text("Warning: This will generate large amounts of data!");
+            widget.text("Output files will be saved to: CIRInputData_FrameXXXXX.csv");
+        }
     }
 }
 
@@ -1372,5 +1394,151 @@ void CIRComputePass::updateVisualization(const std::vector<float>& cirData)
     catch (const std::exception& e)
     {
         logError("CIR: Exception during visualization update: {}", e.what());
+    }
+}
+
+void CIRComputePass::outputInputData(RenderContext* pRenderContext, const ref<Buffer>& pInputPathData, uint32_t pathCount)
+{
+    if (!pInputPathData || pathCount == 0)
+    {
+        logWarning("CIR: Cannot output input data - invalid buffer or zero paths");
+        return;
+    }
+
+    try
+    {
+        // Limit the number of paths to output to avoid extremely large files
+        uint32_t maxPathsToOutput = std::min(pathCount, 10000u);
+        if (pathCount > maxPathsToOutput)
+        {
+            logInfo("CIR: Limiting input data output to {} paths (out of {})", maxPathsToOutput, pathCount);
+        }
+
+        // Read path data from GPU buffer using correct Falcor API
+        std::vector<CIRPathData> pathData(maxPathsToOutput);
+        
+        // Check source buffer size to ensure we don't copy more than available
+        size_t sourceBufferSize = pInputPathData->getSize();
+        size_t requestedSize = maxPathsToOutput * sizeof(CIRPathData);
+        size_t actualCopySize = std::min(requestedSize, sourceBufferSize);
+        uint32_t actualPathCount = static_cast<uint32_t>(actualCopySize / sizeof(CIRPathData));
+        
+        if (actualPathCount < maxPathsToOutput)
+        {
+            logInfo("CIR: Source buffer only contains {} paths, adjusting output count", actualPathCount);
+            maxPathsToOutput = actualPathCount;
+            pathData.resize(maxPathsToOutput);
+        }
+        
+        // Create ReadBack buffer for CPU access
+        ref<Buffer> pReadbackBuffer = mpDevice->createBuffer(
+            actualCopySize,
+            ResourceBindFlags::None,
+            MemoryType::ReadBack
+        );
+
+        if (!pReadbackBuffer)
+        {
+            logError("CIR: Failed to create ReadBack buffer for input data");
+            return;
+        }
+
+        // Copy data from GPU buffer to ReadBack buffer (only the portion we need)
+        pRenderContext->copyBufferRegion(pReadbackBuffer.get(), 0, pInputPathData.get(), 0, actualCopySize);
+        
+        // Map ReadBack buffer (no parameters needed)
+        const CIRPathData* pData = static_cast<const CIRPathData*>(pReadbackBuffer->map());
+        if (!pData)
+        {
+            logError("CIR: Failed to map ReadBack buffer for input data reading");
+            return;
+        }
+
+        // Copy data to vector
+        std::memcpy(pathData.data(), pData, actualCopySize);
+        pReadbackBuffer->unmap();
+
+        // Generate filename with frame number
+        std::string filename = "CIRInputData_Frame" + std::to_string(mFrameCount) + ".csv";
+        
+        // Save data to file
+        saveInputDataToFile(pathData, filename, mFrameCount);
+
+        logInfo("CIR: Input data output completed for frame {} ({} paths)", mFrameCount, actualPathCount);
+    }
+    catch (const std::exception& e)
+    {
+        logError("CIR: Exception during input data output: {}", e.what());
+    }
+}
+
+void CIRComputePass::saveInputDataToFile(const std::vector<CIRPathData>& pathData, const std::string& filename, uint32_t frameCount)
+{
+    if (pathData.empty())
+    {
+        logError("CIR: Cannot save empty path data to file");
+        return;
+    }
+
+    try
+    {
+        std::ofstream file(filename);
+        if (!file.is_open())
+        {
+            logError("CIR: Failed to open file for input data output: {}", filename);
+            return;
+        }
+
+        // Write CSV header
+        file << "Frame,PathIndex,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W,PixelX,PixelY,PropagationDelay_ns,IsValid\n";
+
+        // Write path data
+        uint32_t validPaths = 0;
+        uint32_t invalidPaths = 0;
+        const float lightSpeed = 2.998e8f; // Speed of light in m/s
+
+        for (uint32_t i = 0; i < pathData.size(); ++i)
+        {
+            const CIRPathData& path = pathData[i];
+            
+            // Calculate propagation delay
+            float propagationDelay = path.pathLength / lightSpeed;
+            float delayNs = propagationDelay * 1e9f; // Convert to nanoseconds
+            
+            // Check path validity using the built-in validation method
+            bool isValid = path.isValid();
+
+            if (isValid) validPaths++;
+            else invalidPaths++;
+
+            // Write path data with full precision
+            file << frameCount << ","
+                 << i << ","
+                 << std::fixed << std::setprecision(6) << path.pathLength << ","
+                 << std::fixed << std::setprecision(6) << path.emissionAngle << ","
+                 << std::fixed << std::setprecision(6) << path.receptionAngle << ","
+                 << std::fixed << std::setprecision(6) << path.reflectanceProduct << ","
+                 << path.reflectionCount << ","
+                 << std::scientific << std::setprecision(6) << path.emittedPower << ","
+                 << path.pixelCoord.x << ","
+                 << path.pixelCoord.y << ","
+                 << std::fixed << std::setprecision(3) << delayNs << ","
+                 << (isValid ? "1" : "0") << "\n";
+        }
+
+        file.close();
+
+        // Log statistics
+        logInfo("CIR: Input data saved to '{}' ({} total paths, {} valid, {} invalid)",
+                filename, pathData.size(), validPaths, invalidPaths);
+        
+        if (invalidPaths > 0)
+        {
+            logWarning("CIR: {} invalid paths detected in input data", invalidPaths);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("CIR: Exception during input data file save: {}", e.what());
     }
 } 
