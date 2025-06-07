@@ -49,9 +49,8 @@ __exported import Params;
 import Rendering.RTXDI.RTXDI;
 __exported import CIRPathData;
 
-// Global CIR path collection counter
-// This is used to track the current number of collected CIR paths across all pixels
-static uint gCIRPathCount = 0;
+// GPU path tracer output types.
+typedef ColorType NRDPrimaryHitNeeOnDelta;
 
 /** Interface for querying visibility in the scene.
     This is used in `handleHit`.
@@ -94,6 +93,10 @@ struct PathTracer
 
     // CIR (Channel Impulse Response) calculation outputs
     RWStructuredBuffer<CIRPathData> gCIRPathBuffer; ///< Output buffer for CIR path data collection.
+
+    // Global CIR path counter stored in buffer index 0 (first 4 bytes)
+    // This allows proper reset each frame from CPU side
+    RWStructuredBuffer<uint> gCIRPathCountBuffer; ///< Counter buffer for atomic path indexing
 
     /*******************************************************************
                                 Static members
@@ -1322,7 +1325,11 @@ struct PathTracer
     {
         if (!kOutputCIRData) return false;
         if (!path.isActive()) return false;
-        if (gCIRPathCount >= kMaxCIRPaths) return false;
+        
+        // Check current path count from buffer
+        uint currentCount = gCIRPathCountBuffer[0];
+        if (currentCount >= kMaxCIRPaths) return false;
+        
         return true;
     }
 
@@ -1332,7 +1339,7 @@ struct PathTracer
     uint allocateCIRPathSlot()
     {
         uint slotIndex;
-        InterlockedAdd(gCIRPathCount, 1, slotIndex);
+        InterlockedAdd(gCIRPathCountBuffer[0], 1, slotIndex);
         return slotIndex;
     }
 
@@ -1534,7 +1541,29 @@ struct PathTracer
         uint slotIndex = allocateCIRPathSlot();
         if (slotIndex >= kMaxCIRPaths) return;
 
-        // Write data to buffer
-        writeCIRPathData(cirData, slotIndex);
+        // ===== FORCE FIXED TEST DATA FOR DEBUGGING =====
+        // Override collected data with fixed test values to verify data transmission pipeline
+        CIRPathData testData;
+        
+        // Set fixed test values with clear physical meaning for easy verification
+        testData.pathLength = 2.5f;                    // 2.5 meters path length - typical indoor VLC distance
+        testData.emissionAngle = 0.523599f;            // 30 degrees emission angle (π/6 radians) - typical LED half-power angle
+        testData.receptionAngle = 0.785398f;           // 45 degrees reception angle (π/4 radians) - typical photodiode acceptance angle
+        testData.reflectanceProduct = 0.75f;           // 75% reflectance product - reasonable after 2 reflections
+        testData.reflectionCount = 2;                  // 2 reflections - typical for indoor VLC scenarios
+        testData.emittedPower = 10.0f;                 // 10 watts emitted power - high-power LED typical value
+        testData.pixelCoord = path.getPixel();         // Keep actual pixel coordinates for spatial verification
+        testData.pathIndex = slotIndex;                // Use actual slot index for uniqueness verification
+        
+        // Ensure test data is within valid ranges
+        testData.sanitize();
+        
+        // Write fixed test data instead of collected data
+        writeCIRPathData(testData, slotIndex);
+        
+        // ===== END FIXED TEST DATA =====
+        
+        // Original implementation (commented out for testing):
+        // writeCIRPathData(cirData, slotIndex);
     }
 };

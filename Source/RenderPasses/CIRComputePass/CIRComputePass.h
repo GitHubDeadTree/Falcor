@@ -39,7 +39,7 @@ using namespace Falcor;
     Each path represents light traveling from an LED transmitter through possible reflections
     to a photodiode receiver.
     
-    Note: This structure must match exactly with the Slang version in CIRPathData.slang
+    Note: This structure must match exactly with the PathTracer CPU CIRPathDataCPU structure
 */
 struct CIRPathData
 {
@@ -49,8 +49,13 @@ struct CIRPathData
     float reflectanceProduct;   // r_i product: Product of all surface reflectances along the path [0,1]
     uint32_t reflectionCount;   // K_i: Number of reflections in the path
     float emittedPower;         // P_t: Emitted optical power (watts)
-    uint2 pixelCoord;          // Pixel coordinates where the path terminates
-    uint32_t pathIndex;        // Unique index identifier for this path
+    uint64_t pixelCoord;        // Pixel coordinates packed as uint64_t (equivalent to GPU uint2)
+    uint32_t pathIndex;         // Unique index identifier for this path
+
+    // Helper methods for pixel coordinate access (matching CPU structure)
+    uint32_t getPixelX() const { return static_cast<uint32_t>(pixelCoord & 0xFFFFFFFF); }
+    uint32_t getPixelY() const { return static_cast<uint32_t>((pixelCoord >> 32) & 0xFFFFFFFF); }
+    void setPixelCoord(uint32_t x, uint32_t y) { pixelCoord = static_cast<uint64_t>(y) << 32 | x; }
 
     /** Validate that all CIR parameters are within expected physical ranges.
         \return True if all parameters are valid, false otherwise.

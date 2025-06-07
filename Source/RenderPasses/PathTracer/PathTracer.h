@@ -76,6 +76,7 @@ public:
     bool bindCIRBufferToShader();
     bool bindCIRBufferToParameterBlock(const ShaderVar& parameterBlock, const std::string& blockName) const;
     void resetCIRData();
+    void resetGPUCIRPathCounter(RenderContext* pRenderContext);
     void logCIRBufferStatus();
 
     // CIR data verification and debugging functions
@@ -227,6 +228,7 @@ private:
 
     // CIR (Channel Impulse Response) calculation buffers and management
     ref<Buffer>                     mpCIRPathBuffer;            ///< CIR path data buffer for visible light communication analysis.
+    ref<Buffer>                     mpCIRPathCountBuffer;       ///< CIR path counter buffer for atomic indexing.
     uint32_t                        mMaxCIRPaths = 1000000;     ///< Maximum number of CIR paths to collect.
     uint32_t                        mCurrentCIRPathCount = 0;   ///< Current number of collected CIR paths.
     bool                            mCIRBufferBound = false;    ///< CIR buffer binding status to shader.

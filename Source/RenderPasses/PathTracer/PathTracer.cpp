@@ -166,8 +166,13 @@ namespace
         float reflectanceProduct;   ///< Product of all surface reflectances along the path
         uint32_t reflectionCount;   ///< Number of reflections in the path
         float emittedPower;         ///< Emitted optical power (watts)
-        uint32_t pixelCoordX;       ///< X coordinate of pixel where path terminates
-        uint32_t pixelCoordY;       ///< Y coordinate of pixel where path terminates
+        uint64_t pixelCoord;        ///< Pixel coordinates packed as uint64_t (equivalent to GPU uint2)
+        uint32_t pathIndex;         ///< Unique index identifier for this path
+        
+        // Helper methods for pixel coordinate access
+        uint32_t getPixelX() const { return static_cast<uint32_t>(pixelCoord & 0xFFFFFFFF); }
+        uint32_t getPixelY() const { return static_cast<uint32_t>((pixelCoord >> 32) & 0xFFFFFFFF); }
+        void setPixelCoord(uint32_t x, uint32_t y) { pixelCoord = static_cast<uint64_t>(y) << 32 | x; }
     };
 }
 
@@ -1255,6 +1260,14 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
                 cirVar = mpCIRPathBuffer;
                 logInfo("CIR: Buffer bound to shader variable 'gCIRPathBuffer' - element count: {}", mpCIRPathBuffer->getElementCount());
                 logInfo("CIR: Buffer capacity: {} paths, Current count: {}", mMaxCIRPaths, mCurrentCIRPathCount);
+                
+                // Also bind the counter buffer if available
+                if (mpCIRPathCountBuffer)
+                {
+                    auto counterVar = var["gCIRPathCountBuffer"];
+                    counterVar = mpCIRPathCountBuffer;
+                    logInfo("CIR: Counter buffer bound to shader variable 'gCIRPathCountBuffer'");
+                }
             }
             catch (const std::exception&)
             {
@@ -1442,6 +1455,14 @@ bool PathTracer::beginFrame(RenderContext* pRenderContext, const RenderData& ren
 
     // Reset CIR data for new frame (only reset count, keep buffer allocated)
     mCurrentCIRPathCount = 0;
+
+    // Reset GPU-side CIR path counter for new frame
+    if (mpCIRPathBuffer)
+    {
+        // Clear the GPU path counter by clearing a small buffer region at the beginning
+        // This ensures gCIRPathCount in shader starts from 0 each frame
+        resetGPUCIRPathCounter(pRenderContext);
+    }
 
     mUpdateFlags = IScene::UpdateFlags::None;
 
@@ -1682,16 +1703,18 @@ void PathTracer::allocateCIRBuffers()
 
     logInfo("CIR: Starting buffer allocation...");
     logInfo("CIR: Requested buffer size - Elements: {}, Element size: {} bytes",
-            mMaxCIRPaths, 48u); // Estimated size: 8 fields * 4 bytes + padding
+            mMaxCIRPaths, sizeof(CIRPathDataCPU));
     logInfo("CIR: Total buffer size: {:.2f} MB",
-            (mMaxCIRPaths * 48u) / (1024.0f * 1024.0f));
+            (mMaxCIRPaths * sizeof(CIRPathDataCPU)) / (1024.0f * 1024.0f));
 
     try
     {
         // Create CIR path data buffer using device API
-        // Element size: 48 bytes (6 floats + 1 uint + 1 uint2 = 8*4 + padding)
+        // Calculate exact element size based on the actual structure layout
+        uint32_t elementSize = sizeof(CIRPathDataCPU);
+        
         mpCIRPathBuffer = mpDevice->createStructuredBuffer(
-            48u, // Element size in bytes
+            elementSize,    // Use calculated element size instead of hardcoded 48u
             mMaxCIRPaths,
             ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess,
             MemoryType::DeviceLocal,
@@ -1710,6 +1733,26 @@ void PathTracer::allocateCIRBuffers()
         logInfo("CIR: Buffer allocation successful");
         logInfo("CIR: Buffer element count: {}", mpCIRPathBuffer->getElementCount());
         logInfo("CIR: Buffer total size: {:.2f} MB", mpCIRPathBuffer->getSize() / (1024.0f * 1024.0f));
+
+        // Create CIR path counter buffer for atomic operations
+        mpCIRPathCountBuffer = mpDevice->createStructuredBuffer(
+            sizeof(uint32_t),    // Single uint32 for counter
+            1,                   // Only one element needed
+            ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess,
+            MemoryType::DeviceLocal,
+            nullptr,
+            false
+        );
+
+        if (!mpCIRPathCountBuffer)
+        {
+            logError("CIR: Failed to allocate CIR path counter buffer");
+            mpCIRPathBuffer = nullptr;
+            mCIRBufferBound = false;
+            return;
+        }
+
+        logInfo("CIR: Counter buffer allocation successful");
 
         mVarsChanged = true;
         mCIRBufferBound = false; // Need to rebind after allocation
@@ -1763,12 +1806,26 @@ bool PathTracer::bindCIRBufferToParameterBlock(const ShaderVar& parameterBlock, 
         // Bind CIR buffer to the parameter block member
         parameterBlock["gCIRPathBuffer"] = mpCIRPathBuffer;
         
+        // Also bind the counter buffer if available
+        if (mpCIRPathCountBuffer)
+        {
+            parameterBlock["gCIRPathCountBuffer"] = mpCIRPathCountBuffer;
+        }
+        
         // Verify binding was successful using findMember
         auto member = parameterBlock.findMember("gCIRPathBuffer");
         if (member.isValid())
         {
             logInfo("CIR: Buffer successfully bound to parameter block '{}' member 'gCIRPathBuffer'", blockName);
             logInfo("CIR: Bound buffer element count: {}", mpCIRPathBuffer->getElementCount());
+            
+            // Verify counter buffer binding
+            auto counterMember = parameterBlock.findMember("gCIRPathCountBuffer");
+            if (counterMember.isValid() && mpCIRPathCountBuffer)
+            {
+                logInfo("CIR: Counter buffer successfully bound to parameter block '{}' member 'gCIRPathCountBuffer'", blockName);
+            }
+            
             return true;
         }
         else
@@ -1925,8 +1982,8 @@ void PathTracer::dumpCIRDataToFile(RenderContext* pRenderContext)
                  << data.reflectanceProduct << ","
                  << data.reflectionCount << ","
                  << data.emittedPower << ","
-                 << data.pixelCoordX << ","
-                 << data.pixelCoordY << "\n";
+                 << data.getPixelX() << ","
+                 << data.getPixelY() << "\n";
         }
 
         file.close();
@@ -2115,8 +2172,8 @@ void PathTracer::outputCIRSampleData(RenderContext* pRenderContext, uint32_t sam
                 data.reflectanceProduct,
                 data.reflectionCount,
                 data.emittedPower,
-                data.pixelCoordX,
-                data.pixelCoordY
+                data.getPixelX(),
+                data.getPixelY()
             );
         }
 
@@ -2167,6 +2224,33 @@ void PathTracer::triggerCIRDataVerification(RenderContext* pRenderContext)
         {
             logWarning("CIR: No valid CIR data detected during verification");
         }
+    }
+}
+
+void PathTracer::resetGPUCIRPathCounter(RenderContext* pRenderContext)
+{
+    // Reset the GPU-side gCIRPathCount variable by clearing the counter buffer
+    // The counter buffer stores the current path count for atomic operations
+    
+    if (!mpCIRPathCountBuffer)
+    {
+        logWarning("CIR: Cannot reset GPU path counter - counter buffer not allocated");
+        return;
+    }
+
+    try
+    {
+        // Clear the counter buffer to reset path count to 0
+        pRenderContext->clearUAV(mpCIRPathCountBuffer->getUAV().get(), uint4(0));
+        
+        if (mFrameCount % 100 == 0)  // Log less frequently to avoid spam
+        {
+            logInfo("CIR: GPU path counter reset for frame {}", mFrameCount);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("CIR: Exception during GPU path counter reset: {}", e.what());
     }
 }
 

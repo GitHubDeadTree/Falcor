@@ -1520,8 +1520,8 @@ void CIRComputePass::saveInputDataToFile(const std::vector<CIRPathData>& pathDat
                  << std::fixed << std::setprecision(6) << path.reflectanceProduct << ","
                  << path.reflectionCount << ","
                  << std::scientific << std::setprecision(6) << path.emittedPower << ","
-                 << path.pixelCoord.x << ","
-                 << path.pixelCoord.y << ","
+                 << path.getPixelX() << ","
+                 << path.getPixelY() << ","
                  << std::fixed << std::setprecision(3) << delayNs << ","
                  << (isValid ? "1" : "0") << "\n";
         }
