@@ -32,6 +32,7 @@ __exported import Utils.Sampling.SampleGenerator;
 __exported import Rendering.Materials.InteriorList;
 __exported import GuideData;
 import Utils.Color.ColorHelpers;  // Import for luminance function
+import CIRPathData;  // Import CIR data structure
 
 static const uint kMaxRejectedHits = 16; // Maximum number of rejected hits along a path. The path is terminated if the limit is reached to avoid getting stuck in pathological cases.
 
@@ -107,6 +108,11 @@ struct PathState
     SampleGenerator sg;                 ///< Sample generator state. Typically 4-16B.
 
     float       wavelength;             ///< Light wavelength in nm (0 = not determined or white light)
+
+    // === CIR (Channel Impulse Response) specific fields (12 bytes) ===
+    float cirEmissionAngle;             ///< φ_i: Emission angle at LED surface (radians)
+    float cirReceptionAngle;            ///< θ_i: Reception angle at receiver surface (radians)  
+    float cirReflectanceProduct;        ///< r_i: Accumulated product of surface reflectances [0,1]
 
     // Accessors
 
@@ -222,5 +228,106 @@ struct PathState
     Ray getScatterRay()
     {
         return Ray(origin, dir, 0.f, kRayTMax);
+    }
+
+    // === CIR (Channel Impulse Response) data management methods ===
+    
+    /** Initialize CIR data with default values.
+        Called when a new path is generated.
+    */
+    [mutating] void initCIRData()
+    {
+        cirEmissionAngle = 0.0f;      // Default: perpendicular emission
+        cirReceptionAngle = 0.0f;     // Default: perpendicular reception
+        cirReflectanceProduct = 1.0f; // Initial value: no attenuation, will be multiplied by reflectances
+    }
+
+    /** Update emission angle based on surface normal and ray direction.
+        Should be called at the first surface interaction (emission surface).
+        \param[in] surfaceNormal Surface normal at the emission point.
+    */
+    [mutating] void updateCIREmissionAngle(float3 surfaceNormal)
+    {
+        float3 rayDir = normalize(dir);
+        float3 normal = normalize(surfaceNormal);
+        float cosAngle = abs(dot(rayDir, normal));
+        
+        // Error checking: ensure cosAngle is in valid range
+        if (cosAngle < 0.0f || cosAngle > 1.0f || isnan(cosAngle) || isinf(cosAngle))
+        {
+            cirEmissionAngle = 0.0f; // Default value: perpendicular emission
+            return;
+        }
+        
+        cirEmissionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
+    }
+
+    /** Update reception angle based on incoming ray direction and surface normal.
+        Should be called at the final surface interaction (reception surface).
+        \param[in] incomingDir Incoming ray direction.
+        \param[in] surfaceNormal Surface normal at the reception point.
+    */
+    [mutating] void updateCIRReceptionAngle(float3 incomingDir, float3 surfaceNormal)
+    {
+        float3 incDir = normalize(-incomingDir);
+        float3 normal = normalize(surfaceNormal);
+        float cosAngle = abs(dot(incDir, normal));
+        
+        // Error checking: ensure cosAngle is in valid range
+        if (cosAngle < 0.0f || cosAngle > 1.0f || isnan(cosAngle) || isinf(cosAngle))
+        {
+            cirReceptionAngle = 0.0f; // Default value: perpendicular reception
+            return;
+        }
+        
+        cirReceptionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
+    }
+
+    /** Update reflectance product by multiplying with new reflectance value.
+        Should be called at each surface reflection to accumulate total path reflectance.
+        \param[in] reflectance Surface reflectance value [0,1].
+    */
+    [mutating] void updateCIRReflectance(float reflectance)
+    {
+        // Error checking: ensure reflectance is in reasonable range
+        if (reflectance < 0.0f || reflectance > 1.0f || isnan(reflectance) || isinf(reflectance))
+        {
+            // Warning: reflectance value is abnormal, skip update to maintain existing value
+            return;
+        }
+        
+        cirReflectanceProduct *= reflectance;
+        
+        // Prevent underflow: maintain minimum threshold to avoid numerical issues
+        if (cirReflectanceProduct < 1e-6f)
+        {
+            cirReflectanceProduct = 1e-6f;
+        }
+    }
+
+    /** Generate complete CIR data by combining existing fields with CIR-specific fields.
+        This method maximizes data reuse by utilizing existing PathState fields.
+        \return Complete CIR data structure ready for output.
+    */
+    CIRPathData getCIRData()
+    {
+        CIRPathData cir;
+        
+        // ✅ Reuse existing fields (6/9 parameters - 66.7% reuse rate)
+        cir.pathLength = float(sceneLength);                                    // Reuse existing field
+        cir.reflectionCount = getBounces(BounceType::Diffuse) + 
+                             getBounces(BounceType::Specular);                  // Reuse existing field
+        cir.emittedPower = getLightIntensity();                                 // Reuse existing field
+        uint2 pixel = getPixel();
+        cir.pixelX = pixel.x;                                                   // Reuse existing field
+        cir.pixelY = pixel.y;                                                   // Reuse existing field
+        cir.pathIndex = id;                                                     // Reuse existing field
+        
+        // ❌ Use CIR-specific fields (3/9 parameters)
+        cir.emissionAngle = cirEmissionAngle;                                   // CIR-specific field
+        cir.receptionAngle = cirReceptionAngle;                                 // CIR-specific field
+        cir.reflectanceProduct = cirReflectanceProduct;                         // CIR-specific field
+        
+        return cir;
     }
 };

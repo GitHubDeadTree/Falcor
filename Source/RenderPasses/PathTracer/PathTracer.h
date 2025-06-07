@@ -37,14 +37,10 @@
 #include "Rendering/Materials/TexLODTypes.slang"
 #include "Rendering/Utils/PixelStats.h"
 #include "Rendering/RTXDI/RTXDI.h"
-#include "Core/API/Fence.h"
 
 #include "Params.slang"
 
 using namespace Falcor;
-
-// Forward declaration for CIR path data structure
-struct CIRPathData;
 
 /** Fast path tracer.
 */
@@ -71,28 +67,6 @@ public:
     void reset();
 
     static void registerBindings(pybind11::module& m);
-
-    // CIR buffer management functions
-    void allocateCIRBuffers();
-    bool bindCIRBufferToShader();
-    bool bindCIRBufferToParameterBlock(const ShaderVar& parameterBlock, const std::string& blockName) const;
-    void resetCIRData();
-    void resetGPUCIRPathCounter(RenderContext* pRenderContext);
-    void logCIRBufferStatus();
-
-    // CIR data verification and debugging functions
-    void dumpCIRDataToFile(RenderContext* pRenderContext);
-    void logCIRStatistics(RenderContext* pRenderContext);
-    void verifyCIRDataIntegrity(RenderContext* pRenderContext);
-    void outputCIRSampleData(RenderContext* pRenderContext, uint32_t sampleCount = 10);
-    bool hasValidCIRData() const;
-    void triggerCIRDataVerification(RenderContext* pRenderContext);
-
-    // GPU-CPU synchronized CIR data reading functions
-    void dumpCIRDataToFileWithSync(RenderContext* pRenderContext);
-    void logCIRStatisticsWithSync(RenderContext* pRenderContext);
-    void verifyCIRDataIntegrityWithSync(RenderContext* pRenderContext);
-    void outputCIRSampleDataWithSync(RenderContext* pRenderContext, uint32_t sampleCount = 10);
 
 private:
     struct TracePass
@@ -214,6 +188,7 @@ private:
     bool                            mOutputNRDData = false;     ///< True if NRD diffuse/specular data should be generated as outputs.
     bool                            mOutputNRDAdditionalData = false;   ///< True if NRD data from delta and residual paths should be generated as designated outputs rather than being included in specular NRD outputs.
     bool                            mOutputInitialRayInfo = false; ///< True if initial ray direction and intensity data should be generated as outputs.
+    bool                            mOutputCIRData = false;      ///< True if CIR path data should be generated as outputs.
 
     ref<ComputePass>                mpGeneratePaths;            ///< Fullscreen compute pass generating paths starting at primary hits.
     ref<ComputePass>                mpResolvePass;              ///< Sample resolve pass.
@@ -233,20 +208,6 @@ private:
     ref<Buffer>                     mpSampleNRDReflectance;     ///< Compact per-sample NRD reflectance data.
     ref<Buffer>                     mpSampleInitialRayInfo;     ///< Per-sample initial ray direction and intensity buffer.
 
-    // CIR (Channel Impulse Response) calculation buffers and management
-    ref<Buffer>                     mpCIRPathBuffer;            ///< CIR path data buffer for visible light communication analysis.
-    ref<Buffer>                     mpCIRPathCountBuffer;       ///< CIR path counter buffer for atomic indexing.
-    uint32_t                        mMaxCIRPaths = 1000000;     ///< Maximum number of CIR paths to collect.
-    uint32_t                        mCurrentCIRPathCount = 0;   ///< Current number of collected CIR paths.
-    bool                            mCIRBufferBound = false;    ///< CIR buffer binding status to shader.
-
-    // CIR debugging state
-    uint32_t mCIRFrameCheckInterval = 60;        ///< Frames between CIR data checks
-    uint32_t mLastCIRCheckFrame = 0;             ///< Last frame when CIR data was checked
-    bool mCIRDebugEnabled = true;                ///< Enable CIR debugging output
-    std::string mCIROutputDirectory = "cir_debug_output"; ///< Directory for CIR debug files
-    mutable uint32_t mFrameCount = 0;            ///< Frame counter for CIR debugging
-
-    // GPU-CPU synchronization for CIR data reading
-    ref<Fence> mpCIRSyncFence;                   ///< Fence for GPU-CPU synchronization during CIR buffer readback
+    // === CIR data output buffer ===
+    ref<Buffer>                     mpSampleCIRData;            ///< CIR path data output buffer
 };

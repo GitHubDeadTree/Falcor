@@ -47,10 +47,6 @@ import NRDHelpers;
 __exported import PathState;
 __exported import Params;
 import Rendering.RTXDI.RTXDI;
-__exported import CIRPathData;
-
-// GPU path tracer output types.
-typedef ColorType NRDPrimaryHitNeeOnDelta;
 
 /** Interface for querying visibility in the scene.
     This is used in `handleHit`.
@@ -90,13 +86,6 @@ struct PathTracer
     NRDBuffers outputNRD;                           ///< Output NRD data.
 
     RWTexture2D<float4> outputColor;                ///< Output color buffer if kSamplesPerPixel == 1.
-
-    // CIR (Channel Impulse Response) calculation outputs
-    RWStructuredBuffer<CIRPathData> gCIRPathBuffer; ///< Output buffer for CIR path data collection.
-
-    // Global CIR path counter stored in buffer index 0 (first 4 bytes)
-    // This allows proper reset each frame from CPU side
-    RWStructuredBuffer<uint> gCIRPathCountBuffer; ///< Counter buffer for atomic path indexing
 
     /*******************************************************************
                                 Static members
@@ -328,14 +317,6 @@ struct PathTracer
 
         // Load the primary hit info from the V-buffer.
         const HitInfo hit = unpackHitInfo(vbuffer[pixel]);
-
-        // Initialize CIR data collection for this new path
-        if (shouldCollectCIRData(path))
-        {
-            CIRPathData cirData;
-            initializeCIRData(cirData, path);
-            // Note: The actual CIR data collection will occur in handleHit/handleMiss
-        }
 
         // If invalid, the path is still active and treated as a miss.
         if (hit.isValid())
@@ -869,23 +850,8 @@ struct PathTracer
         const bool isTriangleHit = hitType == HitType::Triangle;
         const bool isCurveHit = kUseCurves && (hitType == HitType::Curve);
 
-        // Initialize CIR data collection for this path if enabled
-        CIRPathData cirData;
-        bool collectingCIR = shouldCollectCIRData(path);
-        if (collectingCIR)
-        {
-            initializeCIRData(cirData, path);
-        }
-
         // Load shading data. This is a long latency operation.
         ShadingData sd = loadShadingData(path.hit, path.origin, path.dir);
-
-        // Collect CIR data at this path vertex
-        if (collectingCIR)
-        {
-            Ray currentRay = Ray(path.origin, path.dir, 0.0f, kRayTMax);
-            collectCIRData(path, currentRay, path.hit, cirData);
-        }
 
         const bool isHairMaterial = kUseHairMaterial && (sd.mtl.getMaterialType() == MaterialType::Hair);
         // TODO: Decouple geometry from the material.
@@ -1116,17 +1082,6 @@ struct PathTracer
         if (!valid)
         {
             path.terminate();
-            
-            // Store CIR data when path terminates
-            if (collectingCIR)
-            {
-                storeCIRPath(path, cirData);
-            }
-        }
-        else if (collectingCIR)
-        {
-            // Continue collecting CIR data for ongoing path
-            // The data will be updated in subsequent handleHit calls
         }
     }
 
@@ -1140,18 +1095,6 @@ struct PathTracer
         // - Evaluate environment map
         // - Write guiding data
         // - Terminate the path
-
-        // Initialize CIR data collection for miss cases
-        CIRPathData cirData;
-        bool collectingCIR = shouldCollectCIRData(path);
-        if (collectingCIR)
-        {
-            initializeCIRData(cirData, path);
-            // For miss cases, collect accumulated path data
-            HitInfo invalidHit; // Invalid hit for miss case
-            Ray currentRay = Ray(path.origin, path.dir, 0.0f, kRayTMax);
-            collectCIRData(path, currentRay, invalidHit, cirData);
-        }
 
         // Check if the scatter event is samplable by the light sampling technique.
         const bool isLightSamplable = path.isLightSamplable();
@@ -1242,12 +1185,6 @@ struct PathTracer
 #endif
 
         path.terminate();
-
-        // Store CIR data when path terminates due to miss
-        if (collectingCIR)
-        {
-            storeCIRPath(path, cirData);
-        }
     }
 
     /** Write path contribution to output buffer.
@@ -1299,276 +1236,5 @@ struct PathTracer
 
             outputNRD.sampleRadiance[outIdx] = data;
         }
-    }
-
-    /*******************************************************************
-                          CIR Data Collection Functions
-    *******************************************************************/
-
-    /** Initialize CIR path data with default values.
-        \param[out] cirData CIR path data structure to initialize.
-        \param[in] path Current path state.
-    */
-    void initializeCIRData(inout CIRPathData cirData, const PathState path)
-    {
-        cirData.initDefaults();
-        uint2 pixel = path.getPixel();
-        cirData.pixelX = pixel.x;
-        cirData.pixelY = pixel.y;
-        cirData.pathIndex = path.id; // Use path ID as unique identifier
-    }
-
-    /** Check if CIR data collection should be enabled for this path.
-        CIR data is collected for all active paths to ensure comprehensive analysis.
-        \param[in] path Current path state.
-        \return True if CIR data should be collected for this path.
-    */
-    bool shouldCollectCIRData(const PathState path)
-    {
-        if (!kOutputCIRData) return false;
-        if (!path.isActive()) return false;
-        
-        // Check current path count from buffer
-        uint currentCount = gCIRPathCountBuffer[0];
-        if (currentCount >= kMaxCIRPaths) return false;
-        
-        return true;
-    }
-
-    /** Atomically allocate a slot in the CIR path buffer.
-        \return Index in the CIR buffer, or kMaxCIRPaths if buffer is full.
-    */
-    uint allocateCIRPathSlot()
-    {
-        uint slotIndex;
-        InterlockedAdd(gCIRPathCountBuffer[0], 1, slotIndex);
-        return slotIndex;
-    }
-
-    /** Write CIR path data to the global buffer with bounds checking.
-        \param[in] cirData CIR path data to write.
-        \param[in] slotIndex Buffer index to write to.
-    */
-    void writeCIRPathData(const CIRPathData cirData, uint slotIndex)
-    {
-        // Bounds check to prevent buffer overflow
-        if (slotIndex >= kMaxCIRPaths) return;
-
-        // Validate data before writing
-        CIRPathData validatedData = cirData;
-        validatedData.sanitize();
-
-        // Write to buffer
-        gCIRPathBuffer[slotIndex] = validatedData;
-    }
-
-    /** Check if current hit represents a receiver surface.
-        For VLC systems, receivers are typically photodiode surfaces that detect light.
-        \param[in] hit Hit information.
-        \return True if this hit represents a receiver.
-    */
-    bool isReceiver(const HitInfo hit)
-    {
-        // For now, consider any valid hit as a potential receiver
-        // This can be refined based on material properties or surface tags
-        return hit.isValid();
-    }
-
-    /** Compute surface reflectance at the current hit point.
-        \param[in] hit Hit information.
-        \param[in] ray Incoming ray.
-        \return Surface reflectance value in range [0,1].
-    */
-    float computeReflectance(const HitInfo hit, const Ray ray)
-    {
-        if (!hit.isValid()) return 0.0f;
-
-        // Load basic material properties
-        const uint materialID = gScene.getMaterialID(hit.getInstanceID());
-        const MaterialHeader materialHeader = gScene.materials.getMaterialHeader(materialID);
-
-        // For simplified CIR calculation, estimate reflectance based on material type
-        if (materialHeader.isEmissive()) return 0.1f; // Low reflectance for emissive materials
-
-        // Default diffuse reflectance approximation
-        // In a complete implementation, this would compute Fresnel reflectance
-        return 0.5f; // Default 50% reflectance
-    }
-
-    /** Collect CIR parameters during path tracing.
-        This function gathers all six essential parameters needed for CIR calculation.
-        \param[in] pathState Current path state.
-        \param[in] ray Current ray being traced.
-        \param[in] hit Hit information.
-        \param[in,out] cirData CIR data structure to update.
-    */
-    void collectCIRData(const PathState pathState, const Ray ray, const HitInfo hit, inout CIRPathData cirData)
-    {
-        // Debug: Record data collection for every 10000th path
-        bool isDebugPath = (cirData.pathIndex % 10000 == 0);
-
-        if (isDebugPath)
-        {
-            // Note: logInfo not available in slang, using basic debugging approach
-            // In actual implementation, debug info would be collected and logged in CPU code
-        }
-
-        // 1. Accumulate path length from sceneLength
-        float prevLength = cirData.pathLength;
-        cirData.pathLength += float(pathState.sceneLength);
-
-        // Validate path length range (0.1m to 1000m for indoor VLC)
-        if (cirData.pathLength < 0.0f || cirData.pathLength > 1000.0f)
-        {
-            cirData.pathLength = clamp(cirData.pathLength, 0.3f, 1000.0f); // Reasonable range
-        }
-
-        // 2. Calculate emission angle at first surface interaction (LED)
-        if (pathState.getBounces(BounceType::Diffuse) == 0 && pathState.getBounces(BounceType::Specular) == 0)
-        {
-            if (hit.isValid())
-            {
-                // Load surface normal
-                ShadingData sd = loadShadingData(hit, pathState.origin, pathState.dir);
-                float3 surfaceNormal = sd.getOrientedFaceNormal();
-                float3 rayDir = normalize(ray.dir);
-                
-                // Calculate angle between ray direction and surface normal
-                float dotProduct = abs(dot(-rayDir, surfaceNormal));
-                cirData.emissionAngle = acos(clamp(dotProduct, 0.0f, 1.0f));
-
-                // Validate emission angle [0, π]
-                if (cirData.emissionAngle < 0.0f || cirData.emissionAngle > 3.14159265f)
-                {
-                    cirData.emissionAngle = 0.785398f; // Default 45 degrees
-                }
-            }
-        }
-
-        // 3. Calculate reception angle at receiver surface
-        if (isReceiver(hit))
-        {
-            ShadingData sd = loadShadingData(hit, pathState.origin, pathState.dir);
-            float3 surfaceNormal = sd.getOrientedFaceNormal();
-            float3 rayDir = normalize(ray.dir);
-            
-            // Calculate angle between incoming ray and receiver normal
-            float dotProduct = abs(dot(-rayDir, surfaceNormal));
-            cirData.receptionAngle = acos(clamp(dotProduct, 0.0f, 1.0f));
-
-            // Validate reception angle [0, π]
-            if (cirData.receptionAngle < 0.0f || cirData.receptionAngle > 3.14159265f)
-            {
-                cirData.receptionAngle = 0.785398f; // Default 45 degrees
-            }
-        }
-
-        // 4. Accumulate reflectance product with each surface interaction
-        if (hit.isValid())
-        {
-            float reflectance = computeReflectance(hit, ray);
-            float prevProduct = cirData.reflectanceProduct;
-            cirData.reflectanceProduct *= reflectance;
-
-            // Validate reflectance values [0, 1]
-            if (reflectance < 0.0f || reflectance > 1.0f || 
-                cirData.reflectanceProduct < 0.0f || cirData.reflectanceProduct > 1.0f)
-            {
-                cirData.reflectanceProduct = clamp(cirData.reflectanceProduct, 0.0f, 1.0f);
-            }
-        }
-
-        // 5. Update reflection count from bounce counters
-        uint prevReflectionCount = cirData.reflectionCount;
-        cirData.reflectionCount = pathState.getBounces(BounceType::Diffuse) + 
-                                 pathState.getBounces(BounceType::Specular);
-
-        // 6. Calculate emitted power from path radiance
-        float prevPower = cirData.emittedPower;
-        cirData.emittedPower = luminance(pathState.L);
-
-        // Validate emitted power (must be positive and reasonable)
-        if (cirData.emittedPower <= 0.0f || isnan(cirData.emittedPower) || isinf(cirData.emittedPower))
-        {
-            cirData.emittedPower = 1.0f; // Default 1W
-        }
-        else if (cirData.emittedPower > 1000.0f)
-        {
-            cirData.emittedPower = clamp(cirData.emittedPower, 1e-6f, 1000.0f);
-        }
-    }
-
-    /** Write CIR path data to buffer with detailed validation and debugging.
-        \param[in] cirData CIR path data to write.
-        \param[in] pathIndex Index of the path for debugging purposes.
-    */
-    void writeCIRPathToBuffer(const CIRPathData cirData, uint pathIndex)
-    {
-        // Check buffer bounds to prevent overflow
-        if (pathIndex >= kMaxCIRPaths)
-        {
-            // Buffer overflow - cannot write data
-            return;
-        }
-
-        // Create a copy for validation and sanitization
-        CIRPathData validatedData = cirData;
-        
-        // Ensure all parameters are within valid ranges
-        validatedData.sanitize();
-
-        // Final validation check
-        if (!validatedData.isValid())
-        {
-            // If data is still invalid after sanitization, use defaults
-            validatedData.initDefaults();
-            validatedData.pixelX = cirData.pixelX;
-            validatedData.pixelY = cirData.pixelY;
-            validatedData.pathIndex = cirData.pathIndex;
-        }
-
-        // Write validated data to buffer
-        gCIRPathBuffer[pathIndex] = validatedData;
-    }
-
-    /** Collect and store CIR data for a terminated path.
-        This function should be called when a path terminates at a receiver.
-        \param[in] path The terminated path state.
-        \param[in] cirData Collected CIR parameters for this path.
-    */
-    void storeCIRPath(const PathState path, const CIRPathData cirData)
-    {
-        if (!shouldCollectCIRData(path)) return;
-
-        // Allocate slot in buffer
-        uint slotIndex = allocateCIRPathSlot();
-        if (slotIndex >= kMaxCIRPaths) return;
-
-        // ===== FORCE FIXED TEST DATA FOR DEBUGGING =====
-        // Override collected data with fixed test values to verify data transmission pipeline
-        CIRPathData testData;
-        
-        // Set fixed test values with clear physical meaning for easy verification
-        testData.pathLength = 2.5f;                    // 2.5 meters path length - typical indoor VLC distance
-        testData.emissionAngle = 0.523599f;            // 30 degrees emission angle (π/6 radians) - typical LED half-power angle
-        testData.receptionAngle = 0.785398f;           // 45 degrees reception angle (π/4 radians) - typical photodiode acceptance angle
-        testData.reflectanceProduct = 0.75f;           // 75% reflectance product - reasonable after 2 reflections
-        testData.reflectionCount = 2;                  // 2 reflections - typical for indoor VLC scenarios
-        testData.emittedPower = 10.0f;                 // 10 watts emitted power - high-power LED typical value
-        uint2 pixel = path.getPixel();
-        testData.pixelX = pixel.x;                     // Keep actual pixel X coordinate for spatial verification
-        testData.pixelY = pixel.y;                     // Keep actual pixel Y coordinate for spatial verification
-        testData.pathIndex = slotIndex;                // Use actual slot index for uniqueness verification
-        
-        // Ensure test data is within valid ranges
-        testData.sanitize();
-        
-        // Write fixed test data instead of collected data
-        writeCIRPathData(testData, slotIndex);
-        
-        // ===== END FIXED TEST DATA =====
-        
-        // Original implementation (commented out for testing):
-        // writeCIRPathData(cirData, slotIndex);
     }
 };

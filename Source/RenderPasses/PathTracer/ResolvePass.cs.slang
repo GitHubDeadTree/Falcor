@@ -29,7 +29,6 @@ import RenderPasses.Shared.Denoising.NRDData;
 import ColorType;
 import GuideData;
 import Params;
-import CIRPathData;
 
 /** Compute shader implementing a sample resolve pass.
 
@@ -50,9 +49,6 @@ struct ResolvePass
     StructuredBuffer<float4>      sampleNRDEmission;        ///< Input per-sample NRD emission data. Only valid if kOutputNRDData == true.
     StructuredBuffer<float4>      sampleNRDReflectance;     ///< Input per-sample NRD reflectance data. Only valid if kOutputNRDData == true.
     StructuredBuffer<float4>      sampleInitialRayInfo;     ///< Input per-sample initial ray direction and intensity data. Only valid if kOutputInitialRayInfo == true.
-
-    // CIR (Channel Impulse Response) calculation outputs
-    RWStructuredBuffer<CIRPathData> gCIRPathBuffer;        ///< Output buffer for CIR path data collection.
 
     StructuredBuffer<float4> sampleNRDPrimaryHitNeeOnDelta; ///< Output per-sample NEE on paths classified as delta, from delta+diffuse materials. Only valid if kOutputNRDData == true.
     Texture2D<float4> primaryHitDiffuseReflectance;         ///< Output per-pixel primary hit diffuse reflectance. Only valid if kOutputNRDData == true.

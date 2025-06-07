@@ -25,106 +25,79 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#pragma once
 
-// CIR calculation constants
-static const uint kMaxCIRPaths = 1000000;       ///< Maximum number of CIR paths to collect
-static const bool kOutputCIRData = true;        ///< Enable CIR data collection
-
-/** CIR (Channel Impulse Response) path data structure.
-
+/** CIR (Channel Impulse Response) path data structure for VLC analysis.
     This structure stores the essential parameters of each light propagation path
     needed for calculating the Channel Impulse Response in visible light communication systems.
     Each path represents light traveling from an LED transmitter through possible reflections
     to a photodiode receiver.
     
-    Memory layout fix: Using separate uint fields instead of uint2 for better CPU-GPU compatibility
+    Note: This structure must match exactly with the corresponding CPU structure
+    for proper GPU-CPU data transfer.
 */
 struct CIRPathData
 {
     float pathLength;           ///< d_i: Total propagation distance of the path (meters)
-    float emissionAngle;        ///< φ_i: Emission angle at LED surface (radians)
-    float receptionAngle;       ///< θ_i: Reception angle at photodiode surface (radians)
+    float emissionAngle;        ///< φ_i: Emission angle at LED surface (radians, range [0, π])
+    float receptionAngle;       ///< θ_i: Reception angle at photodiode surface (radians, range [0, π])
     float reflectanceProduct;   ///< r_i product: Product of all surface reflectances along the path [0,1]
     uint reflectionCount;       ///< K_i: Number of reflections in the path
     float emittedPower;         ///< P_t: Emitted optical power (watts)
-    uint pixelX;               ///< Pixel X coordinate (separated for better CPU-GPU memory alignment)
-    uint pixelY;               ///< Pixel Y coordinate (separated for better CPU-GPU memory alignment)
-    uint pathIndex;            ///< Unique index identifier for this path
-
-    /** Initialize CIR path data with default values.
-        Default values represent a direct line-of-sight path with minimal parameters.
-    */
-    [mutating] void initDefaults()
-    {
-        pathLength = 0.0f;          // Will be accumulated during path tracing
-        emissionAngle = 0.0f;       // Perpendicular emission (0 radians)
-        receptionAngle = 0.0f;      // Perpendicular reception (0 radians)
-        reflectanceProduct = 1.0f;  // No reflections initially, so product = 1
-        reflectionCount = 0;        // No reflections initially
-        emittedPower = 1.0f;        // Default 1 watt emission power
-        pixelX = 0;                 // Origin pixel X
-        pixelY = 0;                 // Origin pixel Y
-        pathIndex = 0;              // Will be set when path is created
-    }
+    uint pixelX;                ///< Pixel X coordinate
+    uint pixelY;                ///< Pixel Y coordinate
+    uint pathIndex;             ///< Unique index identifier for this path
 
     /** Validate that all CIR parameters are within expected physical ranges.
         \return True if all parameters are valid, false otherwise.
     */
     bool isValid()
     {
-        // Check path length: reasonable range 0.1m to 1000m for indoor VLC
-        if (pathLength < 0.1f || pathLength > 1000.0f) return false;
-
-        // Check angles: must be in [0, π] radians
-        if (emissionAngle < 0.0f || emissionAngle > 3.14159265f) return false;
-        if (receptionAngle < 0.0f || receptionAngle > 3.14159265f) return false;
-
-        // Check reflectance product: must be in [0, 1]
+        // Path length validation: reasonable range for indoor VLC
+        if (pathLength < 0.01f || pathLength > 1000.0f) return false;
+        
+        // Angle validation: must be within [0, π]
+        if (emissionAngle < 0.0f || emissionAngle > 3.14159f) return false;
+        if (receptionAngle < 0.0f || receptionAngle > 3.14159f) return false;
+        
+        // Reflectance product validation: must be within [0, 1]
         if (reflectanceProduct < 0.0f || reflectanceProduct > 1.0f) return false;
-
-        // Check reflection count: reasonable upper limit of 100 bounces
-        if (reflectionCount > 100) return false;
-
-        // Check emitted power: must be positive and reasonable (up to 1000W)
-        if (emittedPower <= 0.0f || emittedPower > 1000.0f) return false;
-
-        // Check for NaN or infinity in float values
+        
+        // Emitted power validation: must be positive
+        if (emittedPower <= 0.0f) return false;
+        
+        // Check for NaN and infinity
         if (isnan(pathLength) || isinf(pathLength)) return false;
         if (isnan(emissionAngle) || isinf(emissionAngle)) return false;
         if (isnan(receptionAngle) || isinf(receptionAngle)) return false;
         if (isnan(reflectanceProduct) || isinf(reflectanceProduct)) return false;
         if (isnan(emittedPower) || isinf(emittedPower)) return false;
-
+        
         return true;
     }
 
-    /** Sanitize parameters to valid ranges if they are invalid.
-        This provides robust error handling for edge cases.
+    /** Sanitize CIR data by clamping values to valid ranges.
+        This method ensures all parameters are within physically reasonable bounds.
     */
     [mutating] void sanitize()
     {
         // Clamp path length to reasonable range
-        pathLength = clamp(pathLength, 0.1f, 1000.0f);
-
+        pathLength = clamp(pathLength, 0.01f, 1000.0f);
+        
         // Clamp angles to [0, π] range
-        emissionAngle = clamp(emissionAngle, 0.0f, 3.14159265f);
-        receptionAngle = clamp(receptionAngle, 0.0f, 3.14159265f);
-
-        // Clamp reflectance product to [0, 1]
+        emissionAngle = clamp(emissionAngle, 0.0f, 3.14159f);
+        receptionAngle = clamp(receptionAngle, 0.0f, 3.14159f);
+        
+        // Clamp reflectance product to [0, 1] range
         reflectanceProduct = clamp(reflectanceProduct, 0.0f, 1.0f);
-
-        // Clamp reflection count to reasonable range
-        reflectionCount = min(reflectionCount, 100u);
-
-        // Clamp emitted power to positive reasonable range
-        emittedPower = clamp(emittedPower, 1e-6f, 1000.0f);
-
-        // Handle NaN and infinity cases
-        if (isnan(pathLength) || isinf(pathLength)) pathLength = 0.3f; // Default ~1ns light travel
-        if (isnan(emissionAngle) || isinf(emissionAngle)) emissionAngle = 0.785398f; // 45 degrees
-        if (isnan(receptionAngle) || isinf(receptionAngle)) receptionAngle = 0.785398f; // 45 degrees
+        
+        // Ensure positive emitted power with minimum threshold
+        emittedPower = max(emittedPower, 1e-6f);
+        
+        // Handle NaN and infinity values
+        if (isnan(pathLength) || isinf(pathLength)) pathLength = 1.0f;
+        if (isnan(emissionAngle) || isinf(emissionAngle)) emissionAngle = 0.0f;
+        if (isnan(receptionAngle) || isinf(receptionAngle)) receptionAngle = 0.0f;
         if (isnan(reflectanceProduct) || isinf(reflectanceProduct)) reflectanceProduct = 0.5f;
         if (isnan(emittedPower) || isinf(emittedPower)) emittedPower = 1.0f;
     }
-};
+}; 
