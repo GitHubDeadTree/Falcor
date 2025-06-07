@@ -68,6 +68,21 @@ public:
 
     static void registerBindings(pybind11::module& m);
 
+    // CIR buffer management functions
+    void allocateCIRBuffers();
+    bool bindCIRBufferToShader();
+    bool bindCIRBufferToParameterBlock(const ShaderVar& parameterBlock, const std::string& blockName) const;
+    void resetCIRData();
+    void logCIRBufferStatus();
+
+    // CIR data verification and debugging functions
+    void dumpCIRDataToFile(RenderContext* pRenderContext);
+    void logCIRStatistics(RenderContext* pRenderContext);
+    void verifyCIRDataIntegrity(RenderContext* pRenderContext);
+    void outputCIRSampleData(RenderContext* pRenderContext, uint32_t sampleCount = 10);
+    bool hasValidCIRData() const;
+    void triggerCIRDataVerification(RenderContext* pRenderContext);
+
 private:
     struct TracePass
     {
@@ -213,10 +228,9 @@ private:
     uint32_t                        mCurrentCIRPathCount = 0;   ///< Current number of collected CIR paths.
     bool                            mCIRBufferBound = false;    ///< CIR buffer binding status to shader.
 
-    // CIR buffer management functions
-    void allocateCIRBuffers();
-    bool bindCIRBufferToShader();
-    bool bindCIRBufferToParameterBlock(const ShaderVar& parameterBlock, const std::string& blockName) const;
-    void resetCIRData();
-    void logCIRBufferStatus();
+    // CIR debugging state
+    uint32_t mCIRFrameCheckInterval = 60;        ///< Frames between CIR data checks
+    uint32_t mLastCIRCheckFrame = 0;             ///< Last frame when CIR data was checked
+    bool mCIRDebugEnabled = true;                ///< Enable CIR debugging output
+    std::string mCIROutputDirectory = "cir_debug_output"; ///< Directory for CIR debug files
 };

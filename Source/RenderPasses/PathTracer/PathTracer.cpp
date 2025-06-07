@@ -30,6 +30,12 @@
 #include "RenderGraph/RenderPassStandardFlags.h"
 #include "Rendering/Lights/EmissiveUniformSampler.h"
 
+// CIR debugging support
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
 
 namespace
 {
@@ -455,7 +461,32 @@ void PathTracer::setScene(RenderContext* pRenderContext, const ref<Scene>& pScen
 
 void PathTracer::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
+    // Clear outputs if pass is disabled.
+    if (!mEnabled)
+    {
+        // ...existing clear code...
+        auto clearTex = [&](const ChannelDesc& channel)
+        {
+            auto pTex = renderData.getTexture(channel.name);
+            if (pTex) pRenderContext->clearTexture(pTex.get());
+        };
+        for (const auto& channel : kOutputChannels) clearTex(channel);
+
+        return;
+    }
+
+    // Check if scene is loaded.
+    if (!mpScene)
+    {
+        logWarning("PathTracer::execute() - no scene is loaded");
+        return;
+    }
+
+    // Configure render pass.
     if (!beginFrame(pRenderContext, renderData)) return;
+
+    // Perform CIR data verification if debugging is enabled
+    triggerCIRDataVerification(pRenderContext);
 
     // Update shader program specialization.
     updatePrograms();
@@ -671,15 +702,62 @@ bool PathTracer::renderDebugUI(Gui::Widgets& widget)
 
     if (auto group = widget.group("Debugging"))
     {
-        dirty |= group.checkbox("Use fixed seed", mParams.useFixedSeed);
-        group.tooltip("Forces a fixed random seed for each frame.\n\n"
-            "This should produce exactly the same image each frame, which can be useful for debugging.");
-        if (mParams.useFixedSeed)
+        mpPixelDebug->renderUI(group);
+
+        dirty |= group.var("Color format", mStaticParams.colorFormat);
+
+        if (mpPixelStats)
         {
-            dirty |= group.var("Seed", mParams.fixedSeed);
+            mpPixelStats->renderUI(group);
         }
 
-        mpPixelDebug->renderUI(group);
+        // CIR debugging controls
+        if (auto cirGroup = group.group("CIR Debugging"))
+        {
+            cirGroup.checkbox("Enable CIR debugging", mCIRDebugEnabled);
+            cirGroup.tooltip("Enable/disable CIR data collection debugging output");
+
+            if (cirGroup.var("Check interval (frames)", mCIRFrameCheckInterval, 1u, 1000u))
+            {
+                cirGroup.tooltip("Number of frames between CIR data verification checks");
+            }
+
+            cirGroup.var("Output directory", mCIROutputDirectory);
+            cirGroup.tooltip("Directory for CIR debug output files");
+
+            if (cirGroup.button("Dump CIR Data"))
+            {
+                // Note: This will be called during UI rendering, so we need a render context
+                // For now, we'll set a flag to trigger the dump in the next frame
+                static bool triggerDump = false;
+                triggerDump = true;
+                // The actual dump will be triggered in the execute method
+            }
+
+            if (cirGroup.button("Verify CIR Data"))
+            {
+                logInfo("CIR: Manual verification triggered from UI");
+                mLastCIRCheckFrame = 0; // Force verification on next frame
+            }
+
+            if (cirGroup.button("Show CIR Statistics"))
+            {
+                logCIRBufferStatus();
+            }
+
+            // Display current CIR status
+            cirGroup.text("CIR Status:");
+            cirGroup.text(fmt::format("  Buffer allocated: {}", mpCIRPathBuffer ? "Yes" : "No"));
+            cirGroup.text(fmt::format("  Buffer bound: {}", mCIRBufferBound ? "Yes" : "No"));
+            cirGroup.text(fmt::format("  Paths collected: {}", mCurrentCIRPathCount));
+            cirGroup.text(fmt::format("  Buffer capacity: {}", mMaxCIRPaths));
+            
+            if (mpCIRPathBuffer && mMaxCIRPaths > 0)
+            {
+                float usagePercent = static_cast<float>(mCurrentCIRPathCount) / mMaxCIRPaths * 100.0f;
+                cirGroup.text(fmt::format("  Usage: {:.2f}%", usagePercent));
+            }
+        }
     }
 
     return dirty;
@@ -938,6 +1016,12 @@ void PathTracer::preparePathTracer(const RenderData& renderData)
     // Bind resources.
     auto var = mpPathTracerBlock->getRootVar();
     bindShaderData(var, renderData);
+
+    // Bind CIR buffer to parameter block
+    if (mpCIRPathBuffer)
+    {
+        bindCIRBufferToParameterBlock(var, "pathTracer");
+    }
 }
 
 void PathTracer::resetLighting()
@@ -1116,6 +1200,20 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         var["sampleColor"] = mpSampleColor;
         var["sampleGuideData"] = mpSampleGuideData;
         var["sampleInitialRayInfo"] = mpSampleInitialRayInfo;
+
+        // Bind CIR buffer directly to shader variable
+        if (mpCIRPathBuffer)
+        {
+            var["gCIRPathBuffer"] = mpCIRPathBuffer;
+            logInfo("CIR: Buffer bound to shader variable 'gCIRPathBuffer' - element count: {}", mpCIRPathBuffer->getElementCount());
+            // Update path count for tracking
+            var["gCIRMaxPaths"] = mMaxCIRPaths;
+            var["gCurrentCIRPathCount"] = mCurrentCIRPathCount;
+        }
+        else
+        {
+            logWarning("CIR: Buffer not allocated, CIR data collection will be disabled");
+        }
 
         // Note: CIR buffer binding to parameter blocks is now handled by bindCIRBufferToRootVar
         // for better multi-pass compatibility. This only logs status for debugging.
@@ -1688,4 +1786,346 @@ void PathTracer::logCIRBufferStatus()
         logInfo("  - Total size: {:.2f} MB", mpCIRPathBuffer->getSize() / (1024.0f * 1024.0f));
     }
     logInfo("========================");
+}
+
+/*******************************************************************
+                     CIR Data Verification and Debugging Functions
+*******************************************************************/
+
+struct CIRPathDataCPU
+{
+    float pathLength;           
+    float emissionAngle;        
+    float receptionAngle;       
+    float reflectanceProduct;   
+    uint32_t reflectionCount;   
+    float emittedPower;         
+    uint32_t pixelCoordX;       
+    uint32_t pixelCoordY;       
+};
+
+void PathTracer::dumpCIRDataToFile(RenderContext* pRenderContext)
+{
+    if (!mpCIRPathBuffer || mCurrentCIRPathCount == 0)
+    {
+        logWarning("CIR: Cannot dump data - no valid CIR data available");
+        return;
+    }
+
+    logInfo("CIR: Starting data dump to file...");
+    logInfo("CIR: Dumping {} paths from buffer", mCurrentCIRPathCount);
+
+    try
+    {
+        // Create output directory if it doesn't exist
+        std::filesystem::create_directories(mCIROutputDirectory);
+
+        // Read buffer data from GPU
+        const CIRPathDataCPU* pData = static_cast<const CIRPathDataCPU*>(
+            mpCIRPathBuffer->map()
+        );
+
+        if (!pData)
+        {
+            logError("CIR: Failed to map buffer for reading");
+            return;
+        }
+
+        // Generate output filename with timestamp
+        auto now = std::time(nullptr);
+        std::stringstream filename;
+        filename << mCIROutputDirectory << "/cir_data_frame_" << std::put_time(std::localtime(&now), "%Y%m%d_%H%M%S") << ".csv";
+
+        std::ofstream file(filename.str());
+        if (!file.is_open())
+        {
+            logError("CIR: Failed to open output file: {}", filename.str());
+            mpCIRPathBuffer->unmap();
+            return;
+        }
+
+        // Write CSV header
+        file << "PathIndex,PathLength(m),EmissionAngle(deg),ReceptionAngle(deg),ReflectanceProduct,ReflectionCount,EmittedPower(W),PixelX,PixelY\n";
+
+        // Process and validate data
+        uint32_t validPaths = 0;
+        uint32_t invalidPaths = 0;
+        float totalPathLength = 0.0f;
+        float minPathLength = FLT_MAX;
+        float maxPathLength = 0.0f;
+
+        for (uint32_t i = 0; i < std::min(mCurrentCIRPathCount, mMaxCIRPaths); ++i)
+        {
+            const auto& data = pData[i];
+
+            // Validate data integrity
+            bool isValid = true;
+            if (data.pathLength <= 0.0f || data.pathLength > 1000.0f ||
+                data.emissionAngle < 0.0f || data.emissionAngle > float(M_PI) ||
+                data.receptionAngle < 0.0f || data.receptionAngle > float(M_PI) ||
+                data.reflectanceProduct < 0.0f || data.reflectanceProduct > 1.0f ||
+                data.emittedPower < 0.0f || std::isnan(data.emittedPower) || std::isinf(data.emittedPower))
+            {
+                isValid = false;
+                invalidPaths++;
+            }
+            else
+            {
+                validPaths++;
+                totalPathLength += data.pathLength;
+                minPathLength = std::min(minPathLength, data.pathLength);
+                maxPathLength = std::max(maxPathLength, data.pathLength);
+            }
+
+            // Write to file (include invalid data for analysis)
+            file << i << ","
+                 << data.pathLength << ","
+                 << (data.emissionAngle * 180.0f / float(M_PI)) << ","
+                 << (data.receptionAngle * 180.0f / float(M_PI)) << ","
+                 << data.reflectanceProduct << ","
+                 << data.reflectionCount << ","
+                 << data.emittedPower << ","
+                 << data.pixelCoordX << ","
+                 << data.pixelCoordY << "\n";
+        }
+
+        file.close();
+        mpCIRPathBuffer->unmap();
+
+        // Log comprehensive statistics
+        logInfo("CIR: Data dump completed successfully");
+        logInfo("CIR: Output file: {}", filename.str());
+        logInfo("CIR: Total paths processed: {}", mCurrentCIRPathCount);
+        logInfo("CIR: Valid paths: {}", validPaths);
+        logInfo("CIR: Invalid paths: {}", invalidPaths);
+        logInfo("CIR: Data integrity: {:.2f}%", (float)validPaths / mCurrentCIRPathCount * 100.0f);
+
+        if (validPaths > 0)
+        {
+            logInfo("CIR: Path length statistics:");
+            logInfo("  - Average: {:.3f}m", totalPathLength / validPaths);
+            logInfo("  - Minimum: {:.3f}m", minPathLength);
+            logInfo("  - Maximum: {:.3f}m", maxPathLength);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("CIR: Exception during data dump: {}", e.what());
+        // Note: Buffer will be automatically unmapped when function exits
+    }
+}
+
+void PathTracer::logCIRStatistics(RenderContext* pRenderContext)
+{
+    if (!mpCIRPathBuffer || mCurrentCIRPathCount == 0)
+    {
+        logInfo("CIR: No statistics available - no data collected");
+        return;
+    }
+
+    logInfo("=== CIR Data Statistics ===");
+    logInfo("CIR: Collection status:");
+    logInfo("  - Buffer allocated: {}", mpCIRPathBuffer ? "Yes" : "No");
+    logInfo("  - Buffer bound: {}", mCIRBufferBound ? "Yes" : "No");
+    logInfo("  - Paths collected: {}", mCurrentCIRPathCount);
+    logInfo("  - Buffer capacity: {}", mMaxCIRPaths);
+    logInfo("  - Usage percentage: {:.2f}%", (float)mCurrentCIRPathCount / mMaxCIRPaths * 100.0f);
+
+    if (mpCIRPathBuffer)
+    {
+        // Calculate element size from total size and element count
+        uint32_t elementSize = mpCIRPathBuffer->getElementCount() > 0 ? 
+            static_cast<uint32_t>(mpCIRPathBuffer->getSize()) / mpCIRPathBuffer->getElementCount() : 0;
+        
+        logInfo("CIR: Buffer technical details:");
+        logInfo("  - Element size: {} bytes", elementSize);
+        logInfo("  - Total size: {:.2f} MB", mpCIRPathBuffer->getSize() / (1024.0f * 1024.0f));
+        logInfo("  - Memory used: {:.2f} KB", (mCurrentCIRPathCount * elementSize) / 1024.0f);
+    }
+
+    logInfo("==============================");
+}
+
+void PathTracer::verifyCIRDataIntegrity(RenderContext* pRenderContext)
+{
+    if (!mpCIRPathBuffer || mCurrentCIRPathCount == 0)
+    {
+        logWarning("CIR: Cannot verify data integrity - no data available");
+        return;
+    }
+
+    logInfo("CIR: Starting data integrity verification...");
+
+    try
+    {
+        const CIRPathDataCPU* pData = static_cast<const CIRPathDataCPU*>(
+            mpCIRPathBuffer->map()
+        );
+
+        if (!pData)
+        {
+            logError("CIR: Failed to map buffer for verification");
+            return;
+        }
+
+        uint32_t validPaths = 0;
+        uint32_t pathLengthErrors = 0;
+        uint32_t angleErrors = 0;
+        uint32_t reflectanceErrors = 0;
+        uint32_t powerErrors = 0;
+
+        // Verify each path
+        for (uint32_t i = 0; i < std::min(mCurrentCIRPathCount, mMaxCIRPaths); ++i)
+        {
+            const auto& data = pData[i];
+            bool pathValid = true;
+
+            // Check path length (should be in reasonable range)
+            if (data.pathLength <= 0.0f || data.pathLength > 1000.0f)
+            {
+                pathLengthErrors++;
+                pathValid = false;
+            }
+
+            // Check emission and reception angles (should be 0 to PI)
+            if (data.emissionAngle < 0.0f || data.emissionAngle > float(M_PI) ||
+                data.receptionAngle < 0.0f || data.receptionAngle > float(M_PI))
+            {
+                angleErrors++;
+                pathValid = false;
+            }
+
+            // Check reflectance product (should be 0 to 1)
+            if (data.reflectanceProduct < 0.0f || data.reflectanceProduct > 1.0f)
+            {
+                reflectanceErrors++;
+                pathValid = false;
+            }
+
+            // Check emitted power (should be positive and finite)
+            if (data.emittedPower < 0.0f || std::isnan(data.emittedPower) || std::isinf(data.emittedPower))
+            {
+                powerErrors++;
+                pathValid = false;
+            }
+
+            if (pathValid) validPaths++;
+        }
+
+        mpCIRPathBuffer->unmap();
+
+        // Report verification results
+        logInfo("CIR: Data integrity verification completed");
+        logInfo("CIR: Total paths checked: {}", mCurrentCIRPathCount);
+        logInfo("CIR: Valid paths: {}", validPaths);
+        logInfo("CIR: Overall integrity: {:.2f}%", (float)validPaths / mCurrentCIRPathCount * 100.0f);
+
+        if (pathLengthErrors > 0 || angleErrors > 0 || reflectanceErrors > 0 || powerErrors > 0)
+        {
+            logWarning("CIR: Data integrity issues detected:");
+            if (pathLengthErrors > 0) logWarning("  - Path length errors: {}", pathLengthErrors);
+            if (angleErrors > 0) logWarning("  - Angle errors: {}", angleErrors);
+            if (reflectanceErrors > 0) logWarning("  - Reflectance errors: {}", reflectanceErrors);
+            if (powerErrors > 0) logWarning("  - Power errors: {}", powerErrors);
+        }
+        else
+        {
+            logInfo("CIR: All data passed integrity checks!");
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("CIR: Exception during data verification: {}", e.what());
+        // Note: Buffer will be automatically unmapped when function exits
+    }
+}
+
+void PathTracer::outputCIRSampleData(RenderContext* pRenderContext, uint32_t sampleCount)
+{
+    if (!mpCIRPathBuffer || mCurrentCIRPathCount == 0)
+    {
+        logInfo("CIR: No sample data available");
+        return;
+    }
+
+    sampleCount = std::min(sampleCount, mCurrentCIRPathCount);
+    logInfo("CIR: Outputting {} sample data entries:", sampleCount);
+
+    try
+    {
+        const CIRPathDataCPU* pData = static_cast<const CIRPathDataCPU*>(
+            mpCIRPathBuffer->map()
+        );
+
+        if (!pData)
+        {
+            logError("CIR: Failed to map buffer for sample output");
+            return;
+        }
+
+        for (uint32_t i = 0; i < sampleCount; ++i)
+        {
+            const auto& data = pData[i];
+            
+            logInfo("CIR: Sample {}: Length={:.3f}m, EmissionAngle={:.1f}deg, ReceptionAngle={:.1f}deg, Reflectance={:.3f}, Reflections={}, Power={:.6f}W, Pixel=({},{})",
+                i,
+                data.pathLength,
+                data.emissionAngle * 180.0f / float(M_PI),
+                data.receptionAngle * 180.0f / float(M_PI),
+                data.reflectanceProduct,
+                data.reflectionCount,
+                data.emittedPower,
+                data.pixelCoordX,
+                data.pixelCoordY
+            );
+        }
+
+        mpCIRPathBuffer->unmap();
+    }
+    catch (const std::exception& e)
+    {
+        logError("CIR: Exception during sample output: {}", e.what());
+        // Note: Buffer will be automatically unmapped when function exits
+    }
+}
+
+bool PathTracer::hasValidCIRData() const
+{
+    return mpCIRPathBuffer && mCIRBufferBound && mCurrentCIRPathCount > 0;
+}
+
+void PathTracer::triggerCIRDataVerification(RenderContext* pRenderContext)
+{
+    if (!mCIRDebugEnabled) return;
+
+    // Check if it's time for periodic verification
+    static uint32_t frameCounter = 0;
+    frameCounter++;
+
+    if (frameCounter - mLastCIRCheckFrame >= mCIRFrameCheckInterval)
+    {
+        mLastCIRCheckFrame = frameCounter;
+
+        logInfo("CIR: Performing periodic data verification (Frame {})", frameCounter);
+        
+        // Perform comprehensive verification
+        logCIRBufferStatus();
+        logCIRStatistics(pRenderContext);
+        
+        if (hasValidCIRData())
+        {
+            outputCIRSampleData(pRenderContext, 5); // Show 5 sample entries
+            verifyCIRDataIntegrity(pRenderContext);
+            
+            // Dump data to file every 10 check intervals
+            if ((frameCounter / mCIRFrameCheckInterval) % 10 == 0)
+            {
+                dumpCIRDataToFile(pRenderContext);
+            }
+        }
+        else
+        {
+            logWarning("CIR: No valid CIR data detected during verification");
+        }
+    }
 }
