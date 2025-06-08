@@ -1313,5 +1313,8 @@ struct PathTracer
         }
         
         logCIRReflectionCount(cirData.reflectionCount);
+        
+        // Log complete CIR data to raw data buffer for detailed analysis
+        logCIRPathComplete(cirData);
     }
 };
