@@ -87,9 +87,7 @@ struct PathTracer
     NRDBuffers outputNRD;                           ///< Output NRD data.
 
     // === CIR Data Output ===
-#if OUTPUT_CIR_DATA
     RWStructuredBuffer<CIRPathData> sampleCIRData;   ///< CIR path data output buffer
-#endif
 
     RWTexture2D<float4> outputColor;                ///< Output color buffer if kSamplesPerPixel == 1.
 
@@ -886,9 +884,7 @@ struct PathTracer
         BSDFProperties bsdfProperties = mi.getProperties(sd);
 
         // === Update CIR data during path tracing ===
-#if OUTPUT_CIR_DATA
         updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties.diffuseReflectionAlbedo.r);
-#endif
 
         // Disable specular lobes if caustics are disabled and path already contains a diffuse vertex.
         bool isSpecular = bsdfProperties.roughness <= params.specularRoughnessThreshold;
@@ -1249,7 +1245,6 @@ struct PathTracer
         }
     }
 
-#if OUTPUT_CIR_DATA
     /** Update CIR data during path tracing (simplified version).
         Only updates CIR parameters that require special calculation.
         Other parameters are dynamically obtained through getCIRData().
@@ -1277,99 +1272,11 @@ struct PathTracer
         }
     }
 
-    /** Output CIR data on path completion (TEST MODE: Force fixed data for GPU write verification).
+    /** Output CIR data on path completion using PixelStats system.
         \param[in] path Path state.
     */
     void outputCIRDataOnPathCompletion(PathState path)
     {
-        // === GPU WRITE TEST MODE ===
-        // Force write fixed test data to verify GPU->CPU data transfer
-        
-        // Calculate output index (using same method as writeOutput)
-        const uint2 pixel = path.getPixel();
-        const uint outIdx = params.getSampleOffset(pixel, sampleOffset) + path.getSampleIdx();
-        
-        // Bounds check
-        uint bufferSize = 0;
-        uint stride = 0;
-        sampleCIRData.GetDimensions(bufferSize, stride);
-        if (outIdx < bufferSize)
-        {
-            // Create fixed test data pattern based on output index
-            CIRPathData testData;
-            
-            // Use output index to create recognizable patterns
-            uint patternIndex = outIdx % 5; // Create 5 different patterns
-            
-            switch (patternIndex)
-            {
-                case 0:
-                    testData.pathLength = 3.14f;
-                    testData.emissionAngle = 0.785f; // 45 degrees
-                    testData.receptionAngle = 1.047f; // 60 degrees  
-                    testData.reflectanceProduct = 0.8f;
-                    testData.emittedPower = 100.0f;
-                    testData.reflectionCount = 2;
-                    testData.pixelX = pixel.x;
-                    testData.pixelY = pixel.y;
-                    testData.pathIndex = outIdx + 10000;
-                    break;
-                    
-                case 1:
-                    testData.pathLength = 2.71f;
-                    testData.emissionAngle = 1.047f; // 60 degrees
-                    testData.receptionAngle = 0.524f; // 30 degrees
-                    testData.reflectanceProduct = 0.6f;
-                    testData.emittedPower = 150.0f;
-                    testData.reflectionCount = 3;
-                    testData.pixelX = pixel.x;
-                    testData.pixelY = pixel.y;
-                    testData.pathIndex = outIdx + 20000;
-                    break;
-                    
-                case 2:
-                    testData.pathLength = 1.41f;
-                    testData.emissionAngle = 0.314f; // 18 degrees
-                    testData.receptionAngle = 1.571f; // 90 degrees
-                    testData.reflectanceProduct = 0.9f;
-                    testData.emittedPower = 80.0f;
-                    testData.reflectionCount = 1;
-                    testData.pixelX = pixel.x;
-                    testData.pixelY = pixel.y;
-                    testData.pathIndex = outIdx + 30000;
-                    break;
-                    
-                case 3:
-                    testData.pathLength = 4.23f;
-                    testData.emissionAngle = 1.257f; // 72 degrees
-                    testData.receptionAngle = 0.628f; // 36 degrees
-                    testData.reflectanceProduct = 0.7f;
-                    testData.emittedPower = 200.0f;
-                    testData.reflectionCount = 4;
-                    testData.pixelX = pixel.x;
-                    testData.pixelY = pixel.y;
-                    testData.pathIndex = outIdx + 40000;
-                    break;
-                    
-                default: // case 4
-                    testData.pathLength = 5.55f;
-                    testData.emissionAngle = 0.628f; // 36 degrees
-                    testData.receptionAngle = 1.257f; // 72 degrees
-                    testData.reflectanceProduct = 0.5f;
-                    testData.emittedPower = 120.0f;
-                    testData.reflectionCount = 5;
-                    testData.pixelX = pixel.x;
-                    testData.pixelY = pixel.y;
-                    testData.pathIndex = outIdx + 50000;
-                    break;
-            }
-            
-            // Write the forced test data to buffer
-            sampleCIRData[outIdx] = testData;
-        }
-        
-        // === ORIGINAL CODE (commented out for testing) ===
-        /*
         // Update reception angle when path is about to terminate
         if (path.isHit() && length(path.normal) > 0.1f)
         {
@@ -1379,32 +1286,32 @@ struct PathTracer
         // Dynamically generate complete CIR data (utilizing reused fields)
         CIRPathData cirData = path.getCIRData();
         
-        // Data sanity check
-        if (cirData.pathLength < 0.0f || cirData.pathLength > 10000.0f)
+        // Data sanity check and log to PixelStats system
+        if (cirData.pathLength > 0.0f && cirData.pathLength < 10000.0f)
         {
-            // Abnormal path length, use default value
-            cirData.pathLength = 1.0f;
+            logCIRPathLength(cirData.pathLength);
         }
         
-        if (cirData.reflectanceProduct < 0.0f || cirData.reflectanceProduct > 1.0f)
+        if (cirData.emissionAngle >= 0.0f && cirData.emissionAngle <= 3.14159f)
         {
-            // Abnormal reflectance, use default value
-            cirData.reflectanceProduct = 0.5f;
+            logCIREmissionAngle(cirData.emissionAngle);
         }
         
-        // Calculate output index (using same method as writeOutput)
-        const uint2 pixel = path.getPixel();
-        const uint outIdx = params.getSampleOffset(pixel, sampleOffset) + path.getSampleIdx();
-        
-        // Bounds check
-        uint bufferSize = 0;
-        uint stride = 0;
-        sampleCIRData.GetDimensions(bufferSize, stride);
-        if (outIdx < bufferSize)
+        if (cirData.receptionAngle >= 0.0f && cirData.receptionAngle <= 3.14159f)
         {
-            sampleCIRData[outIdx] = cirData;
+            logCIRReceptionAngle(cirData.receptionAngle);
         }
-        */
+        
+        if (cirData.reflectanceProduct >= 0.0f && cirData.reflectanceProduct <= 1.0f)
+        {
+            logCIRReflectanceProduct(cirData.reflectanceProduct);
+        }
+        
+        if (cirData.emittedPower >= 0.0f)
+        {
+            logCIREmittedPower(cirData.emittedPower);
+        }
+        
+        logCIRReflectionCount(cirData.reflectionCount);
     }
-#endif
 };

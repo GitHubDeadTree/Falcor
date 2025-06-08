@@ -40,6 +40,10 @@ RWTexture2D<uint> gStatsPathLength;          // Per-pixel path length.
 RWTexture2D<uint> gStatsPathVertexCount;     // Per-pixel path vertex count.
 RWTexture2D<uint> gStatsVolumeLookupCount;   // Per-pixel volume lookup count.
 
+// CIR statistics buffers
+RWTexture2D<float> gStatsCIRData[(uint)PixelStatsCIRType::Count]; // Per-pixel CIR data stats.
+RWTexture2D<uint> gStatsCIRValidSamples;     // Per-pixel valid CIR sample count.
+
 #ifdef _PIXEL_STATS_ENABLED
 static uint2 gPixelStatsPixel;
 #endif
@@ -76,5 +80,64 @@ void logVolumeLookup()
 {
 #ifdef _PIXEL_STATS_ENABLED
     InterlockedAdd(gStatsVolumeLookupCount[gPixelStatsPixel], 1);
+#endif
+}
+
+// CIR statistics logging functions
+void logCIRPathLength(float pathLength)
+{
+#ifdef _PIXEL_STATS_ENABLED
+    if (pathLength > 0.0f)
+    {
+        gStatsCIRData[(uint)PixelStatsCIRType::PathLength][gPixelStatsPixel] = pathLength;
+        InterlockedAdd(gStatsCIRValidSamples[gPixelStatsPixel], 1);
+    }
+#endif
+}
+
+void logCIREmissionAngle(float angle)
+{
+#ifdef _PIXEL_STATS_ENABLED
+    if (angle >= 0.0f && angle <= 3.14159f) // Valid angle range [0, π]
+    {
+        gStatsCIRData[(uint)PixelStatsCIRType::EmissionAngle][gPixelStatsPixel] = angle;
+    }
+#endif
+}
+
+void logCIRReceptionAngle(float angle)
+{
+#ifdef _PIXEL_STATS_ENABLED
+    if (angle >= 0.0f && angle <= 3.14159f) // Valid angle range [0, π]
+    {
+        gStatsCIRData[(uint)PixelStatsCIRType::ReceptionAngle][gPixelStatsPixel] = angle;
+    }
+#endif
+}
+
+void logCIRReflectanceProduct(float reflectance)
+{
+#ifdef _PIXEL_STATS_ENABLED
+    if (reflectance >= 0.0f && reflectance <= 1.0f) // Valid reflectance range [0, 1]
+    {
+        gStatsCIRData[(uint)PixelStatsCIRType::ReflectanceProduct][gPixelStatsPixel] = reflectance;
+    }
+#endif
+}
+
+void logCIREmittedPower(float power)
+{
+#ifdef _PIXEL_STATS_ENABLED
+    if (power >= 0.0f) // Power should be non-negative
+    {
+        gStatsCIRData[(uint)PixelStatsCIRType::EmittedPower][gPixelStatsPixel] = power;
+    }
+#endif
+}
+
+void logCIRReflectionCount(uint count)
+{
+#ifdef _PIXEL_STATS_ENABLED
+    gStatsCIRData[(uint)PixelStatsCIRType::ReflectionCount][gPixelStatsPixel] = (float)count;
 #endif
 }

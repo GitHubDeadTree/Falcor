@@ -60,6 +60,15 @@ namespace Falcor
             float    avgPathLength = 0.f;
             float    avgPathVertices = 0.f;
             float    avgVolumeLookups = 0.f;
+            
+            // CIR statistics
+            uint32_t validCIRSamples = 0;
+            float    avgCIRPathLength = 0.f;
+            float    avgCIREmissionAngle = 0.f;
+            float    avgCIRReceptionAngle = 0.f;
+            float    avgCIRReflectanceProduct = 0.f;
+            float    avgCIREmittedPower = 0.f;
+            float    avgCIRReflectionCount = 0.f;
         };
 
         PixelStats(ref<Device> pDevice);
@@ -109,6 +118,7 @@ namespace Falcor
         void computeRayCountTexture(RenderContext* pRenderContext);
 
         static const uint32_t kRayTypeCount = (uint32_t)PixelStatsRayType::Count;
+        static const uint32_t kCIRTypeCount = (uint32_t)PixelStatsCIRType::Count;
 
         ref<Device>                         mpDevice;
 
@@ -136,6 +146,10 @@ namespace Falcor
         ref<Texture>                        mpStatsPathVertexCount;         ///< Buffer for per-pixel path vertex count.
         ref<Texture>                        mpStatsVolumeLookupCount;       ///< Buffer for per-pixel volume lookup count.
         bool                                mStatsBuffersValid = false;     ///< True if per-pixel stats buffers contain valid data.
+
+        // CIR statistics buffers
+        ref<Texture>                        mpStatsCIRData[kCIRTypeCount];  ///< Buffers for per-pixel CIR data stats.
+        ref<Texture>                        mpStatsCIRValidSamples;         ///< Buffer for per-pixel valid CIR sample count.
 
         ref<ComputePass>                    mpComputeRayCount;              ///< Pass for computing per-pixel total ray count.
     };

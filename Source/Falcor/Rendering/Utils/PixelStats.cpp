@@ -82,7 +82,8 @@ namespace Falcor
             if (!mpParallelReduction)
             {
                 mpParallelReduction = std::make_unique<ParallelReduction>(mpDevice);
-                mpReductionResult = mpDevice->createBuffer((kRayTypeCount + 3) * sizeof(uint4), ResourceBindFlags::None, MemoryType::ReadBack);
+                // Extend reduction result buffer to include CIR data (6 CIR types + 1 valid sample count)
+                mpReductionResult = mpDevice->createBuffer((kRayTypeCount + 3 + kCIRTypeCount + 1) * sizeof(uint4), ResourceBindFlags::None, MemoryType::ReadBack);
             }
 
             // Prepare stats buffers.
@@ -95,6 +96,13 @@ namespace Falcor
                 mpStatsPathLength = mpDevice->createTexture2D(frameDim.x, frameDim.y, ResourceFormat::R32Uint, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
                 mpStatsPathVertexCount = mpDevice->createTexture2D(frameDim.x, frameDim.y, ResourceFormat::R32Uint, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
                 mpStatsVolumeLookupCount = mpDevice->createTexture2D(frameDim.x, frameDim.y, ResourceFormat::R32Uint, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+                
+                // Create CIR statistics buffers
+                for (uint32_t i = 0; i < kCIRTypeCount; i++)
+                {
+                    mpStatsCIRData[i] = mpDevice->createTexture2D(frameDim.x, frameDim.y, ResourceFormat::R32Float, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+                }
+                mpStatsCIRValidSamples = mpDevice->createTexture2D(frameDim.x, frameDim.y, ResourceFormat::R32Uint, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             }
 
             for (uint32_t i = 0; i < kRayTypeCount; i++)
@@ -104,6 +112,13 @@ namespace Falcor
             pRenderContext->clearUAV(mpStatsPathLength->getUAV().get(), uint4(0, 0, 0, 0));
             pRenderContext->clearUAV(mpStatsPathVertexCount->getUAV().get(), uint4(0, 0, 0, 0));
             pRenderContext->clearUAV(mpStatsVolumeLookupCount->getUAV().get(), uint4(0, 0, 0, 0));
+            
+            // Clear CIR statistics buffers
+            for (uint32_t i = 0; i < kCIRTypeCount; i++)
+            {
+                pRenderContext->clearUAV(mpStatsCIRData[i]->getUAV().get(), float4(0.0f, 0.0f, 0.0f, 0.0f));
+            }
+            pRenderContext->clearUAV(mpStatsCIRValidSamples->getUAV().get(), uint4(0, 0, 0, 0));
         }
     }
 
@@ -125,6 +140,13 @@ namespace Falcor
             mpParallelReduction->execute<uint4>(pRenderContext, mpStatsPathLength, ParallelReduction::Type::Sum, nullptr, mpReductionResult, kRayTypeCount * sizeof(uint4));
             mpParallelReduction->execute<uint4>(pRenderContext, mpStatsPathVertexCount, ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 1) * sizeof(uint4));
             mpParallelReduction->execute<uint4>(pRenderContext, mpStatsVolumeLookupCount, ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 2) * sizeof(uint4));
+
+            // Add CIR statistics reduction
+            for (uint32_t i = 0; i < kCIRTypeCount; i++)
+            {
+                mpParallelReduction->execute<float4>(pRenderContext, mpStatsCIRData[i], ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 3 + i) * sizeof(uint4));
+            }
+            mpParallelReduction->execute<uint4>(pRenderContext, mpStatsCIRValidSamples, ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 3 + kCIRTypeCount) * sizeof(uint4));
 
             // Submit command list and insert signal.
             pRenderContext->submit(false);
@@ -149,6 +171,13 @@ namespace Falcor
             var["gStatsPathLength"] = mpStatsPathLength;
             var["gStatsPathVertexCount"] = mpStatsPathVertexCount;
             var["gStatsVolumeLookupCount"] = mpStatsVolumeLookupCount;
+            
+            // Bind CIR statistics buffers
+            for (uint32_t i = 0; i < kCIRTypeCount; i++)
+            {
+                var["gStatsCIRData"][i] = mpStatsCIRData[i];
+            }
+            var["gStatsCIRValidSamples"] = mpStatsCIRValidSamples;
         }
         else
         {
@@ -188,6 +217,24 @@ namespace Falcor
                 << "ClosestHit rays: " << mStats.closestHitRays << "\n"
                 << "Volume lookups: " << mStats.volumeLookups << "\n"
                 << "Volume lookups (avg): " << mStats.avgVolumeLookups << "\n";
+            
+            // Add CIR statistics to display
+            if (mStats.validCIRSamples > 0)
+            {
+                oss << "\n=== CIR Statistics ===\n"
+                    << "Valid CIR samples: " << mStats.validCIRSamples << "\n"
+                    << "CIR Path length (avg): " << std::fixed << std::setprecision(3) << mStats.avgCIRPathLength << "\n"
+                    << "CIR Emission angle (avg): " << std::fixed << std::setprecision(3) << mStats.avgCIREmissionAngle << " rad\n"
+                    << "CIR Reception angle (avg): " << std::fixed << std::setprecision(3) << mStats.avgCIRReceptionAngle << " rad\n"
+                    << "CIR Reflectance product (avg): " << std::fixed << std::setprecision(3) << mStats.avgCIRReflectanceProduct << "\n"
+                    << "CIR Emitted power (avg): " << std::fixed << std::setprecision(3) << mStats.avgCIREmittedPower << "\n"
+                    << "CIR Reflection count (avg): " << std::fixed << std::setprecision(3) << mStats.avgCIRReflectionCount << "\n";
+            }
+            else
+            {
+                oss << "\n=== CIR Statistics ===\n"
+                    << "No valid CIR samples found\n";
+            }
 
             widget.checkbox("Enable logging", mEnableLogging);
             widget.text(oss.str());
@@ -292,6 +339,33 @@ namespace Falcor
                 mStats.avgPathLength = (float)totalPathLength / numPixels;
                 mStats.avgPathVertices = (float)totalPathVertices / numPixels;
                 mStats.avgVolumeLookups = (float)totalVolumeLookups / numPixels;
+
+                // Process CIR statistics
+                const uint32_t validCIRSamples = result[kRayTypeCount + 3 + kCIRTypeCount].x;
+                mStats.validCIRSamples = validCIRSamples;
+                
+                if (validCIRSamples > 0)
+                {
+                    // Cast to float4 for CIR data which are stored as floats
+                    const float4* cirResult = reinterpret_cast<const float4*>(result);
+                    
+                    mStats.avgCIRPathLength = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::PathLength].x / validCIRSamples;
+                    mStats.avgCIREmissionAngle = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::EmissionAngle].x / validCIRSamples;
+                    mStats.avgCIRReceptionAngle = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::ReceptionAngle].x / validCIRSamples;
+                    mStats.avgCIRReflectanceProduct = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::ReflectanceProduct].x / validCIRSamples;
+                    mStats.avgCIREmittedPower = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::EmittedPower].x / validCIRSamples;
+                    mStats.avgCIRReflectionCount = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::ReflectionCount].x / validCIRSamples;
+                }
+                else
+                {
+                    // Reset CIR averages to zero if no valid samples
+                    mStats.avgCIRPathLength = 0.0f;
+                    mStats.avgCIREmissionAngle = 0.0f;
+                    mStats.avgCIRReceptionAngle = 0.0f;
+                    mStats.avgCIRReflectanceProduct = 0.0f;
+                    mStats.avgCIREmittedPower = 0.0f;
+                    mStats.avgCIRReflectionCount = 0.0f;
+                }
 
                 mpReductionResult->unmap();
                 mStatsValid = true;
