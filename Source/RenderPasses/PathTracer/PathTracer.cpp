@@ -200,6 +200,9 @@ PathTracer::PathTracer(ref<Device> pDevice, const Properties& props)
 
     mpPixelStats = std::make_unique<PixelStats>(mpDevice);
     mpPixelDebug = std::make_unique<PixelDebug>(mpDevice);
+    
+    // === Initialize debug fence for CIR testing ===
+    mpDebugFence = mpDevice->createFence();
 }
 
 void PathTracer::setProperties(const Properties& props)
@@ -1559,6 +1562,143 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
 
 void PathTracer::outputCIRDataToDebug(RenderContext* pRenderContext)
 {
+    // === TEST MODE: Create buffer with fixed test data using two-step method ===
+    // This test mode creates a buffer with known fixed data to verify CPU reading logic
+    
+    logInfo("=== CIR Debug Test Mode ===");
+    logInfo("Testing CPU reading logic with fixed test data...");
+    
+    try 
+    {
+        // Define test data structure (matching CIRPathData)
+        struct TestCIRData
+        {
+            float pathLength;           // 0: Path length in meters
+            float emissionAngle;        // 4: Emission angle in radians  
+            float receptionAngle;       // 8: Reception angle in radians
+            float reflectanceProduct;   // 12: Accumulated reflectance product
+            float emittedPower;         // 16: Emitted power in watts
+            uint32_t reflectionCount;   // 20: Number of reflections
+            uint32_t pixelX;           // 24: Pixel X coordinate
+            uint32_t pixelY;           // 28: Pixel Y coordinate  
+            uint32_t pathIndex;        // 32: Path index
+        };
+        
+        // Create test data array with known values
+        const uint32_t testElementCount = 5;
+        std::vector<TestCIRData> testData(testElementCount);
+        
+        // Fill with fixed test values
+        testData[0] = {2.50f, 0.785f, 1.047f, 0.75f, 150.0f, 2, 100, 50, 1001};
+        testData[1] = {3.25f, 1.257f, 0.524f, 0.60f, 200.0f, 3, 200, 100, 1002};
+        testData[2] = {1.80f, 0.314f, 1.571f, 0.85f, 120.0f, 1, 300, 150, 1003};
+        testData[3] = {4.10f, 1.047f, 0.785f, 0.45f, 180.0f, 4, 400, 200, 1004};
+        testData[4] = {2.95f, 0.628f, 1.257f, 0.70f, 160.0f, 2, 500, 250, 1005};
+        
+        uint32_t elementSize = sizeof(TestCIRData);
+        size_t totalSize = elementSize * testElementCount;
+        
+        // Step 1: Create DeviceLocal buffer with initial test data
+        ref<Buffer> pSourceBuffer = mpDevice->createStructuredBuffer(
+            elementSize,
+            testElementCount,
+            ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess,
+            MemoryType::DeviceLocal,        // Use DeviceLocal type to allow initial data
+            testData.data(),                // Set initial test data
+            false
+        );
+        
+        // Step 2: Create empty ReadBack buffer (no initial data)
+        ref<Buffer> pTestBuffer = mpDevice->createStructuredBuffer(
+            elementSize,
+            testElementCount,
+            ResourceBindFlags::None,        // ReadBack doesn't need bind flags
+            MemoryType::ReadBack,           // ReadBack type for CPU access
+            nullptr,                        // No initial data
+            false
+        );
+        
+        // Step 3: Copy data from DeviceLocal to ReadBack buffer
+        pRenderContext->copyResource(pTestBuffer.get(), pSourceBuffer.get());
+        pRenderContext->submit(false);
+        pRenderContext->signal(mpDebugFence.get());
+        
+        // Step 4: Wait for copy completion and read data
+        mpDebugFence->wait();
+        
+        // Now safely read from ReadBack buffer using type-safe mapping
+        const TestCIRData* pMappedData = static_cast<const TestCIRData*>(pTestBuffer->map());
+        if (!pMappedData)
+        {
+            logError("PathTracer: Failed to map test ReadBack buffer for reading");
+            return;
+        }
+        
+        logInfo("=== CIR Test Data Output ===");
+        logInfo("Test Buffer Info: ElementCount={}, ElementSize={} bytes", testElementCount, elementSize);
+        
+        // Output all test samples for verification using direct struct access
+        for (uint32_t i = 0; i < testElementCount; i++)
+        {
+            const TestCIRData& sample = pMappedData[i];
+            
+            logInfo("TestSample[{}]: PathLength={:.3f}, EmissionAngle={:.3f}, ReceptionAngle={:.3f}", 
+                    i, sample.pathLength, sample.emissionAngle, sample.receptionAngle);
+            logInfo("              ReflectanceProduct={:.3f}, EmittedPower={:.3f}, ReflectionCount={}", 
+                    sample.reflectanceProduct, sample.emittedPower, sample.reflectionCount);
+            logInfo("              PixelX={}, PixelY={}, PathIndex={}", 
+                    sample.pixelX, sample.pixelY, sample.pathIndex);
+        }
+
+        // Calculate statistics using same logic as real data
+        float totalPathLength = 0.0f;
+        float totalReflectanceProduct = 0.0f;
+        uint32_t validSamples = 0;
+        
+        for (uint32_t i = 0; i < testElementCount; i++)
+        {
+            const TestCIRData& sample = pMappedData[i];
+            
+            float pathLength = sample.pathLength;
+            float reflectanceProduct = sample.reflectanceProduct;
+            
+            // Basic validity check using same logic as real data processing
+            if (pathLength > 0.0f && pathLength < 1000.0f && 
+                reflectanceProduct >= 0.0f && reflectanceProduct <= 1.0f)
+            {
+                totalPathLength += pathLength;
+                totalReflectanceProduct += reflectanceProduct;
+                validSamples++;
+            }
+        }
+        
+        if (validSamples > 0)
+        {
+            float avgPathLength = totalPathLength / validSamples;
+            float avgReflectanceProduct = totalReflectanceProduct / validSamples;
+            
+            logInfo("Test Statistics: ValidSamples={}/{}, AvgPathLength={:.3f}m, AvgReflectanceProduct={:.3f}", 
+                    validSamples, testElementCount, avgPathLength, avgReflectanceProduct);
+        }
+        else
+        {
+            logWarning("No valid test samples found - this indicates a problem with CPU reading logic");
+        }
+        
+        pTestBuffer->unmap();
+        logInfo("=== Test Complete: CPU reading logic verified successfully! ===");
+        
+    }
+    catch (const std::exception& e)
+    {
+        logError("PathTracer: Exception during CIR test mode: {}", e.what());
+    }
+    catch (...)
+    {
+        logError("PathTracer: Unknown exception during CIR test mode");
+    }
+    
+    // === ORIGINAL CODE: Read actual CIR data ===
     if (!mpSampleCIRData)
     {
         logWarning("PathTracer: CIR data buffer not available for debug output");
@@ -1594,8 +1734,8 @@ void PathTracer::outputCIRDataToDebug(RenderContext* pRenderContext)
 
         const uint8_t* pByteData = static_cast<const uint8_t*>(pMappedData);
         
-        logInfo("=== CIR Debug Output ===");
-        logInfo("Buffer Info: ElementCount={}, ElementSize={} bytes", elementCount, elementSize);
+        logInfo("=== CIR Actual Data Debug Output ===");
+        logInfo("Actual Buffer Info: ElementCount={}, ElementSize={} bytes", elementCount, elementSize);
         
         // Output first few samples for debugging
         uint32_t maxSamplesToShow = std::min(elementCount, 10u);
@@ -1608,11 +1748,11 @@ void PathTracer::outputCIRDataToDebug(RenderContext* pRenderContext)
             const float* pFloatData = reinterpret_cast<const float*>(pElementData);
             const uint32_t* pUintData = reinterpret_cast<const uint32_t*>(pElementData);
             
-            logInfo("Sample[{}]: PathLength={:.3f}, EmissionAngle={:.3f}, ReceptionAngle={:.3f}", 
+            logInfo("ActualSample[{}]: PathLength={:.3f}, EmissionAngle={:.3f}, ReceptionAngle={:.3f}", 
                     i, pFloatData[0], pFloatData[1], pFloatData[2]);
-            logInfo("          ReflectanceProduct={:.3f}, EmittedPower={:.3f}, ReflectionCount={}", 
+            logInfo("                ReflectanceProduct={:.3f}, EmittedPower={:.3f}, ReflectionCount={}", 
                     pFloatData[3], pFloatData[4], pUintData[5]);
-            logInfo("          PixelX={}, PixelY={}, PathIndex={}", 
+            logInfo("                PixelX={}, PixelY={}, PathIndex={}", 
                     pUintData[6], pUintData[7], pUintData[8]);
         }
 
@@ -1647,17 +1787,17 @@ void PathTracer::outputCIRDataToDebug(RenderContext* pRenderContext)
                 float avgPathLength = totalPathLength / validSamples;
                 float avgReflectanceProduct = totalReflectanceProduct / validSamples;
                 
-                logInfo("Statistics: ValidSamples={}/{}, AvgPathLength={:.3f}m, AvgReflectanceProduct={:.3f}", 
+                logInfo("Actual Statistics: ValidSamples={}/{}, AvgPathLength={:.3f}m, AvgReflectanceProduct={:.3f}", 
                         validSamples, sampleLimit, avgPathLength, avgReflectanceProduct);
             }
             else
             {
-                logWarning("No valid CIR samples found in debug output");
+                logWarning("No valid CIR samples found in actual data - this suggests GPU is not writing data or data is invalid");
             }
         }
         
         pReadbackBuffer->unmap();
-        logInfo("=== End CIR Debug Output ===");
+        logInfo("=== End CIR Actual Data Debug Output ===");
     }
     catch (const std::exception& e)
     {

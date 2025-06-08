@@ -213,4 +213,5 @@ private:
 
     // === CIR data output buffer ===
     ref<Buffer>                     mpSampleCIRData;            ///< CIR path data output buffer
+    ref<Fence>                      mpDebugFence;               ///< Fence for debug synchronization
 };
