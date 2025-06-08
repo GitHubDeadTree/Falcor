@@ -56,6 +56,7 @@ struct PathPayload
 {
     uint4 packed[5];
     uint  packed_extra;        ///< Additional data: x component stores wavelength
+    uint  packed_cir;          ///< CIR data: pack emission angle, reception angle, and reflectance product
 
     PackedHitInfo hit;
     GuideData guideData;
@@ -81,8 +82,25 @@ struct PathPayload
         p.packed[4].xyz = asuint(path.L);
         p.packed[4].w = asuint(path.pdf);
 
-        // Pack additional data
+        // Pack additional data: keep wavelength separate for precision
         p.packed_extra = asuint(path.wavelength);
+
+        // Pack CIR data: pack three float values using 16-bit precision
+        // Use 16-bit precision for all CIR fields to fit in available space
+        uint emissionAngle16 = f32tof16(path.cirEmissionAngle);
+        uint receptionAngle16 = f32tof16(path.cirReceptionAngle);
+        uint reflectanceProduct16 = f32tof16(path.cirReflectanceProduct);
+        
+        // Pack CIR data efficiently: use 10 bits for each angle (0-π range needs ~10 bits)
+        // and 12 bits for reflectance product (0-1 range needs high precision)
+        // Pack format: [emissionAngle:10][receptionAngle:10][reflectanceProduct:12]
+        uint emissionAngle10 = (emissionAngle16 >> 6) & 0x3FF;   // Use upper 10 bits
+        uint receptionAngle10 = (receptionAngle16 >> 6) & 0x3FF; // Use upper 10 bits  
+        uint reflectanceProduct12 = (reflectanceProduct16 >> 4) & 0xFFF; // Use upper 12 bits
+        
+        p.packed_cir = emissionAngle10 | 
+                       (receptionAngle10 << 10) | 
+                       (reflectanceProduct12 << 20);
 
         p.hit = path.hit.pack();
         p.guideData = path.guideData;
@@ -112,8 +130,22 @@ struct PathPayload
         path.L = asfloat(p.packed[4].xyz);
         path.pdf = asfloat(p.packed[4].w);
 
-        // Unpack additional data
+        // Unpack additional data: wavelength preserved as full float
         path.wavelength = asfloat(p.packed_extra);
+
+        // Unpack CIR data: extract all three values from custom packed format
+        uint emissionAngle10 = p.packed_cir & 0x3FF;                    // Lower 10 bits
+        uint receptionAngle10 = (p.packed_cir >> 10) & 0x3FF;          // Middle 10 bits
+        uint reflectanceProduct12 = (p.packed_cir >> 20) & 0xFFF;      // Upper 12 bits
+        
+        // Reconstruct 16-bit values by shifting back and adding padding
+        uint emissionAngle16 = (emissionAngle10 << 6);     // Shift back to 16-bit range
+        uint receptionAngle16 = (receptionAngle10 << 6);   // Shift back to 16-bit range
+        uint reflectanceProduct16 = (reflectanceProduct12 << 4); // Shift back to 16-bit range
+        
+        path.cirEmissionAngle = f16tof32(emissionAngle16);
+        path.cirReceptionAngle = f16tof32(receptionAngle16);
+        path.cirReflectanceProduct = f16tof32(reflectanceProduct16);
 
         path.hit = unpackHitInfo(p.hit);
         path.guideData = p.guideData;

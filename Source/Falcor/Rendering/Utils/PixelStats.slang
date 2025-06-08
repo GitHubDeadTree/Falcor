@@ -97,55 +97,40 @@ void logVolumeLookup()
 #endif
 }
 
-// CIR statistics logging functions
+// CIR statistics logging functions - MODIFIED: Removed individual validation
 void logCIRPathLength(float pathLength)
 {
 #ifdef _PIXEL_STATS_ENABLED
-    if (pathLength > 0.0f)
-    {
-        gStatsCIRData[(uint)PixelStatsCIRType::PathLength][gPixelStatsPixel] = pathLength;
-        InterlockedAdd(gStatsCIRValidSamples[gPixelStatsPixel], 1);
-    }
+    gStatsCIRData[(uint)PixelStatsCIRType::PathLength][gPixelStatsPixel] = pathLength;
+    InterlockedAdd(gStatsCIRValidSamples[gPixelStatsPixel], 1);
 #endif
 }
 
 void logCIREmissionAngle(float angle)
 {
 #ifdef _PIXEL_STATS_ENABLED
-    if (angle >= 0.0f && angle <= 3.14159f) // Valid angle range [0, π]
-    {
-        gStatsCIRData[(uint)PixelStatsCIRType::EmissionAngle][gPixelStatsPixel] = angle;
-    }
+    gStatsCIRData[(uint)PixelStatsCIRType::EmissionAngle][gPixelStatsPixel] = angle;
 #endif
 }
 
 void logCIRReceptionAngle(float angle)
 {
 #ifdef _PIXEL_STATS_ENABLED
-    if (angle >= 0.0f && angle <= 3.14159f) // Valid angle range [0, π]
-    {
-        gStatsCIRData[(uint)PixelStatsCIRType::ReceptionAngle][gPixelStatsPixel] = angle;
-    }
+    gStatsCIRData[(uint)PixelStatsCIRType::ReceptionAngle][gPixelStatsPixel] = angle;
 #endif
 }
 
 void logCIRReflectanceProduct(float reflectance)
 {
 #ifdef _PIXEL_STATS_ENABLED
-    if (reflectance >= 0.0f && reflectance <= 1.0f) // Valid reflectance range [0, 1]
-    {
-        gStatsCIRData[(uint)PixelStatsCIRType::ReflectanceProduct][gPixelStatsPixel] = reflectance;
-    }
+    gStatsCIRData[(uint)PixelStatsCIRType::ReflectanceProduct][gPixelStatsPixel] = reflectance;
 #endif
 }
 
 void logCIREmittedPower(float power)
 {
 #ifdef _PIXEL_STATS_ENABLED
-    if (power >= 0.0f) // Power should be non-negative
-    {
-        gStatsCIRData[(uint)PixelStatsCIRType::EmittedPower][gPixelStatsPixel] = power;
-    }
+    gStatsCIRData[(uint)PixelStatsCIRType::EmittedPower][gPixelStatsPixel] = power;
 #endif
 }
 
@@ -156,16 +141,10 @@ void logCIRReflectionCount(uint count)
 #endif
 }
 
-// Raw CIR data collection function
-void logCIRRawPath(CIRPathData pathData)
+// Internal function for raw CIR data collection - no validation
+void logCIRRawPathInternal(CIRPathData pathData)
 {
 #ifdef _PIXEL_STATS_RAW_DATA_ENABLED
-    // Validate the path data before storing
-    if (!pathData.isValid()) return;
-    
-    // Sanitize the data to ensure all values are within valid ranges
-    pathData.sanitize();
-    
     // Atomically increment the counter to get a unique index
     uint index = 0;
     gCIRCounterBuffer.InterlockedAdd(0, 1, index);
@@ -178,24 +157,58 @@ void logCIRRawPath(CIRPathData pathData)
 #endif
 }
 
-// Combined CIR logging function that handles both statistics and raw data
-void logCIRPathComplete(CIRPathData pathData)
+// Internal function for statistics collection - no validation
+void logCIRStatisticsInternal(CIRPathData pathData)
 {
 #ifdef _PIXEL_STATS_ENABLED
-    // Log to statistics buffers if enabled
-    if (pathData.isValid())
-    {
-        logCIRPathLength(pathData.pathLength);
-        logCIREmissionAngle(pathData.emissionAngle);
-        logCIRReceptionAngle(pathData.receptionAngle);
-        logCIRReflectanceProduct(pathData.reflectanceProduct);
-        logCIREmittedPower(pathData.emittedPower);
-        logCIRReflectionCount(pathData.reflectionCount);
-    }
+    logCIRPathLength(pathData.pathLength);
+    logCIREmissionAngle(pathData.emissionAngle);
+    logCIRReceptionAngle(pathData.receptionAngle);
+    logCIRReflectanceProduct(pathData.reflectanceProduct);
+    logCIREmittedPower(pathData.emittedPower);
+    logCIRReflectionCount(pathData.reflectionCount);
 #endif
+}
 
+// Unified CIR data validation and sanitization function
+CIRPathData validateAndSanitizeCIRData(CIRPathData pathData)
+{
+    // Create a copy for modification
+    CIRPathData validatedData = pathData;
+    
+    // First sanitize the data to fix invalid values
+    validatedData.sanitize();
+    
+    // Return the sanitized data
+    return validatedData;
+}
+
+// Legacy function for backward compatibility - still includes validation
+void logCIRRawPath(CIRPathData pathData)
+{
 #ifdef _PIXEL_STATS_RAW_DATA_ENABLED
-    // Log to raw data buffer if enabled
-    logCIRRawPath(pathData);
+    // Maintain legacy behavior with validation for compatibility
+    pathData.sanitize();
+    if (!pathData.isValid()) return;
+    
+    logCIRRawPathInternal(pathData);
 #endif
+}
+
+// Unified CIR logging function with single validation point
+void logCIRPathComplete(CIRPathData pathData)
+{
+    // UNIFIED VALIDATION: Single point of validation for both statistics and raw data
+    CIRPathData validatedData = validateAndSanitizeCIRData(pathData);
+    
+    // Check if the sanitized data is valid
+    if (!validatedData.isValid()) 
+    {
+        // Data is invalid even after sanitization, skip logging
+        return;
+    }
+    
+    // Log to both systems using the same validated data
+    logCIRStatisticsInternal(validatedData);
+    logCIRRawPathInternal(validatedData);
 }

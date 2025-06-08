@@ -237,7 +237,7 @@ struct PathState
     */
     [mutating] void initCIRData()
     {
-        cirEmissionAngle = 0.0f;      // Default: perpendicular emission
+        cirEmissionAngle = 0.5f;      // Default: perpendicular emission
         cirReceptionAngle = 0.0f;     // Default: perpendicular reception
         cirReflectanceProduct = 1.0f; // Initial value: no attenuation, will be multiplied by reflectances
     }

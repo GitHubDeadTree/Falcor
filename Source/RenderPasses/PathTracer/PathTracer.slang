@@ -1268,31 +1268,68 @@ struct PathTracer
         }
     }
 
-    /** Update CIR data during path tracing (corrected version).
-        Fixed emission angle calculation timing.
-        Reflectance computation is now handled by updateCIRWithMaterialReflectance() for accuracy.
-        Only updates CIR parameters that require special calculation.
-        Other parameters are dynamically obtained through getCIRData().
+    /** Update CIR data during path tracing (DIAGNOSTIC TEST VERSION 2).
+        DIAGNOSTIC: Force emission angle to test value for ALL path interactions.
+        This will help identify whether the issue is in calculation or data transfer.
         \param[in,out] path Path state.
         \param[in] surfaceNormal Surface normal at hit point.
         \param[in] bsdfProperties BSDF properties for emission angle calculation.
     */
     void updateCIRDataDuringTracing(inout PathState path, float3 surfaceNormal, BSDFProperties bsdfProperties)
     {
-        // Note: Basic parameters (pathLength, reflectionCount, emittedPower) do not need real-time updates
-        // because they are directly reused from existing PathState fields and dynamically obtained in getCIRData()
+        const uint vertexIndex = path.getVertexIndex();
+        const bool isPrimaryHit = (vertexIndex == 1);
         
-        // Update emission angle when hitting an emissive surface (not based on vertex index)
+        // ===== DIAGNOSTIC TEST: Force emission angle for ALL interactions =====
+        // Removing condition to ensure this always executes
+        path.cirEmissionAngle = 1.047198f; // 60 degrees for testing
+        // This value should appear in both statistics and cir_data.txt file
+        
+        // Original strategies commented out for diagnostic test
+        // They will be restored after confirming data pipeline works
+        /*
+        // Strategy 1: Check for emissive materials (LED modeled as emissive surfaces)
         if (any(bsdfProperties.emission > 0.0f))
         {
             path.updateCIREmissionAngle(surfaceNormal);
         }
-        
-        // Note: Reflectance calculation is now handled by updateCIRWithMaterialReflectance() in generateScatterRay()
-        // This ensures we use the actual BSDF sample weight instead of static material properties
+        // Strategy 2: For VLC systems, calculate emission angle at primary hit
+        else if (isPrimaryHit && path.cirEmissionAngle == 0.0f)
+        {
+            float3 emissionNormal = normalize(surfaceNormal);
+            float3 lightDirection = normalize(-path.initialDir);
+            float cosAngle = abs(dot(lightDirection, emissionNormal));
+            
+            if (cosAngle > 0.001f && !isnan(cosAngle) && !isinf(cosAngle))
+            {
+                path.cirEmissionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
+            }
+            else
+            {
+                path.cirEmissionAngle = 0.785398f; // 45 degrees fallback
+            }
+        }
+        // Strategy 3: Final fallback
+        else if (isPrimaryHit && path.cirEmissionAngle == 0.0f)
+        {
+            float3 surfaceUp = float3(0, 1, 0);
+            float3 normal = normalize(surfaceNormal);
+            float cosAngle = abs(dot(normal, surfaceUp));
+            
+            if (cosAngle > 0.001f)
+            {
+                path.cirEmissionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
+            }
+            else
+            {
+                path.cirEmissionAngle = 0.523599f; // 30 degrees fallback
+            }
+        }
+        */
     }
 
     /** Output CIR data on path completion using PixelStats system.
+        MODIFIED: Uses unified validation via logCIRPathComplete to ensure data consistency.
         \param[in] path Path state.
     */
     void outputCIRDataOnPathCompletion(PathState path)
@@ -1306,35 +1343,8 @@ struct PathTracer
         // Dynamically generate complete CIR data (utilizing reused fields)
         CIRPathData cirData = path.getCIRData();
         
-        // Data sanity check and log to PixelStats system
-        if (cirData.pathLength > 0.0f && cirData.pathLength < 10000.0f)
-        {
-            logCIRPathLength(cirData.pathLength);
-        }
-        
-        if (cirData.emissionAngle >= 0.0f && cirData.emissionAngle <= 3.14159f)
-        {
-            logCIREmissionAngle(cirData.emissionAngle);
-        }
-        
-        if (cirData.receptionAngle >= 0.0f && cirData.receptionAngle <= 3.14159f)
-        {
-            logCIRReceptionAngle(cirData.receptionAngle);
-        }
-        
-        if (cirData.reflectanceProduct >= 0.0f && cirData.reflectanceProduct <= 1.0f)
-        {
-            logCIRReflectanceProduct(cirData.reflectanceProduct);
-        }
-        
-        if (cirData.emittedPower >= 0.0f)
-        {
-            logCIREmittedPower(cirData.emittedPower);
-        }
-        
-        logCIRReflectionCount(cirData.reflectionCount);
-        
-        // Log complete CIR data to raw data buffer for detailed analysis
+        // UNIFIED VALIDATION: Use single validation point for both statistics and raw data
+        // This ensures consistency between statistical aggregation and file output
         logCIRPathComplete(cirData);
     }
 };
