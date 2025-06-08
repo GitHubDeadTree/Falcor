@@ -48,6 +48,6 @@ StructuredBuffer<float4> sampleNRDPrimaryHitNeeOnDelta;
 StructuredBuffer<float4> sampleNRDEmission;
 StructuredBuffer<float4> sampleNRDReflectance;
 StructuredBuffer<float4> sampleInitialRayInfo;
-StructuredBuffer<CIRPathData> sampleCIRData;
+RWStructuredBuffer<CIRPathData> sampleCIRData;
 
 void main() {}

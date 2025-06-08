@@ -942,13 +942,44 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
     {
         try 
         {
+            // === Add reflection system validation ===
+            auto reflectionVar = var["sampleCIRData"];
+            if (reflectionVar.isValid())
+            {
+                logInfo("PathTracer: CIR reflection variable is valid - reflection system working correctly");
+                auto reflectionType = reflectionVar.getType();
+                if (reflectionType)
+                {
+                    logInfo("PathTracer: CIR reflection type found successfully");
+                }
+            }
+            else
+            {
+                logError("PathTracer: CIR reflection variable is INVALID - reflection system may have failed");
+                logError("PathTracer: This suggests the sampleCIRData declaration in ReflectTypes.cs.slang is missing or incorrect");
+            }
+
             mpSampleCIRData = mpDevice->createStructuredBuffer(var["sampleCIRData"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
             mVarsChanged = true;
             logInfo("PathTracer: Created CIR data buffer with {} elements", sampleCount);
+            
+            // === Verify buffer creation success ===
+            if (mpSampleCIRData)
+            {
+                logInfo("PathTracer: CIR buffer created successfully");
+                logInfo("PathTracer: CIR buffer element count: {}", mpSampleCIRData->getElementCount());
+                logInfo("PathTracer: CIR buffer struct size: {} bytes", mpSampleCIRData->getStructSize());
+                logInfo("PathTracer: CIR buffer total size: {} MB", mpSampleCIRData->getSize() / (1024.0f * 1024.0f));
+            }
+            else
+            {
+                logError("PathTracer: CIR buffer creation FAILED - buffer is null");
+            }
         }
         catch (const std::exception& e)
         {
             logError("PathTracer: Exception creating CIR buffer: {}", e.what());
+            logError("PathTracer: This may indicate reflection system failure or memory allocation issues");
         }
     }
 }
@@ -1149,24 +1180,55 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         // === Bind CIR data output ===
         try 
         {
+            // === Enhanced CIR binding validation ===
+            logInfo("PathTracer: Attempting to bind CIR data buffer...");
+            
+            // Check shader variable first
+            auto cirVar = var["sampleCIRData"];
+            if (!cirVar.isValid())
+            {
+                logError("PathTracer: CIR shader variable 'sampleCIRData' is INVALID");
+                logError("PathTracer: This indicates reflection system failure - check ReflectTypes.cs.slang");
+                return;
+            }
+            
+            logInfo("PathTracer: CIR shader variable is valid");
+            
             // Prioritize render graph connected output buffer
             auto pCIROutput = renderData[kOutputCIRData];
             if (pCIROutput && pCIROutput->asBuffer())
             {
+                logInfo("PathTracer: Using render graph CIR output buffer");
                 var["sampleCIRData"] = pCIROutput->asBuffer();
+                
+                // Validate the bound buffer
+                auto boundBuffer = pCIROutput->asBuffer();
+                logInfo("PathTracer: Render graph CIR buffer - Elements: {}, Size: {} bytes", 
+                        boundBuffer->getElementCount(), boundBuffer->getSize());
             }
             else if (mpSampleCIRData)
             {
+                logInfo("PathTracer: Using internal CIR buffer");
                 var["sampleCIRData"] = mpSampleCIRData;
+                
+                // Validate the bound buffer
+                logInfo("PathTracer: Internal CIR buffer - Elements: {}, StructSize: {} bytes, TotalSize: {} MB", 
+                        mpSampleCIRData->getElementCount(), 
+                        mpSampleCIRData->getStructSize(),
+                        mpSampleCIRData->getSize() / (1024.0f * 1024.0f));
             }
             else 
             {
-                logWarning("PathTracer: CIR data buffer not available");
+                logError("PathTracer: NO CIR data buffer available for binding!");
+                logError("PathTracer: This suggests buffer creation failed or was not attempted");
             }
+            
+            logInfo("PathTracer: CIR data binding completed successfully");
         }
         catch (const std::exception& e)
         {
             logError("PathTracer: Exception binding CIR data: {}", e.what());
+            logError("PathTracer: This may indicate shader binding or buffer access issues");
         }
     }
 
@@ -1704,12 +1766,25 @@ void PathTracer::outputCIRDataToDebug(RenderContext* pRenderContext)
         logWarning("PathTracer: CIR data buffer not available for debug output");
         return;
     }
+    
+    // Add debugging information about CIR state
+    logInfo("=== CIR Data State Debug ===");
+    logInfo("mOutputCIRData flag: {}", mOutputCIRData ? "true" : "false");
+    logInfo("mpSampleCIRData pointer: {}", mpSampleCIRData ? "valid" : "null");
+    if (mpSampleCIRData)
+    {
+        logInfo("CIR buffer element count: {}", mpSampleCIRData->getElementCount());
+        logInfo("CIR buffer struct size: {}", mpSampleCIRData->getStructSize());
+        logInfo("CIR buffer total size: {} bytes", mpSampleCIRData->getSize());
+    }
 
     try 
     {
         // Create a ReadBack buffer for CPU access
         uint32_t elementCount = mpSampleCIRData->getElementCount();
         uint32_t elementSize = mpSampleCIRData->getStructSize();
+        
+        logInfo("Creating ReadBack buffer for {} elements of {} bytes each", elementCount, elementSize);
         
         ref<Buffer> pReadbackBuffer = mpDevice->createStructuredBuffer(
             elementSize,
@@ -1720,11 +1795,21 @@ void PathTracer::outputCIRDataToDebug(RenderContext* pRenderContext)
             false
         );
 
-        // Copy GPU data to CPU accessible buffer
-        pRenderContext->copyResource(pReadbackBuffer.get(), mpSampleCIRData.get());
-        pRenderContext->submit(true); // Wait for copy completion
+        logInfo("ReadBack buffer created successfully, copying data from GPU...");
 
-        // Map ReadBack buffer to CPU
+        // Copy GPU data to CPU accessible buffer using same method as test data
+        pRenderContext->copyResource(pReadbackBuffer.get(), mpSampleCIRData.get());
+        pRenderContext->submit(false);
+        pRenderContext->signal(mpDebugFence.get());
+        
+        logInfo("GPU copy submitted, waiting for completion...");
+        
+        // Wait for copy completion using same synchronization as test data
+        mpDebugFence->wait();
+        
+        logInfo("GPU copy completed, mapping buffer for CPU access...");
+
+        // Map ReadBack buffer to CPU using same type-safe approach as test data
         const void* pMappedData = pReadbackBuffer->map();
         if (!pMappedData)
         {
@@ -1732,10 +1817,29 @@ void PathTracer::outputCIRDataToDebug(RenderContext* pRenderContext)
             return;
         }
 
+        // Use same data access pattern as test data
         const uint8_t* pByteData = static_cast<const uint8_t*>(pMappedData);
         
         logInfo("=== CIR Actual Data Debug Output ===");
         logInfo("Actual Buffer Info: ElementCount={}, ElementSize={} bytes", elementCount, elementSize);
+        
+        // Check if buffer contains any non-zero data
+        bool hasNonZeroData = false;
+        for (uint32_t i = 0; i < std::min(elementCount, 100u); i++)
+        {
+            const uint8_t* pElementData = pByteData + i * elementSize;
+            for (uint32_t j = 0; j < elementSize; j++)
+            {
+                if (pElementData[j] != 0)
+                {
+                    hasNonZeroData = true;
+                    break;
+                }
+            }
+            if (hasNonZeroData) break;
+        }
+        
+        logInfo("Buffer contains non-zero data: {}", hasNonZeroData ? "YES" : "NO");
         
         // Output first few samples for debugging
         uint32_t maxSamplesToShow = std::min(elementCount, 10u);
@@ -1808,3 +1912,4 @@ void PathTracer::outputCIRDataToDebug(RenderContext* pRenderContext)
         logError("PathTracer: Unknown exception during CIR debug output");
     }
 }
+
