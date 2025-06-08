@@ -110,9 +110,6 @@ private:
     void tracePass(RenderContext* pRenderContext, const RenderData& renderData, TracePass& tracePass);
     void resolvePass(RenderContext* pRenderContext, const RenderData& renderData);
     
-    // === CIR Debug Output ===
-    void outputCIRDataToDebug(RenderContext* pRenderContext);
-
     /** Static configuration. Changing any of these options require shader recompilation.
     */
     struct StaticParams
@@ -191,7 +188,6 @@ private:
     bool                            mOutputNRDData = false;     ///< True if NRD diffuse/specular data should be generated as outputs.
     bool                            mOutputNRDAdditionalData = false;   ///< True if NRD data from delta and residual paths should be generated as designated outputs rather than being included in specular NRD outputs.
     bool                            mOutputInitialRayInfo = false; ///< True if initial ray direction and intensity data should be generated as outputs.
-    bool                            mOutputCIRData = false;      ///< True if CIR path data should be generated as outputs.
 
     ref<ComputePass>                mpGeneratePaths;            ///< Fullscreen compute pass generating paths starting at primary hits.
     ref<ComputePass>                mpResolvePass;              ///< Sample resolve pass.
@@ -210,8 +206,4 @@ private:
     ref<Buffer>                     mpSampleNRDEmission;        ///< Compact per-sample NRD emission data.
     ref<Buffer>                     mpSampleNRDReflectance;     ///< Compact per-sample NRD reflectance data.
     ref<Buffer>                     mpSampleInitialRayInfo;     ///< Per-sample initial ray direction and intensity buffer.
-
-    // === CIR data output buffer ===
-    ref<Buffer>                     mpSampleCIRData;            ///< CIR path data output buffer
-    ref<Fence>                      mpDebugFence;               ///< Fence for debug synchronization
 };
