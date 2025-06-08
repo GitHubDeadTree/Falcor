@@ -46,6 +46,7 @@ import ColorType;
 import NRDHelpers;
 __exported import PathState;
 __exported import Params;
+import CIRPathData;
 import Rendering.RTXDI.RTXDI;
 
 /** Interface for querying visibility in the scene.
@@ -84,6 +85,11 @@ struct PathTracer
     RWStructuredBuffer<GuideData> sampleGuideData;  ///< Output per-sample guide data.
     RWStructuredBuffer<float4> sampleInitialRayInfo; ///< Output per-sample initial ray direction and intensity data.
     NRDBuffers outputNRD;                           ///< Output NRD data.
+
+    // === CIR Data Output ===
+#if OUTPUT_CIR_DATA
+    RWStructuredBuffer<CIRPathData> sampleCIRData;   ///< CIR path data output buffer
+#endif
 
     RWTexture2D<float4> outputColor;                ///< Output color buffer if kSamplesPerPixel == 1.
 
@@ -879,6 +885,11 @@ struct PathTracer
         const IMaterialInstance mi = gScene.materials.getMaterialInstance(sd, lod, hints);
         BSDFProperties bsdfProperties = mi.getProperties(sd);
 
+        // === Update CIR data during path tracing ===
+#if OUTPUT_CIR_DATA
+        updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties.diffuseReflectionAlbedo.r);
+#endif
+
         // Disable specular lobes if caustics are disabled and path already contains a diffuse vertex.
         bool isSpecular = bsdfProperties.roughness <= params.specularRoughnessThreshold;
         if (kDisableCaustics && path.getBounces(BounceType::Diffuse) > 0 && isSpecular)
@@ -1237,4 +1248,74 @@ struct PathTracer
             outputNRD.sampleRadiance[outIdx] = data;
         }
     }
+
+#if OUTPUT_CIR_DATA
+    /** Update CIR data during path tracing (simplified version).
+        Only updates CIR parameters that require special calculation.
+        Other parameters are dynamically obtained through getCIRData().
+        \param[in,out] path Path state.
+        \param[in] surfaceNormal Surface normal at hit point.
+        \param[in] reflectance Surface reflectance value.
+    */
+    void updateCIRDataDuringTracing(inout PathState path, float3 surfaceNormal, float reflectance)
+    {
+        // Note: Basic parameters (pathLength, reflectionCount, emittedPower) do not need real-time updates
+        // because they are directly reused from existing PathState fields and dynamically obtained in getCIRData()
+        
+        // Only update CIR parameters that require special calculation
+        
+        // Update emission angle: only calculate at first surface interaction
+        if (path.getVertexIndex() == 1) // At emission surface
+        {
+            path.updateCIREmissionAngle(surfaceNormal);
+        }
+        
+        // Accumulate reflectance: update at each valid reflection
+        if (reflectance > 0.0f && path.getVertexIndex() > 1)
+        {
+            path.updateCIRReflectance(reflectance);
+        }
+    }
+
+    /** Output CIR data on path completion (optimized version: dynamic data generation).
+        \param[in] path Path state.
+    */
+    void outputCIRDataOnPathCompletion(PathState path)
+    {
+        // Update reception angle when path is about to terminate
+        if (path.isHit() && length(path.normal) > 0.1f)
+        {
+            path.updateCIRReceptionAngle(path.dir, path.normal);
+        }
+        
+        // Dynamically generate complete CIR data (utilizing reused fields)
+        CIRPathData cirData = path.getCIRData();
+        
+        // Data sanity check
+        if (cirData.pathLength < 0.0f || cirData.pathLength > 10000.0f)
+        {
+            // Abnormal path length, use default value
+            cirData.pathLength = 1.0f;
+        }
+        
+        if (cirData.reflectanceProduct < 0.0f || cirData.reflectanceProduct > 1.0f)
+        {
+            // Abnormal reflectance, use default value
+            cirData.reflectanceProduct = 0.5f;
+        }
+        
+        // Calculate output index (using same method as writeOutput)
+        const uint2 pixel = path.getPixel();
+        const uint outIdx = params.getSampleOffset(pixel, sampleOffset) + path.getSampleIdx();
+        
+        // Bounds check
+        uint bufferSize = 0;
+        uint stride = 0;
+        sampleCIRData.GetDimensions(bufferSize, stride);
+        if (outIdx < bufferSize)
+        {
+            sampleCIRData[outIdx] = cirData;
+        }
+    }
+#endif
 };

@@ -1311,7 +1311,8 @@ bool PathTracer::beginFrame(RenderContext* pRenderContext, const RenderData& ren
 
     // Check if CIR data should be generated.
     bool prevOutputCIRData = mOutputCIRData;
-    mOutputCIRData = renderData[kOutputCIRData] != nullptr;
+    // Always enable CIR data collection regardless of output connection
+    mOutputCIRData = true;
     if (mOutputCIRData != prevOutputCIRData) mRecompile = true;
 
     // Enable pixel stats if rayCount or pathLength outputs are connected.
@@ -1378,6 +1379,7 @@ void PathTracer::generatePaths(RenderContext* pRenderContext, const RenderData& 
     mpGeneratePaths->addDefine("OUTPUT_GUIDE_DATA", mOutputGuideData ? "1" : "0");
     mpGeneratePaths->addDefine("OUTPUT_NRD_DATA", mOutputNRDData ? "1" : "0");
     mpGeneratePaths->addDefine("OUTPUT_NRD_ADDITIONAL_DATA", mOutputNRDAdditionalData ? "1" : "0");
+    mpGeneratePaths->addDefine("OUTPUT_CIR_DATA", mOutputCIRData ? "1" : "0");
 
     // Bind resources.
     auto var = mpGeneratePaths->getRootVar()["CB"]["gPathGenerator"];
@@ -1403,6 +1405,7 @@ void PathTracer::tracePass(RenderContext* pRenderContext, const RenderData& rend
     tracePass.pProgram->addDefine("OUTPUT_GUIDE_DATA", mOutputGuideData ? "1" : "0");
     tracePass.pProgram->addDefine("OUTPUT_NRD_DATA", mOutputNRDData ? "1" : "0");
     tracePass.pProgram->addDefine("OUTPUT_NRD_ADDITIONAL_DATA", mOutputNRDAdditionalData ? "1" : "0");
+    tracePass.pProgram->addDefine("OUTPUT_CIR_DATA", mOutputCIRData ? "1" : "0");
 
     // Bind global resources.
     auto var = tracePass.pVars->getRootVar();
@@ -1504,6 +1507,7 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("OUTPUT_NRD_DATA", owner.mOutputNRDData ? "1" : "0");
     defines.add("OUTPUT_NRD_ADDITIONAL_DATA", owner.mOutputNRDAdditionalData ? "1" : "0");
     defines.add("OUTPUT_INITIAL_RAY_INFO", owner.mOutputInitialRayInfo ? "1" : "0"); // 新增宏定义
+    defines.add("OUTPUT_CIR_DATA", owner.mOutputCIRData ? "1" : "0");
 
     // Sampling utilities configuration.
     FALCOR_ASSERT(owner.mpSampleGenerator);

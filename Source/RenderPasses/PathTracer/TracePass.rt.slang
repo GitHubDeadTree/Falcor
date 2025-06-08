@@ -35,6 +35,7 @@ import Utils.Math.PackedFormats;
 import Utils.Math.FormatConversion;
 import PathTracer;
 import PathTracerNRD;
+import CIRPathData;
 
 import Utils.NVAPI; // TODO(@skallweit) this is currently needed to make g_NvidiaExt visible
 
@@ -254,6 +255,11 @@ struct ReorderingScheduler
 
         gPathTracer.generatePath(pathID, path);
         gPathTracer.setupPathLogging(path);
+        
+        // === Initialize CIR data ===
+#if OUTPUT_CIR_DATA
+        path.initCIRData();
+#endif
 
         if (path.isHit())
         {
@@ -350,6 +356,11 @@ struct ReorderingScheduler
 
 #if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS)
         gPathTracer.writeOutput(path);
+        
+        // === Output CIR data on path completion ===
+#if OUTPUT_CIR_DATA
+        gPathTracer.outputCIRDataOnPathCompletion(path);
+#endif
 #endif
     }
 
@@ -460,6 +471,11 @@ struct Scheduler
 
         gPathTracer.generatePath(pathID, path);
         gPathTracer.setupPathLogging(path);
+        
+        // === Initialize CIR data ===
+#if OUTPUT_CIR_DATA
+        path.initCIRData();
+#endif
 
         // Handle primary hit/miss.
         if (path.isHit())
@@ -488,6 +504,11 @@ struct Scheduler
 
 #if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS)
         gPathTracer.writeOutput(path);
+        
+        // === Output CIR data on path completion ===
+#if OUTPUT_CIR_DATA
+        gPathTracer.outputCIRDataOnPathCompletion(path);
+#endif
 #endif
     }
 
@@ -521,6 +542,15 @@ struct Scheduler
 void scatterMiss(inout PathPayload payload : SV_RayPayload)
 {
     gScheduler.handleMiss(payload);
+    
+    // === Output CIR data on path miss (if path has valid vertices) ===
+#if OUTPUT_CIR_DATA
+    PathState path = PathPayload::unpack(payload);
+    if (path.getVertexIndex() > 0)
+    {
+        gPathTracer.outputCIRDataOnPathCompletion(path);
+    }
+#endif
 }
 
 //
