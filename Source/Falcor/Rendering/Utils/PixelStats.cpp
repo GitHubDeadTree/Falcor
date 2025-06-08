@@ -108,25 +108,10 @@ namespace Falcor
                 mpStatsCIRValidSamples = mpDevice->createTexture2D(frameDim.x, frameDim.y, ResourceFormat::R32Uint, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             }
 
-            // Create CIR raw data buffers if needed
-            if (mCollectionMode == CollectionMode::RawData || mCollectionMode == CollectionMode::Both)
+            // Clear CIR raw data buffers if they exist (creation moved to prepareProgram)
+            if ((mCollectionMode == CollectionMode::RawData || mCollectionMode == CollectionMode::Both) && mpCIRCounterBuffer)
             {
-                const size_t bufferSize = mMaxCIRPathsPerFrame * sizeof(CIRPathData);
-                const size_t counterSize = sizeof(uint32_t);
-                
-                if (!mpCIRRawDataBuffer || mpCIRRawDataBuffer->getSize() < bufferSize)
-                {
-                    mpCIRRawDataBuffer = mpDevice->createBuffer(bufferSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal);
-                    mpCIRRawDataReadback = mpDevice->createBuffer(bufferSize, ResourceBindFlags::None, MemoryType::ReadBack);
-                }
-                
-                if (!mpCIRCounterBuffer || mpCIRCounterBuffer->getSize() < counterSize)
-                {
-                    mpCIRCounterBuffer = mpDevice->createBuffer(counterSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal);
-                    mpCIRCounterReadback = mpDevice->createBuffer(counterSize, ResourceBindFlags::None, MemoryType::ReadBack);
-                }
-                
-                // Clear the counter buffer
+                // Clear the counter buffer for new frame
                 pRenderContext->clearUAV(mpCIRCounterBuffer->getUAV().get(), uint4(0, 0, 0, 0));
             }
 
@@ -227,9 +212,45 @@ namespace Falcor
             if (mCollectionMode == CollectionMode::RawData || mCollectionMode == CollectionMode::Both)
             {
                 pProgram->addDefine("_PIXEL_STATS_RAW_DATA_ENABLED");
+                
+                // Create CIR buffers using PixelInspectorPass pattern - reflector-based creation
+                if (!mpCIRRawDataBuffer || mpCIRRawDataBuffer->getElementCount() < mMaxCIRPathsPerFrame)
+                {
+                    // Use program reflector to create buffer with correct type matching
+                    mpCIRRawDataBuffer = mpDevice->createStructuredBuffer(
+                        var["gCIRRawDataBuffer"], mMaxCIRPathsPerFrame,
+                        ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess,
+                        MemoryType::DeviceLocal, nullptr, false
+                    );
+                    mpCIRRawDataReadback = mpDevice->createBuffer(
+                        mMaxCIRPathsPerFrame * sizeof(CIRPathData), 
+                        ResourceBindFlags::None, 
+                        MemoryType::ReadBack
+                    );
+                    logInfo("Created CIR raw data buffer using reflector: {} elements", mMaxCIRPathsPerFrame);
+                }
+                
+                if (!mpCIRCounterBuffer)
+                {
+                    mpCIRCounterBuffer = mpDevice->createBuffer(
+                        sizeof(uint32_t),
+                        ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess,
+                        MemoryType::DeviceLocal
+                    );
+                    mpCIRCounterReadback = mpDevice->createBuffer(
+                        sizeof(uint32_t),
+                        ResourceBindFlags::None,
+                        MemoryType::ReadBack
+                    );
+                    logInfo("Created CIR counter buffer: {} bytes", sizeof(uint32_t));
+                }
+                
+                // Direct binding following PixelInspectorPass pattern - variables always exist now
                 var["gCIRRawDataBuffer"] = mpCIRRawDataBuffer;
                 var["gCIRCounterBuffer"] = mpCIRCounterBuffer;
-                var["gMaxCIRPaths"] = mMaxCIRPathsPerFrame;
+                var["PerFrameCB"]["gMaxCIRPaths"] = mMaxCIRPathsPerFrame;
+                
+                logDebug("Successfully bound CIR raw data buffers to shader variables");
             }
             else
             {

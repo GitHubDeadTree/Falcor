@@ -48,12 +48,15 @@ RWTexture2D<uint> gStatsVolumeLookupCount;   // Per-pixel volume lookup count.
 RWTexture2D<float> gStatsCIRData[(uint)PixelStatsCIRType::Count]; // Per-pixel CIR data stats.
 RWTexture2D<uint> gStatsCIRValidSamples;     // Per-pixel valid CIR sample count.
 
-// CIR raw data collection buffers
-#ifdef _PIXEL_STATS_RAW_DATA_ENABLED
+// CIR raw data collection buffers - Always declared to avoid binding issues
 RWStructuredBuffer<CIRPathData> gCIRRawDataBuffer;  // Raw CIR path data storage
 RWByteAddressBuffer gCIRCounterBuffer;              // Counter for number of stored paths
-uint gMaxCIRPaths;                                  // Maximum number of paths that can be stored
-#endif
+
+// Constant buffer for CIR parameters following Falcor standard pattern
+cbuffer PerFrameCB
+{
+    uint gMaxCIRPaths;                              // Maximum number of paths that can be stored
+}
 
 #ifdef _PIXEL_STATS_ENABLED
 static uint2 gPixelStatsPixel;
