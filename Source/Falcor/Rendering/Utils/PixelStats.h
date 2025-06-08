@@ -35,18 +35,47 @@
 #include "Utils/UI/Gui.h"
 #include "Utils/Algorithm/ParallelReduction.h"
 #include <memory>
+#include <vector>
+#include <string>
 
 namespace Falcor
 {
+    // Forward declaration for CIR path data structure
+    struct CIRPathData
+    {
+        float pathLength;
+        float emissionAngle;
+        float receptionAngle;
+        float reflectanceProduct;
+        uint32_t reflectionCount;
+        float emittedPower;
+        uint32_t pixelX;
+        uint32_t pixelY;
+        uint32_t pathIndex;
+        
+        bool isValid() const
+        {
+            return pathLength > 0.01f && pathLength < 1000.0f &&
+                   emissionAngle >= 0.0f && emissionAngle <= 3.14159f &&
+                   receptionAngle >= 0.0f && receptionAngle <= 3.14159f &&
+                   reflectanceProduct >= 0.0f && reflectanceProduct <= 1.0f &&
+                   emittedPower > 0.0f;
+        }
+    };
+
     /** Helper class for collecting runtime stats in the path tracer.
 
         Per-pixel stats are logged in buffers on the GPU, which are immediately ready for consumption
         after end() is called. These stats are summarized in a reduction pass, which are
         available in getStats() or printStats() after async readback to the CPU.
+        
+        Extended to support both statistical aggregation and raw CIR path data collection.
     */
     class FALCOR_API PixelStats
     {
     public:
+        using CollectionMode = PixelStatsCollectionMode;
+
         struct Stats
         {
             uint32_t visibilityRays = 0;
@@ -75,6 +104,14 @@ namespace Falcor
 
         void setEnabled(bool enabled) { mEnabled = enabled; }
         bool isEnabled() const { return mEnabled; }
+
+        // Collection mode configuration
+        void setCollectionMode(CollectionMode mode) { mCollectionMode = mode; }
+        CollectionMode getCollectionMode() const { return mCollectionMode; }
+        
+        // CIR raw data configuration
+        void setMaxCIRPathsPerFrame(uint32_t maxPaths) { mMaxCIRPathsPerFrame = maxPaths; }
+        uint32_t getMaxCIRPathsPerFrame() const { return mMaxCIRPathsPerFrame; }
 
         void beginFrame(RenderContext* pRenderContext, const uint2& frameDim);
         void endFrame(RenderContext* pRenderContext);
@@ -113,8 +150,28 @@ namespace Falcor
         */
         const ref<Texture> getVolumeLookupCountTexture() const;
 
+        // CIR raw data access methods
+        /** Get raw CIR path data collected in the last frame.
+            Only available if collection mode includes RawData.
+            \param[out] outData Vector to receive the CIR path data.
+            \return True if data is available, false otherwise.
+        */
+        bool getCIRRawData(std::vector<CIRPathData>& outData);
+        
+        /** Get the number of CIR paths collected in the last frame.
+            \return Number of paths collected, or 0 if no data available.
+        */
+        uint32_t getCIRPathCount();
+        
+        /** Export CIR raw data to a file.
+            \param[in] filename Output filename for the CIR data.
+            \return True if export was successful, false otherwise.
+        */
+        bool exportCIRData(const std::string& filename);
+
     protected:
         void copyStatsToCPU();
+        void copyCIRRawDataToCPU();
         void computeRayCountTexture(RenderContext* pRenderContext);
 
         static const uint32_t kRayTypeCount = (uint32_t)PixelStatsRayType::Count;
@@ -130,6 +187,8 @@ namespace Falcor
         // Configuration
         bool                                mEnabled = false;               ///< Enable pixel statistics.
         bool                                mEnableLogging = false;         ///< Enable printing to logfile.
+        CollectionMode                      mCollectionMode = CollectionMode::Both;  ///< Data collection mode.
+        uint32_t                            mMaxCIRPathsPerFrame = 1000000; ///< Maximum CIR paths to collect per frame.
 
         // Runtime data
         bool                                mRunning = false;               ///< True inbetween begin() / end() calls.
@@ -150,6 +209,15 @@ namespace Falcor
         // CIR statistics buffers
         ref<Texture>                        mpStatsCIRData[kCIRTypeCount];  ///< Buffers for per-pixel CIR data stats.
         ref<Texture>                        mpStatsCIRValidSamples;         ///< Buffer for per-pixel valid CIR sample count.
+
+        // CIR raw data collection buffers
+        ref<Buffer>                         mpCIRRawDataBuffer;             ///< GPU buffer for raw CIR path data.
+        ref<Buffer>                         mpCIRCounterBuffer;             ///< GPU buffer for path counter.
+        ref<Buffer>                         mpCIRRawDataReadback;           ///< CPU-readable buffer for CIR raw data.
+        ref<Buffer>                         mpCIRCounterReadback;           ///< CPU-readable buffer for path counter.
+        bool                                mCIRRawDataValid = false;       ///< True if raw CIR data is valid.
+        uint32_t                            mCollectedCIRPaths = 0;         ///< Number of CIR paths collected in last frame.
+        std::vector<CIRPathData>            mCIRRawData;                    ///< CPU copy of raw CIR data.
 
         ref<ComputePass>                    mpComputeRayCount;              ///< Pass for computing per-pixel total ray count.
     };

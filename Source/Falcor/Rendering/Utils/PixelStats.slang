@@ -31,9 +31,13 @@
     The host sets the following defines:
 
     _PIXEL_STATS_ENABLED       Nonzero if stats should be collected.
+    _PIXEL_STATS_RAW_DATA_ENABLED  Nonzero if raw CIR data should be collected.
 
 */
 __exported import PixelStatsShared;
+
+// Include CIRPathData structure
+__exported import RenderPasses.PathTracer.CIRPathData;
 
 RWTexture2D<uint> gStatsRayCount[(uint)PixelStatsRayType::Count]; // Per-pixel ray count stats.
 RWTexture2D<uint> gStatsPathLength;          // Per-pixel path length.
@@ -43,6 +47,13 @@ RWTexture2D<uint> gStatsVolumeLookupCount;   // Per-pixel volume lookup count.
 // CIR statistics buffers
 RWTexture2D<float> gStatsCIRData[(uint)PixelStatsCIRType::Count]; // Per-pixel CIR data stats.
 RWTexture2D<uint> gStatsCIRValidSamples;     // Per-pixel valid CIR sample count.
+
+// CIR raw data collection buffers
+#ifdef _PIXEL_STATS_RAW_DATA_ENABLED
+RWStructuredBuffer<CIRPathData> gCIRRawDataBuffer;  // Raw CIR path data storage
+RWByteAddressBuffer gCIRCounterBuffer;              // Counter for number of stored paths
+uint gMaxCIRPaths;                                  // Maximum number of paths that can be stored
+#endif
 
 #ifdef _PIXEL_STATS_ENABLED
 static uint2 gPixelStatsPixel;
@@ -139,5 +150,49 @@ void logCIRReflectionCount(uint count)
 {
 #ifdef _PIXEL_STATS_ENABLED
     gStatsCIRData[(uint)PixelStatsCIRType::ReflectionCount][gPixelStatsPixel] = (float)count;
+#endif
+}
+
+// Raw CIR data collection function
+void logCIRRawPath(CIRPathData pathData)
+{
+#ifdef _PIXEL_STATS_RAW_DATA_ENABLED
+    // Validate the path data before storing
+    if (!pathData.isValid()) return;
+    
+    // Sanitize the data to ensure all values are within valid ranges
+    pathData.sanitize();
+    
+    // Atomically increment the counter to get a unique index
+    uint index = 0;
+    gCIRCounterBuffer.InterlockedAdd(0, 1, index);
+    
+    // Check if we have space in the buffer
+    if (index < gMaxCIRPaths)
+    {
+        gCIRRawDataBuffer[index] = pathData;
+    }
+#endif
+}
+
+// Combined CIR logging function that handles both statistics and raw data
+void logCIRPathComplete(CIRPathData pathData)
+{
+#ifdef _PIXEL_STATS_ENABLED
+    // Log to statistics buffers if enabled
+    if (pathData.isValid())
+    {
+        logCIRPathLength(pathData.pathLength);
+        logCIREmissionAngle(pathData.emissionAngle);
+        logCIRReceptionAngle(pathData.receptionAngle);
+        logCIRReflectanceProduct(pathData.reflectanceProduct);
+        logCIREmittedPower(pathData.emittedPower);
+        logCIRReflectionCount(pathData.reflectionCount);
+    }
+#endif
+
+#ifdef _PIXEL_STATS_RAW_DATA_ENABLED
+    // Log to raw data buffer if enabled
+    logCIRRawPath(pathData);
 #endif
 }

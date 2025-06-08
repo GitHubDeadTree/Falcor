@@ -139,8 +139,6 @@ Path_2: d=1.87m, φ=0.61rad, θ=0.45rad, r=0.91, K=1, P=100W
 
 你的想法非常准确，这确实是一个优雅且实用的解决方案！
 
-
-
 很好的问题！让我分析CIR数据收集器在PathTracer中的执行架构。首先查看PathTracer的主要函数结构：
 Ran tool
 Read file: Source/RenderPasses/PathTracer/PathTracer.cpp
@@ -295,8 +293,6 @@ void PathTracer::exportCIRData(const std::string& filename)
 - 🔄 **数据输出**：文件导出 vs 实时UI显示
 
 **答案：CIR数据收集器将在PathTracer的4个主要函数中执行，每个函数负责数据收集管道的不同阶段。这种多函数分工的架构确保了数据收集的完整性和系统的稳定性。**
-
-
 
 非常重要的要求！你说得对，我们需要**同时保留两个系统**。让我设计一个完整的双重架构：
 
@@ -573,7 +569,7 @@ void PathTracer::validateCIRData()
             // 计算原始数据的统计值
             float avgPathLength = 0.0f;
             uint32_t validSamples = 0;
-          
+      
             for (const auto& data : rawData)
             {
                 if (data.isValid())
@@ -582,11 +578,11 @@ void PathTracer::validateCIRData()
                     validSamples++;
                 }
             }
-          
+      
             if (validSamples > 0)
             {
                 avgPathLength /= validSamples;
-              
+          
                 // 比较两个系统的结果
                 float diff = abs(avgPathLength - pixelStats.avgCIRPathLength);
                 if (diff > 0.01f) // 容忍1cm误差
@@ -616,3 +612,100 @@ void PathTracer::validateCIRData()
 2. **科学研究**：CIRDataCollector提供完整数据
 3. **数据验证**：两个系统可以相互验证
 4. **性能灵活**：用户可以按需开启不同系统
+
+**【可选】**
+
+**您的想法非常明智！在PixelStats系统基础上扩展确实比并行实现一个独立收集器更优雅。让我先查看当前的PixelStats系统实现，然后设计一个使用结构化缓冲区的扩展方案。**
+**Read file: Source/RenderPasses/PathTracer/PixelStats.h**
+**Read file: Source/RenderPasses/PathTracer/PixelStats.cpp**
+**Ran tool**
+**Read file: Source/Falcor/Rendering/Utils/PixelStats.h**
+**Read file: Source/Falcor/Rendering/Utils/PixelStats.cpp**
+**Read file: Source/Falcor/Rendering/Utils/PixelStats.cpp**
+**现在我来查看一下当前的结构化缓冲区是如何实现的。让我搜索现有的结构化缓冲区用法：**
+**Ran tool**
+**很好！我看到已经有CIR相关的结构化缓冲区实现了。让我查看一下CIRPathData的定义：**
+**Ran tool**
+**Read file: Source/RenderPasses/PathTracer/CIRPathData.slang**
+**完美！现在我理解了您的想法。您想在PixelStats系统基础上扩展支持结构化缓冲区，这样可以收集完整的CIR路径数据，而不仅仅是统计值。让我设计一个扩展方案：**
+
+## 分析现状
+
+**从代码分析可以看到：**
+
+1. **现有PixelStats系统**：使用 `RWTexture2D`收集统计数据，通过ParallelReduction进行GPU端求和
+2. **现有CIR实现**：已经有 `CIRPathData`结构和 `RWStructuredBuffer<CIRPathData>`
+3. **您的需求**：在PixelStats基础上扩展支持结构化缓冲区收集
+
+## 建议的设计方案
+
+**可以为PixelStats添加一个****混合模式**：既支持原有的统计聚合模式，也支持新的结构化缓冲区原始数据收集模式。
+
+### 方案优势
+
+1. **最小修改**：只需扩展现有系统，不重新设计
+2. **向后兼容**：保持现有统计功能不变
+3. **统一管理**：使用同一套生命周期管理（beginFrame/endFrame）
+4. **灵活配置**：可选择统计模式还是原始数据模式
+
+### 实现设计
+
+```
+// 在PixelStats.h中添加新的配置选项
+enum class CollectionMode 
+{
+    Statistics,     // 原有的统计聚合模式
+    RawData,        // 新的原始数据收集模式  
+    Both            // 两种模式都启用
+};
+
+class PixelStats 
+{
+    // 新增配置
+    CollectionMode mCollectionMode = CollectionMode::Statistics;
+  
+    // 新增结构化缓冲区支持
+    ref<Buffer> mpCIRRawDataBuffer;          // RWStructuredBuffer<CIRPathData>
+    ref<Buffer> mpCIRCounterBuffer;          // 计数器，跟踪写入的数据量
+    uint32_t mMaxCIRPathsPerFrame = 1000000; // 每帧最大CIR路径数
+  
+    // 新增API
+    void setCollectionMode(CollectionMode mode);
+    void setMaxCIRPathsPerFrame(uint32_t maxPaths);
+    const ref<Buffer> getCIRRawDataBuffer() const;
+    uint32_t getCIRPathCount(); // 获取实际收集的路径数量
+};
+```
+
+### SLANG端扩展
+
+```
+// 在PixelStats.slang中添加
+#ifdef _PIXEL_STATS_RAW_DATA_ENABLED
+RWStructuredBuffer<CIRPathData> gCIRRawDataBuffer;
+RWByteAddressBuffer gCIRCounterBuffer;
+
+void logCIRRawPath(CIRPathData pathData)
+{
+    if (!pathData.isValid()) return;
+  
+    // 原子递增计数器获取写入索引
+    uint index = gCIRCounterBuffer.InterlockedAdd(0, 1);
+  
+    // 检查是否超出缓冲区大小
+    if (index < gMaxCIRPaths)
+    {
+        gCIRRawDataBuffer[index] = pathData;
+    }
+}
+#endif
+```
+
+**这种设计的好处是：**
+
+1. **只修改最后环节**：在GPU数据收集完成后的CPU读取阶段增加新功能
+2. **复用现有基础设施**：使用PixelStats的缓冲区管理、生命周期控制
+3. **配置灵活性**：可以选择只要统计、只要原始数据，或者两者都要
+4. **性能可控**：通过 `mMaxCIRPathsPerFrame`限制内存使用
+
+**您觉得这个方向如何？如果您同意这个思路，我可以开始实现具体的代码修改。**

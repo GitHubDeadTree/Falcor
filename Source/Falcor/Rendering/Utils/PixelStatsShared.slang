@@ -50,4 +50,11 @@ enum class PixelStatsCIRType
     Count
 };
 
+enum class PixelStatsCollectionMode
+{
+    Statistics = 0,     ///< Collect aggregated statistics only (default behavior)
+    RawData = 1,        ///< Collect raw CIR path data using structured buffers
+    Both = 2            ///< Collect both statistics and raw data
+};
+
 END_NAMESPACE_FALCOR

@@ -31,6 +31,8 @@
 #include "Utils/Scripting/ScriptBindings.h"
 #include <sstream>
 #include <iomanip>
+#include <fstream>
+#include <algorithm>
 
 namespace Falcor
 {
@@ -75,6 +77,7 @@ namespace Falcor
         mStatsValid = false;
         mStatsBuffersValid = false;
         mRayCountTextureValid = false;
+        mCIRRawDataValid = false;
 
         if (mEnabled)
         {
@@ -105,6 +108,28 @@ namespace Falcor
                 mpStatsCIRValidSamples = mpDevice->createTexture2D(frameDim.x, frameDim.y, ResourceFormat::R32Uint, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             }
 
+            // Create CIR raw data buffers if needed
+            if (mCollectionMode == CollectionMode::RawData || mCollectionMode == CollectionMode::Both)
+            {
+                const size_t bufferSize = mMaxCIRPathsPerFrame * sizeof(CIRPathData);
+                const size_t counterSize = sizeof(uint32_t);
+                
+                if (!mpCIRRawDataBuffer || mpCIRRawDataBuffer->getSize() < bufferSize)
+                {
+                    mpCIRRawDataBuffer = mpDevice->createBuffer(bufferSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal);
+                    mpCIRRawDataReadback = mpDevice->createBuffer(bufferSize, ResourceBindFlags::None, MemoryType::ReadBack);
+                }
+                
+                if (!mpCIRCounterBuffer || mpCIRCounterBuffer->getSize() < counterSize)
+                {
+                    mpCIRCounterBuffer = mpDevice->createBuffer(counterSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal);
+                    mpCIRCounterReadback = mpDevice->createBuffer(counterSize, ResourceBindFlags::None, MemoryType::ReadBack);
+                }
+                
+                // Clear the counter buffer
+                pRenderContext->clearUAV(mpCIRCounterBuffer->getUAV().get(), uint4(0, 0, 0, 0));
+            }
+
             for (uint32_t i = 0; i < kRayTypeCount; i++)
             {
                 pRenderContext->clearUAV(mpStatsRayCount[i]->getUAV().get(), uint4(0, 0, 0, 0));
@@ -132,21 +157,35 @@ namespace Falcor
             // Create fence first time we need it.
             if (!mpFence) mpFence = mpDevice->createFence();
 
-            // Sum of the per-pixel counters. The results are copied to a GPU buffer.
-            for (uint32_t i = 0; i < kRayTypeCount; i++)
+            // Process statistics collection if enabled
+            if (mCollectionMode == CollectionMode::Statistics || mCollectionMode == CollectionMode::Both)
             {
-                mpParallelReduction->execute<uint4>(pRenderContext, mpStatsRayCount[i], ParallelReduction::Type::Sum, nullptr, mpReductionResult, i * sizeof(uint4));
-            }
-            mpParallelReduction->execute<uint4>(pRenderContext, mpStatsPathLength, ParallelReduction::Type::Sum, nullptr, mpReductionResult, kRayTypeCount * sizeof(uint4));
-            mpParallelReduction->execute<uint4>(pRenderContext, mpStatsPathVertexCount, ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 1) * sizeof(uint4));
-            mpParallelReduction->execute<uint4>(pRenderContext, mpStatsVolumeLookupCount, ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 2) * sizeof(uint4));
+                // Sum of the per-pixel counters. The results are copied to a GPU buffer.
+                for (uint32_t i = 0; i < kRayTypeCount; i++)
+                {
+                    mpParallelReduction->execute<uint4>(pRenderContext, mpStatsRayCount[i], ParallelReduction::Type::Sum, nullptr, mpReductionResult, i * sizeof(uint4));
+                }
+                mpParallelReduction->execute<uint4>(pRenderContext, mpStatsPathLength, ParallelReduction::Type::Sum, nullptr, mpReductionResult, kRayTypeCount * sizeof(uint4));
+                mpParallelReduction->execute<uint4>(pRenderContext, mpStatsPathVertexCount, ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 1) * sizeof(uint4));
+                mpParallelReduction->execute<uint4>(pRenderContext, mpStatsVolumeLookupCount, ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 2) * sizeof(uint4));
 
-            // Add CIR statistics reduction
-            for (uint32_t i = 0; i < kCIRTypeCount; i++)
-            {
-                mpParallelReduction->execute<float4>(pRenderContext, mpStatsCIRData[i], ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 3 + i) * sizeof(uint4));
+                // Add CIR statistics reduction
+                for (uint32_t i = 0; i < kCIRTypeCount; i++)
+                {
+                    mpParallelReduction->execute<float4>(pRenderContext, mpStatsCIRData[i], ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 3 + i) * sizeof(uint4));
+                }
+                mpParallelReduction->execute<uint4>(pRenderContext, mpStatsCIRValidSamples, ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 3 + kCIRTypeCount) * sizeof(uint4));
             }
-            mpParallelReduction->execute<uint4>(pRenderContext, mpStatsCIRValidSamples, ParallelReduction::Type::Sum, nullptr, mpReductionResult, (kRayTypeCount + 3 + kCIRTypeCount) * sizeof(uint4));
+
+            // Process raw CIR data collection if enabled
+            if (mCollectionMode == CollectionMode::RawData || mCollectionMode == CollectionMode::Both)
+            {
+                // Copy counter to readback buffer
+                pRenderContext->copyBufferRegion(mpCIRCounterReadback.get(), 0, mpCIRCounterBuffer.get(), 0, sizeof(uint32_t));
+                
+                // Copy raw data to readback buffer
+                pRenderContext->copyBufferRegion(mpCIRRawDataReadback.get(), 0, mpCIRRawDataBuffer.get(), 0, mMaxCIRPathsPerFrame * sizeof(CIRPathData));
+            }
 
             // Submit command list and insert signal.
             pRenderContext->submit(false);
@@ -164,24 +203,43 @@ namespace Falcor
         if (mEnabled)
         {
             pProgram->addDefine("_PIXEL_STATS_ENABLED");
-            for (uint32_t i = 0; i < kRayTypeCount; i++)
-            {
-                var["gStatsRayCount"][i] = mpStatsRayCount[i];
-            }
-            var["gStatsPathLength"] = mpStatsPathLength;
-            var["gStatsPathVertexCount"] = mpStatsPathVertexCount;
-            var["gStatsVolumeLookupCount"] = mpStatsVolumeLookupCount;
             
-            // Bind CIR statistics buffers
-            for (uint32_t i = 0; i < kCIRTypeCount; i++)
+            // Bind statistics buffers if statistics collection is enabled
+            if (mCollectionMode == CollectionMode::Statistics || mCollectionMode == CollectionMode::Both)
             {
-                var["gStatsCIRData"][i] = mpStatsCIRData[i];
+                for (uint32_t i = 0; i < kRayTypeCount; i++)
+                {
+                    var["gStatsRayCount"][i] = mpStatsRayCount[i];
+                }
+                var["gStatsPathLength"] = mpStatsPathLength;
+                var["gStatsPathVertexCount"] = mpStatsPathVertexCount;
+                var["gStatsVolumeLookupCount"] = mpStatsVolumeLookupCount;
+                
+                // Bind CIR statistics buffers
+                for (uint32_t i = 0; i < kCIRTypeCount; i++)
+                {
+                    var["gStatsCIRData"][i] = mpStatsCIRData[i];
+                }
+                var["gStatsCIRValidSamples"] = mpStatsCIRValidSamples;
             }
-            var["gStatsCIRValidSamples"] = mpStatsCIRValidSamples;
+            
+            // Bind raw CIR data buffers if raw data collection is enabled
+            if (mCollectionMode == CollectionMode::RawData || mCollectionMode == CollectionMode::Both)
+            {
+                pProgram->addDefine("_PIXEL_STATS_RAW_DATA_ENABLED");
+                var["gCIRRawDataBuffer"] = mpCIRRawDataBuffer;
+                var["gCIRCounterBuffer"] = mpCIRCounterBuffer;
+                var["gMaxCIRPaths"] = mMaxCIRPathsPerFrame;
+            }
+            else
+            {
+                pProgram->removeDefine("_PIXEL_STATS_RAW_DATA_ENABLED");
+            }
         }
         else
         {
             pProgram->removeDefine("_PIXEL_STATS_ENABLED");
+            pProgram->removeDefine("_PIXEL_STATS_RAW_DATA_ENABLED");
         }
     }
 
@@ -190,6 +248,38 @@ namespace Falcor
         // Configuration.
         widget.checkbox("Ray stats", mEnabled);
         widget.tooltip("Collects ray tracing traversal stats on the GPU.\nNote that this option slows down the performance.");
+
+        // Collection mode selection
+        if (mEnabled)
+        {
+            widget.text("Collection Mode:");
+            
+            // Create dropdown list for collection modes
+            const Gui::DropdownList kCollectionModeList = {
+                {(uint32_t)CollectionMode::Statistics, "Statistics"},
+                {(uint32_t)CollectionMode::RawData, "Raw Data"},
+                {(uint32_t)CollectionMode::Both, "Both"}
+            };
+            
+            uint32_t mode = (uint32_t)mCollectionMode;
+            if (widget.dropdown("Mode", kCollectionModeList, mode))
+            {
+                mCollectionMode = (CollectionMode)mode;
+            }
+            
+            if (mCollectionMode == CollectionMode::RawData || mCollectionMode == CollectionMode::Both)
+            {
+                widget.var("Max CIR paths per frame", mMaxCIRPathsPerFrame, 1000u, 10000000u);
+                
+                // CIR raw data controls
+                copyCIRRawDataToCPU();
+                widget.text(fmt::format("Collected CIR paths: {}", mCollectedCIRPaths));
+                if (widget.button("Export CIR Data"))
+                {
+                    exportCIRData("cir_data.txt");
+                }
+            }
+        }
 
         // Fetch data and show stats if available.
         copyStatsToCPU();
@@ -370,6 +460,131 @@ namespace Falcor
                 mpReductionResult->unmap();
                 mStatsValid = true;
             }
+        }
+    }
+
+    void PixelStats::copyCIRRawDataToCPU()
+    {
+        FALCOR_ASSERT(!mRunning);
+        if (mWaitingForData && (mCollectionMode == CollectionMode::RawData || mCollectionMode == CollectionMode::Both))
+        {
+            // Wait for signal.
+            mpFence->wait();
+            
+            try 
+            {
+                // Map the counter buffer to get actual path count
+                const uint32_t* counterData = static_cast<const uint32_t*>(mpCIRCounterReadback->map());
+                if (counterData)
+                {
+                    mCollectedCIRPaths = std::min(*counterData, mMaxCIRPathsPerFrame);
+                    mpCIRCounterReadback->unmap();
+                    
+                    if (mCollectedCIRPaths > 0)
+                    {
+                        // Map the raw data buffer
+                        const CIRPathData* rawData = static_cast<const CIRPathData*>(mpCIRRawDataReadback->map());
+                        if (rawData)
+                        {
+                            mCIRRawData.clear();
+                            mCIRRawData.reserve(mCollectedCIRPaths);
+                            
+                            // Copy valid data
+                            for (uint32_t i = 0; i < mCollectedCIRPaths; i++)
+                            {
+                                if (rawData[i].isValid())
+                                {
+                                    mCIRRawData.push_back(rawData[i]);
+                                }
+                            }
+                            
+                            mpCIRRawDataReadback->unmap();
+                            mCIRRawDataValid = true;
+                            
+                            logInfo(fmt::format("PixelStats: Collected {} valid CIR paths out of {} total", 
+                                              mCIRRawData.size(), mCollectedCIRPaths));
+                        }
+                    }
+                    else
+                    {
+                        mCIRRawData.clear();
+                        mCIRRawDataValid = false;
+                    }
+                }
+            }
+            catch (const std::exception& e)
+            {
+                logError(fmt::format("PixelStats: Error reading CIR raw data: {}", e.what()));
+                mCIRRawDataValid = false;
+                mCollectedCIRPaths = 0;
+                mCIRRawData.clear();
+            }
+        }
+    }
+
+    bool PixelStats::getCIRRawData(std::vector<CIRPathData>& outData)
+    {
+        copyCIRRawDataToCPU();
+        if (!mCIRRawDataValid)
+        {
+            return false;
+        }
+        outData = mCIRRawData;
+        return true;
+    }
+
+    uint32_t PixelStats::getCIRPathCount()
+    {
+        copyCIRRawDataToCPU();
+        return mCIRRawDataValid ? static_cast<uint32_t>(mCIRRawData.size()) : 0;
+    }
+
+    bool PixelStats::exportCIRData(const std::string& filename)
+    {
+        copyCIRRawDataToCPU();
+        if (!mCIRRawDataValid || mCIRRawData.empty())
+        {
+            logWarning("PixelStats::exportCIRData() - No valid CIR data to export.");
+            return false;
+        }
+
+        try
+        {
+            std::ofstream file(filename);
+            if (!file.is_open())
+            {
+                logError(fmt::format("PixelStats::exportCIRData() - Failed to open file: {}", filename));
+                return false;
+            }
+
+            // Write header
+            file << "# CIR Path Data Export\n";
+            file << "# Format: PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W)\n";
+            file << std::fixed << std::setprecision(6);
+
+            // Write data
+            for (size_t i = 0; i < mCIRRawData.size(); i++)
+            {
+                const auto& data = mCIRRawData[i];
+                file << i << "," 
+                     << data.pixelX << "," 
+                     << data.pixelY << ","
+                     << data.pathLength << ","
+                     << data.emissionAngle << ","
+                     << data.receptionAngle << ","
+                     << data.reflectanceProduct << ","
+                     << data.reflectionCount << ","
+                     << data.emittedPower << "\n";
+            }
+
+            file.close();
+            logInfo(fmt::format("PixelStats: Exported {} CIR paths to {}", mCIRRawData.size(), filename));
+            return true;
+        }
+        catch (const std::exception& e)
+        {
+            logError(fmt::format("PixelStats::exportCIRData() - Error writing file: {}", e.what()));
+            return false;
         }
     }
 
