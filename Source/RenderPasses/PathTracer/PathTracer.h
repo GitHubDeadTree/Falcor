@@ -109,6 +109,9 @@ private:
     void generatePaths(RenderContext* pRenderContext, const RenderData& renderData);
     void tracePass(RenderContext* pRenderContext, const RenderData& renderData, TracePass& tracePass);
     void resolvePass(RenderContext* pRenderContext, const RenderData& renderData);
+    
+    // === CIR Debug Output ===
+    void outputCIRDataToDebug(RenderContext* pRenderContext);
 
     /** Static configuration. Changing any of these options require shader recompilation.
     */

@@ -1358,6 +1358,14 @@ void PathTracer::endFrame(RenderContext* pRenderContext, const RenderData& rende
 
     if (mpRTXDI) mpRTXDI->endFrame(pRenderContext);
 
+    // === CIR Debug Output ===
+    // Output CIR data to debug window every 60 frames (approximately 1 second at 60 FPS)
+    static uint32_t debugFrameCounter = 0;
+    if (mOutputCIRData && ++debugFrameCounter % 60 == 0)
+    {
+        outputCIRDataToDebug(pRenderContext);
+    }
+
     mVarsChanged = false;
     mParams.frameCount++;
 }
@@ -1547,4 +1555,116 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("OUTPUT_NRD_ADDITIONAL_DATA", "0");
 
     return defines;
+}
+
+void PathTracer::outputCIRDataToDebug(RenderContext* pRenderContext)
+{
+    if (!mpSampleCIRData)
+    {
+        logWarning("PathTracer: CIR data buffer not available for debug output");
+        return;
+    }
+
+    try 
+    {
+        // Create a ReadBack buffer for CPU access
+        uint32_t elementCount = mpSampleCIRData->getElementCount();
+        uint32_t elementSize = mpSampleCIRData->getStructSize();
+        
+        ref<Buffer> pReadbackBuffer = mpDevice->createStructuredBuffer(
+            elementSize,
+            elementCount,
+            ResourceBindFlags::None,
+            MemoryType::ReadBack,
+            nullptr,
+            false
+        );
+
+        // Copy GPU data to CPU accessible buffer
+        pRenderContext->copyResource(pReadbackBuffer.get(), mpSampleCIRData.get());
+        pRenderContext->submit(true); // Wait for copy completion
+
+        // Map ReadBack buffer to CPU
+        const void* pMappedData = pReadbackBuffer->map();
+        if (!pMappedData)
+        {
+            logError("PathTracer: Failed to map ReadBack buffer for reading");
+            return;
+        }
+
+        const uint8_t* pByteData = static_cast<const uint8_t*>(pMappedData);
+        
+        logInfo("=== CIR Debug Output ===");
+        logInfo("Buffer Info: ElementCount={}, ElementSize={} bytes", elementCount, elementSize);
+        
+        // Output first few samples for debugging
+        uint32_t maxSamplesToShow = std::min(elementCount, 10u);
+        
+        for (uint32_t i = 0; i < maxSamplesToShow; i++)
+        {
+            const uint8_t* pElementData = pByteData + i * elementSize;
+            
+            // Interpret as CIR data structure
+            const float* pFloatData = reinterpret_cast<const float*>(pElementData);
+            const uint32_t* pUintData = reinterpret_cast<const uint32_t*>(pElementData);
+            
+            logInfo("Sample[{}]: PathLength={:.3f}, EmissionAngle={:.3f}, ReceptionAngle={:.3f}", 
+                    i, pFloatData[0], pFloatData[1], pFloatData[2]);
+            logInfo("          ReflectanceProduct={:.3f}, EmittedPower={:.3f}, ReflectionCount={}", 
+                    pFloatData[3], pFloatData[4], pUintData[5]);
+            logInfo("          PixelX={}, PixelY={}, PathIndex={}", 
+                    pUintData[6], pUintData[7], pUintData[8]);
+        }
+
+        // Calculate basic statistics
+        if (elementCount > 0 && elementSize >= sizeof(float) * 5)
+        {
+            float totalPathLength = 0.0f;
+            float totalReflectanceProduct = 0.0f;
+            uint32_t validSamples = 0;
+            
+            uint32_t sampleLimit = std::min(elementCount, 1000u);
+            for (uint32_t i = 0; i < sampleLimit; i++)
+            {
+                const uint8_t* pElementData = pByteData + i * elementSize;
+                const float* pFloatData = reinterpret_cast<const float*>(pElementData);
+                
+                float pathLength = pFloatData[0];
+                float reflectanceProduct = pFloatData[3];
+                
+                // Basic validity check
+                if (pathLength > 0.0f && pathLength < 1000.0f && 
+                    reflectanceProduct >= 0.0f && reflectanceProduct <= 1.0f)
+                {
+                    totalPathLength += pathLength;
+                    totalReflectanceProduct += reflectanceProduct;
+                    validSamples++;
+                }
+            }
+            
+            if (validSamples > 0)
+            {
+                float avgPathLength = totalPathLength / validSamples;
+                float avgReflectanceProduct = totalReflectanceProduct / validSamples;
+                
+                logInfo("Statistics: ValidSamples={}/{}, AvgPathLength={:.3f}m, AvgReflectanceProduct={:.3f}", 
+                        validSamples, sampleLimit, avgPathLength, avgReflectanceProduct);
+            }
+            else
+            {
+                logWarning("No valid CIR samples found in debug output");
+            }
+        }
+        
+        pReadbackBuffer->unmap();
+        logInfo("=== End CIR Debug Output ===");
+    }
+    catch (const std::exception& e)
+    {
+        logError("PathTracer: Exception during CIR debug output: {}", e.what());
+    }
+    catch (...)
+    {
+        logError("PathTracer: Unknown exception during CIR debug output");
+    }
 }
