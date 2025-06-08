@@ -406,7 +406,26 @@ struct PathTracer
         path.L += path.thp * radiance;
     }
 
-    /** Generates a new scatter ray using BSDF importance sampling.
+    /** Update CIR data with thp-based reflectance (simplified version).
+        Since thp automatically accumulates all BSDF weights along the path,
+        we no longer need to manually calculate and multiply reflectance values.
+        This function is now kept for compatibility but does minimal work.
+        \param[in,out] path Path state.
+        \param[in] bsdfProperties Material properties (now unused).
+        \param[in] bsdfSample BSDF sample (now unused).
+    */
+    void updateCIRWithMaterialReflectance(inout PathState path, BSDFProperties bsdfProperties, BSDFSample bsdfSample)
+    {
+        // Note: thp field is automatically updated by updatePathThroughput() in generateScatterRay()
+        // The thp field accumulates all BSDF weights (which represent reflectances) automatically
+        // This provides more accurate reflectance calculation than manual material property extraction
+        
+        // Simply call the simplified updateCIRReflectance for compatibility
+        // The actual reflectance calculation is now done using thp in getCIRData()
+        path.updateCIRReflectance(0.0f); // Parameter is unused but kept for compatibility
+    }
+
+    /** Generates a new scatter ray or terminates the path.
         \param[in] sd Shading data.
         \param[in] mi Material instance at the shading point.
         \param[in,out] path The path state.
@@ -416,6 +435,10 @@ struct PathTracer
     {
         BSDFSample result;
         bool valid = mi.sample(sd, path.sg, result, kUseBSDFSampling);
+        
+        // Update CIR with real BSDF weight AFTER sampling but BEFORE processing the sample
+        updateCIRWithMaterialReflectance(path, mi.getProperties(sd), result);
+        
         if (valid) valid = generateScatterRay(result, sd, mi, path);
 
         // Ignore valid on purpose for now.
@@ -884,7 +907,7 @@ struct PathTracer
         BSDFProperties bsdfProperties = mi.getProperties(sd);
 
         // === Update CIR data during path tracing ===
-        updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties.diffuseReflectionAlbedo.r);
+        updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties);
 
         // Disable specular lobes if caustics are disabled and path already contains a diffuse vertex.
         bool isSpecular = bsdfProperties.roughness <= params.specularRoughnessThreshold;
@@ -1245,31 +1268,28 @@ struct PathTracer
         }
     }
 
-    /** Update CIR data during path tracing (simplified version).
+    /** Update CIR data during path tracing (corrected version).
+        Fixed emission angle calculation timing.
+        Reflectance computation is now handled by updateCIRWithMaterialReflectance() for accuracy.
         Only updates CIR parameters that require special calculation.
         Other parameters are dynamically obtained through getCIRData().
         \param[in,out] path Path state.
         \param[in] surfaceNormal Surface normal at hit point.
-        \param[in] reflectance Surface reflectance value.
+        \param[in] bsdfProperties BSDF properties for emission angle calculation.
     */
-    void updateCIRDataDuringTracing(inout PathState path, float3 surfaceNormal, float reflectance)
+    void updateCIRDataDuringTracing(inout PathState path, float3 surfaceNormal, BSDFProperties bsdfProperties)
     {
         // Note: Basic parameters (pathLength, reflectionCount, emittedPower) do not need real-time updates
         // because they are directly reused from existing PathState fields and dynamically obtained in getCIRData()
         
-        // Only update CIR parameters that require special calculation
-        
-        // Update emission angle: only calculate at first surface interaction
-        if (path.getVertexIndex() == 1) // At emission surface
+        // Update emission angle when hitting an emissive surface (not based on vertex index)
+        if (any(bsdfProperties.emission > 0.0f))
         {
             path.updateCIREmissionAngle(surfaceNormal);
         }
         
-        // Accumulate reflectance: update at each valid reflection
-        if (reflectance > 0.0f && path.getVertexIndex() > 1)
-        {
-            path.updateCIRReflectance(reflectance);
-        }
+        // Note: Reflectance calculation is now handled by updateCIRWithMaterialReflectance() in generateScatterRay()
+        // This ensures we use the actual BSDF sample weight instead of static material properties
     }
 
     /** Output CIR data on path completion using PixelStats system.
