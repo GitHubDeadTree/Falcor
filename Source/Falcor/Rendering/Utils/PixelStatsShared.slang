@@ -38,4 +38,23 @@ enum class PixelStatsRayType
     Count
 };
 
+enum class PixelStatsCIRType
+{
+    PathLength = 0,
+    EmissionAngle = 1,
+    ReceptionAngle = 2,
+    ReflectanceProduct = 3,
+    EmittedPower = 4,
+    ReflectionCount = 5,
+
+    Count
+};
+
+enum class PixelStatsCollectionMode
+{
+    Statistics = 0,     ///< Collect aggregated statistics only (default behavior)
+    RawData = 1,        ///< Collect raw CIR path data using structured buffers
+    Both = 2            ///< Collect both statistics and raw data
+};
+
 END_NAMESPACE_FALCOR

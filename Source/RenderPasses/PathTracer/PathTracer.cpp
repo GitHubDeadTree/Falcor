@@ -79,6 +79,7 @@ namespace
     const std::string kOutputNRDDeltaTransmissionPathLength = "nrdDeltaTransmissionPathLength";
     const std::string kOutputNRDDeltaTransmissionPosW = "nrdDeltaTransmissionPosW";
     const std::string kOutputNRDResidualRadianceHitDist = "nrdResidualRadianceHitDist";
+    const std::string kOutputCIRData = "cirData";
 
     const Falcor::ChannelList kOutputChannels =
     {
@@ -110,6 +111,9 @@ namespace
         { kOutputNRDDeltaTransmissionPathLength,            "",     "Output delta transmission path length", true /* optional */, ResourceFormat::R16Float },
         { kOutputNRDDeltaTransmissionPosW,                  "",     "Output delta transmission position", true /* optional */, ResourceFormat::RGBA32Float },
         { kOutputNRDResidualRadianceHitDist,                "",     "Output residual color (linear) and hit distance", true /* optional */, ResourceFormat::RGBA32Float },
+        
+        // === CIR data output channel ===
+        { kOutputCIRData,                                   "",     "CIR path data for VLC analysis", true /* optional */, ResourceFormat::Unknown },
     };
 
     // Scripting options.
@@ -391,6 +395,22 @@ RenderPassReflection PathTracer::reflect(const CompileData& compileData)
 
     addRenderPassInputs(reflector, kInputChannels);
     addRenderPassOutputs(reflector, kOutputChannels, ResourceBindFlags::UnorderedAccess, sz);
+    
+    // === CIR data buffer output reflection ===
+    try 
+    {
+        const uint32_t maxSamples = sz.x * sz.y * mStaticParams.samplesPerPixel;
+        const uint32_t cirDataSize = maxSamples * 36; // 36 bytes = size of CIRPathData structure
+        reflector.addOutput(kOutputCIRData, "CIR path data buffer for VLC analysis")
+            .bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource)
+            .rawBuffer(cirDataSize)
+            .flags(RenderPassReflection::Field::Flags::Optional);
+    }
+    catch (const std::exception& e)
+    {
+        logError("PathTracer: Exception adding CIR output reflection: {}", e.what());
+    }
+    
     return reflector;
 }
 
@@ -431,6 +451,12 @@ void PathTracer::setScene(RenderContext* pRenderContext, const ref<Scene>& pScen
 
     resetPrograms();
     resetLighting();
+
+    // Set scene reference for PixelStats to enable CIR static parameter calculation
+    if (mpPixelStats)
+    {
+        mpPixelStats->setScene(pScene);
+    }
 
     if (mpScene)
     {
@@ -907,12 +933,14 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
         mVarsChanged = true;
     }
 
-    // 为初始光线信息创建缓冲区
+    // Create buffer for initial ray info
     if (mOutputInitialRayInfo && (!mpSampleInitialRayInfo || mpSampleInitialRayInfo->getElementCount() < sampleCount || mVarsChanged))
     {
         mpSampleInitialRayInfo = mpDevice->createStructuredBuffer(var["sampleInitialRayInfo"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
         mVarsChanged = true;
     }
+
+
 }
 
 void PathTracer::preparePathTracer(const RenderData& renderData)
@@ -1251,6 +1279,8 @@ bool PathTracer::beginFrame(RenderContext* pRenderContext, const RenderData& ren
     mOutputInitialRayInfo = renderData[kOutputInitialRayInfo] != nullptr;
     if (mOutputInitialRayInfo != prevOutputInitialRayInfo) mRecompile = true;
 
+
+
     // Enable pixel stats if rayCount or pathLength outputs are connected.
     if (renderData[kOutputRayCount] != nullptr || renderData[kOutputPathLength] != nullptr)
     {
@@ -1294,6 +1324,8 @@ void PathTracer::endFrame(RenderContext* pRenderContext, const RenderData& rende
 
     if (mpRTXDI) mpRTXDI->endFrame(pRenderContext);
 
+
+
     mVarsChanged = false;
     mParams.frameCount++;
 }
@@ -1315,6 +1347,7 @@ void PathTracer::generatePaths(RenderContext* pRenderContext, const RenderData& 
     mpGeneratePaths->addDefine("OUTPUT_GUIDE_DATA", mOutputGuideData ? "1" : "0");
     mpGeneratePaths->addDefine("OUTPUT_NRD_DATA", mOutputNRDData ? "1" : "0");
     mpGeneratePaths->addDefine("OUTPUT_NRD_ADDITIONAL_DATA", mOutputNRDAdditionalData ? "1" : "0");
+
 
     // Bind resources.
     auto var = mpGeneratePaths->getRootVar()["CB"]["gPathGenerator"];
@@ -1340,6 +1373,7 @@ void PathTracer::tracePass(RenderContext* pRenderContext, const RenderData& rend
     tracePass.pProgram->addDefine("OUTPUT_GUIDE_DATA", mOutputGuideData ? "1" : "0");
     tracePass.pProgram->addDefine("OUTPUT_NRD_DATA", mOutputNRDData ? "1" : "0");
     tracePass.pProgram->addDefine("OUTPUT_NRD_ADDITIONAL_DATA", mOutputNRDAdditionalData ? "1" : "0");
+
 
     // Bind global resources.
     auto var = tracePass.pVars->getRootVar();
@@ -1442,6 +1476,7 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("OUTPUT_NRD_ADDITIONAL_DATA", owner.mOutputNRDAdditionalData ? "1" : "0");
     defines.add("OUTPUT_INITIAL_RAY_INFO", owner.mOutputInitialRayInfo ? "1" : "0"); // 新增宏定义
 
+
     // Sampling utilities configuration.
     FALCOR_ASSERT(owner.mpSampleGenerator);
     defines.add(owner.mpSampleGenerator->getDefines());
@@ -1481,3 +1516,6 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
 
     return defines;
 }
+
+
+

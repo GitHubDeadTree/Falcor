@@ -565,6 +565,10 @@ namespace Falcor
         */
         void selectViewpoint(uint32_t index);
 
+        /** Load viewpoints from a file.
+        */
+        void loadViewpoints();
+
         /** Returns true if there are saved viewpoints (used for dumping to config).
         */
         bool hasSavedViewpoints() { return mViewpoints.size() > 1; }
@@ -1220,6 +1224,14 @@ namespace Falcor
         void bindLights();
         void bindSelectedCamera();
         void bindParameterBlock();
+
+        /** Parse float3 values from viewpoint file format strings.
+        */
+        bool parseFloat3FromString(const std::string& str, const std::string& prefix, float3& result);
+
+        /** Parse a complete viewpoint line from file.
+        */
+        bool parseViewpointLine(const std::string& line, float& timePoint, float3& position, float3& target, float3& up);
 
         Scene(ref<Device> pDevice, SceneData&& sceneData);
 

@@ -212,21 +212,29 @@ float computePixelArea(uint2 dimensions)
     return pixelWidth * pixelHeight * gPixelAreaScale;
 }
 
-// Compute the cosine term based on ray direction and camera normal
-float computeCosTheta(float3 rayDir)
+// Define a debug structure to store cosTheta computation details
+struct CosThetaDebugInfo
 {
-    // 不再使用实际计算的角度，而是返回固定值1.0
-    // 这会使所有的光线计算忽略入射角的影响
-    return 1.0f;
+    float3 cameraNormal;     // Camera normal vector
+    float3 rayDirection;     // Ray direction vector
+    float dotProduct;        // Dot product between ray direction and inverse camera normal
+    float cosTheta;          // Final cosTheta value
+    float minValue;          // Minimum cosTheta value used
+    float3 invNormal;        // Inverse camera normal
+    float rayLength;         // Length of ray direction vector
+};
 
-    /* 原始计算代码（已注释）
+// Compute the cosine term based on ray direction and camera normal
+float computeCosTheta(float3 rayDir, out CosThetaDebugInfo debugInfo)
+{
     // Calculate camera normal (forward direction)
     float3 cameraNormal = normalize(gCameraTarget - gCameraPosition);
 
-    // For rays entering the camera, we want to use the camera forward direction directly
-    // In Falcor, camera looks along its forward direction, so rays entering the camera
-    // should have a negative dot product with the camera forward direction
-    float dotProduct = dot(rayDir, -cameraNormal);
+    // For rays entering the camera, we want to use the inverse normal
+    float3 invNormal = -cameraNormal;
+
+    // Calculate dot product
+    float dotProduct = dot(rayDir, invNormal);
 
     // Clamp to non-negative (protect against back-facing rays)
     float cosTheta = max(0.0f, dotProduct);
@@ -234,10 +242,26 @@ float computeCosTheta(float3 rayDir)
     // Use a more reasonable minimum value (0.01 instead of 0.00001)
     // This prevents power from being too close to zero for glancing rays
     const float minCosTheta = 0.01f;
-    cosTheta = max(cosTheta, minCosTheta);
+    float finalCosTheta = max(cosTheta, minCosTheta);
 
-    return cosTheta;
-    */
+    // Store debug information
+    debugInfo.cameraNormal = cameraNormal;
+    debugInfo.rayDirection = rayDir;
+    debugInfo.dotProduct = dotProduct;
+    debugInfo.cosTheta = cosTheta;
+    debugInfo.minValue = minCosTheta;
+    debugInfo.invNormal = invNormal;
+    debugInfo.rayLength = length(rayDir);
+
+    return finalCosTheta;
+}
+
+// Overloaded version without debug info for non-debug calls
+float computeCosTheta(float3 rayDir)
+{
+    // Temporary debug info that will be discarded
+    CosThetaDebugInfo tempDebugInfo;
+    return computeCosTheta(rayDir, tempDebugInfo);
 }
 
 // Compute dominant wavelength from RGB color if wavelength data is not provided
@@ -262,29 +286,36 @@ float estimateWavelengthFromRGB(float3 rgb)
     }
 }
 
+// Function to convert vectors to RGB colors for visualization
+float4 visualizeVectors(float3 rayDir, float3 cameraNormal, float cosTheta)
+{
+    // Convert camera normal to a blueish color
+    float3 normalColor = float3(0.2, 0.4, 1.0) * (cameraNormal * 0.5 + 0.5);
+
+    // Convert ray direction to a reddish color
+    float3 rayColor = float3(1.0, 0.3, 0.2) * (rayDir * 0.5 + 0.5);
+
+    // Mix colors based on cosTheta
+    // When cosTheta is close to 1, the ray direction is close to opposite of camera normal
+    // so the color should be more intense (good alignment)
+    float alignment = saturate(cosTheta);
+    float3 finalColor = lerp(normalColor * 0.5, rayColor, alignment);
+
+    // Return color with cosTheta as alpha
+    return float4(finalColor, cosTheta);
+}
+
 // Compute the power of incoming light for the given pixel
 float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 radiance, float wavelength)
 {
     // Debug: For first 4 pixels, log detailed computation
     bool isDebugPixel = pixel.x < 2 && pixel.y < 2;
-    float3 originalPower = float3(0, 0, 0);
     float pixelArea = 0;
     float cosTheta = 0;
+    CosThetaDebugInfo cosThetaDebug;
 
-    // Additional validation of radiance (defensive check)
-    if (isDebugPixel) {
-        // Store both ray direction and radiance for comparison
-        // We'll use the x, y, z components for direction and w for wavelength
-        gDebugInputData[pixel] = float4(rayDir.xyz, wavelength);
-
-        // Store radiance in debug calculation data (temporarily)
-        // We'll overwrite this later with calculation steps
-        if (any(radiance.rgb < 0.0f)) {
-            gDebugCalculation[pixel] = float4(-999, -999, -999, -999); // Flag to indicate invalid radiance
-        } else {
-            gDebugCalculation[pixel] = float4(radiance.rgb, wavelength);
-        }
-    }
+    // Make sure radiance is non-negative (defensive programming)
+    float3 safeRadiance = max(radiance.rgb, 0.0f);
 
     // Apply wavelength filtering if enabled
     // Only check wavelength filtering if the global control is enabled
@@ -304,88 +335,56 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
     // Calculate pixel area
     pixelArea = computePixelArea(dimensions);
 
-    // For debug pixels, collect detailed cosTheta calculation information
-    float3 cameraNormal = float3(0, 0, 0);
-    float3 invNormal = float3(0, 0, 0);
-    float rawDotProduct = 0;
-    float rayLengthVal = 0;
-
+    // Calculate cosine term with debug info for debug pixels
     if (isDebugPixel) {
-        // Calculate values for debugging
-        cameraNormal = normalize(gCameraTarget - gCameraPosition);
-        invNormal = -cameraNormal;
-        rawDotProduct = dot(rayDir, invNormal);
-        rayLengthVal = length(rayDir);
+        cosTheta = computeCosTheta(rayDir, cosThetaDebug);
 
-        // Store raw data for debugging
-        float4 debugData = float4(0, 0, 0, 0);
-        debugData.x = rawDotProduct;                // Raw dot product
-        debugData.y = dot(rayDir, float3(0,0,-1));  // Dot with -Z axis (standard camera forward)
-        debugData.z = dot(rayDir, float3(0,0,1));   // Dot with +Z axis
-        debugData.w = rayLengthVal;                 // Ray length
+        // Store detailed cosTheta calculation info in debug textures
+        // Each debug texture stores different parts of the calculation
 
-        // We need to distinguish ray direction and radiance in debug output
-        // Store ray direction with a special marker
-        gDebugInputData[pixel] = float4(rayDir.xyz, wavelength);
+        // Debug Input Data: Store ray direction and its length
+        gDebugInputData[pixel] = float4(rayDir.xyz, cosThetaDebug.rayLength);
 
-        // Additional debugging for camera-relative coordinates
-        // Convert ray direction to camera space using proper camera basis construction
+        // Debug Output: Store camera normal and wavelength
+        gDebugOutput[pixel] = float4(cosThetaDebug.cameraNormal, wavelength);
 
-        // 1. First calculate camera forward direction (W)
-        float3 camW = normalize(gCameraTarget - gCameraPosition);
-
-        // 2. Find an up vector that's not parallel to camW
-        float3 worldUp = float3(0, 1, 0);
-        // If camW is nearly parallel to worldUp, use a different up vector
-        if (abs(dot(camW, worldUp)) > 0.99f)
-        {
-            worldUp = float3(0, 0, 1);
-        }
-
-        // 3. Calculate camera right vector (U)
-        float3 camU = normalize(cross(worldUp, camW));
-
-        // 4. Calculate camera up vector (V)
-        float3 camV = normalize(cross(camW, camU));
-
-        // Convert ray direction to camera space
-        float3 rayDirInCameraSpace;
-        rayDirInCameraSpace.x = dot(rayDir, camU);   // X component (right)
-        rayDirInCameraSpace.y = dot(rayDir, camV);   // Y component (up)
-        rayDirInCameraSpace.z = dot(rayDir, camW);   // Z component (forward)
-
-        // Store camera-space ray direction for further analysis
-        gDebugOutput[pixel] = float4(rayDirInCameraSpace, wavelength);
-
-        // Log the basis vectors for debugging
+        // Debug Calculation: Store cosTheta calculation details
         gDebugCalculation[pixel] = float4(
-            length(camU),                         // Should be ~1.0
-            length(camV),                         // Should be ~1.0
-            dot(camU, camV),                      // Should be ~0.0 (orthogonal)
-            dot(camW, rayDir)                     // Forward component
+            cosThetaDebug.dotProduct,           // Raw dot product
+            cosThetaDebug.cosTheta,             // Before min clamp
+            cosTheta,                           // Final value (after min clamp)
+            pixelArea                           // Pixel area for power calculation
         );
+
+        // Special debug for first pixel (0,0)
+        if (pixel.x == 0 && pixel.y == 0) {
+            // Calculate power values for the RGB components
+            float rPower = safeRadiance.r * pixelArea * cosTheta;
+            float gPower = safeRadiance.g * pixelArea * cosTheta;
+            float bPower = safeRadiance.b * pixelArea * cosTheta;
+
+            // Store in a special debug texture slot - we'll use gDebugInputData for pixel (1,1)
+            // This avoids overwriting the camera normal information
+            uint2 specialPixel = uint2(1, 1);
+            gDebugInputData[specialPixel] = float4(rPower, gPower, bPower, wavelength);
+
+            // For the first pixel, also store the calculation components
+            // in a special debug texture for verification
+            gDebugCalculation[pixel] = float4(
+                safeRadiance.r,              // R component of radiance
+                pixelArea,                   // Pixel area
+                cosTheta,                    // Final cosTheta value
+                rPower                       // R component of calculated power
+            );
+        }
     }
-
-    // Calculate cosine term
-    cosTheta = computeCosTheta(rayDir);
-
-    // Store calculation steps for debug pixels
-    if (isDebugPixel) {
-        // Store detailed cosTheta calculation info in debug texture
-        // x: pixel area, y: final cosTheta, z: raw dot product, w: ray length
-        gDebugCalculation[pixel] = float4(pixelArea, cosTheta, rawDotProduct, rayLengthVal);
+    else {
+        // Normal calculation without debug info
+        cosTheta = computeCosTheta(rayDir);
     }
 
     // Calculate power using the formula: Power = Radiance * Area * cos(θ)
-    // Make sure radiance is non-negative (defensive programming)
-    float3 safeRadiance = max(radiance.rgb, 0.0f);
     float3 power = safeRadiance * pixelArea * cosTheta;
-
-    // Store the original calculation result for debug pixels
-    if (isDebugPixel) {
-        // Store original calculation
-        gDebugOutput[pixel] = float4(power, wavelength);
-    }
 
     // Return power with the wavelength
     return float4(power, wavelength > 0.0f ? wavelength : 550.0f);

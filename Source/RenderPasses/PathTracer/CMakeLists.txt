@@ -16,6 +16,7 @@ target_sources(PathTracer PRIVATE
     ResolvePass.cs.slang
     StaticParams.slang
     TracePass.rt.slang
+    CIRPathData.slang
 )
 
 target_copy_shaders(PathTracer RenderPasses/PathTracer)

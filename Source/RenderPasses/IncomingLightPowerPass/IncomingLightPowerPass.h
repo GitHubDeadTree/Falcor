@@ -166,6 +166,13 @@ private:
     std::string mOutputPowerTexName = "lightPower";     ///< Name of the output power texture
     std::string mOutputWavelengthTexName = "lightWavelength"; ///< Name of the output wavelength texture
 
+    // Debug related members
+    bool mDebugMode = false;             ///< Enable/disable debug mode with detailed logging
+    uint32_t mDebugLogFrequency = 60;    ///< How often to log debug info (in frames)
+    uint32_t mFrameCount = 0;            ///< Frame counter for logging frequency control
+    bool mEnableProfiling = false;       ///< Enable performance profiling
+    float mLastExecutionTime = 0.0f;     ///< Last recorded execution time in ms
+
     // Internal constants
     static const std::string kInputRadiance;         ///< Input radiance texture name
     static const std::string kInputRayDirection;     ///< Input ray direction texture name
@@ -196,6 +203,7 @@ private:
     // Statistics and export-related members
     PowerStatistics mPowerStats;              ///< Statistics about the calculated power
     bool mEnableStatistics = true;            ///< Whether to calculate statistics
+    uint32_t mStatisticsFrequency = 1;        ///< How often to calculate statistics (in frames, 1 = every frame)
     bool mNeedStatsUpdate = true;             ///< Flag indicating statistics need to be updated
     bool mAccumulatePower = false;            ///< Whether to accumulate power over frames
     uint32_t mAccumulatedFrames = 0;          ///< Number of accumulated frames

@@ -35,18 +35,84 @@
 #include "Utils/UI/Gui.h"
 #include "Utils/Algorithm/ParallelReduction.h"
 #include <memory>
+#include <vector>
+#include <string>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 namespace Falcor
 {
+    // Forward declarations
+    class Scene;
+    class Camera;
+    class Light;
+
+    // Forward declaration for CIR path data structure
+    struct CIRPathData
+    {
+        float pathLength;
+        float emissionAngle;
+        float receptionAngle;
+        float reflectanceProduct;
+        uint32_t reflectionCount;
+        float emittedPower;
+        uint32_t pixelX;
+        uint32_t pixelY;
+        uint32_t pathIndex;
+        
+        bool isValid() const
+        {
+            return pathLength > 0.01f && pathLength < 1000.0f &&
+                   emissionAngle >= 0.0f && emissionAngle <= 3.14159f &&
+                   receptionAngle >= 0.0f && receptionAngle <= 3.14159f &&
+                   reflectanceProduct >= 0.0f && reflectanceProduct <= 1.0f &&
+                   emittedPower > 0.0f;
+        }
+    };
+
+    // CIR export format enumeration
+    enum class CIRExportFormat
+    {
+        CSV,        // Comma-separated values (default, compatible with Excel)
+        JSONL,      // JSON Lines format
+        TXT         // Original text format
+    };
+
+    // CIR static parameters structure for VLC analysis
+    struct CIRStaticParameters
+    {
+        float receiverArea;         // A: Receiver effective area (m²)
+        float ledLambertianOrder;   // m: LED Lambertian order
+        float lightSpeed;           // c: Light propagation speed (m/s)
+        float receiverFOV;          // FOV: Receiver field of view (radians)
+        float opticalFilterGain;    // T_s(θ): Optical filter transmittance
+        float opticalConcentration; // g(θ): Optical concentration gain
+      
+        CIRStaticParameters()
+            : receiverArea(1e-4f)
+            , ledLambertianOrder(1.0f)
+            , lightSpeed(3.0e8f)
+            , receiverFOV((float)M_PI)
+            , opticalFilterGain(1.0f)
+            , opticalConcentration(1.0f)
+        {}
+    };
+
     /** Helper class for collecting runtime stats in the path tracer.
 
         Per-pixel stats are logged in buffers on the GPU, which are immediately ready for consumption
         after end() is called. These stats are summarized in a reduction pass, which are
         available in getStats() or printStats() after async readback to the CPU.
+        
+        Extended to support both statistical aggregation and raw CIR path data collection.
     */
     class FALCOR_API PixelStats
     {
     public:
+        using CollectionMode = PixelStatsCollectionMode;
+
         struct Stats
         {
             uint32_t visibilityRays = 0;
@@ -60,12 +126,32 @@ namespace Falcor
             float    avgPathLength = 0.f;
             float    avgPathVertices = 0.f;
             float    avgVolumeLookups = 0.f;
+            
+            // CIR statistics
+            uint32_t validCIRSamples = 0;
+            float    avgCIRPathLength = 0.f;
+            float    avgCIREmissionAngle = 0.f;
+            float    avgCIRReceptionAngle = 0.f;
+            float    avgCIRReflectanceProduct = 0.f;
+            float    avgCIREmittedPower = 0.f;
+            float    avgCIRReflectionCount = 0.f;
         };
 
         PixelStats(ref<Device> pDevice);
 
         void setEnabled(bool enabled) { mEnabled = enabled; }
         bool isEnabled() const { return mEnabled; }
+
+        // Scene reference for CIR parameter calculation
+        void setScene(const ref<Scene>& pScene) { mpScene = pScene; }
+
+        // Collection mode configuration
+        void setCollectionMode(CollectionMode mode) { mCollectionMode = mode; }
+        CollectionMode getCollectionMode() const { return mCollectionMode; }
+        
+        // CIR raw data configuration
+        void setMaxCIRPathsPerFrame(uint32_t maxPaths) { mMaxCIRPathsPerFrame = maxPaths; }
+        uint32_t getMaxCIRPathsPerFrame() const { return mMaxCIRPathsPerFrame; }
 
         void beginFrame(RenderContext* pRenderContext, const uint2& frameDim);
         void endFrame(RenderContext* pRenderContext);
@@ -104,11 +190,68 @@ namespace Falcor
         */
         const ref<Texture> getVolumeLookupCountTexture() const;
 
+        // CIR raw data access methods
+        /** Get raw CIR path data collected in the last frame.
+            Only available if collection mode includes RawData.
+            \param[out] outData Vector to receive the CIR path data.
+            \return True if data is available, false otherwise.
+        */
+        bool getCIRRawData(std::vector<CIRPathData>& outData);
+        
+        /** Get the number of CIR paths collected in the last frame.
+            \return Number of paths collected, or 0 if no data available.
+        */
+        uint32_t getCIRPathCount();
+        
+        /** Export CIR raw data to a file with static parameters.
+            \param[in] filename Output filename for the CIR data.
+            \param[in] pScene Scene pointer for parameter calculation (optional, will use stored scene if null).
+            \return True if export was successful, false otherwise.
+        */
+        bool exportCIRData(const std::string& filename, const ref<Scene>& pScene = nullptr);
+
+        /** Export CIR raw data with automatic timestamped filename and format selection.
+            Data is saved to ./CIRData/ directory with timestamp suffix.
+            \param[in] format Export format (CSV, JSONL, or TXT).
+            \param[in] pScene Scene pointer for parameter calculation (optional, will use stored scene if null).
+            \return True if export was successful, false otherwise.
+        */
+        bool exportCIRDataWithTimestamp(CIRExportFormat format = CIRExportFormat::CSV, const ref<Scene>& pScene = nullptr);
+
+        /** Export CIR raw data to specified file with format selection.
+            \param[in] filename Output filename for the CIR data.
+            \param[in] format Export format (CSV, JSONL, or TXT).
+            \param[in] pScene Scene pointer for parameter calculation (optional, will use stored scene if null).
+            \return True if export was successful, false otherwise.
+        */
+        bool exportCIRDataWithFormat(const std::string& filename, CIRExportFormat format, const ref<Scene>& pScene = nullptr);
+
+        /** Compute CIR static parameters from scene information.
+            \param[in] pScene Scene containing camera and light information.
+            \param[in] frameDim Frame dimensions for area calculation.
+            \return Computed static parameters structure.
+        */
+        CIRStaticParameters computeCIRStaticParameters(const ref<Scene>& pScene, const uint2& frameDim);
+
     protected:
         void copyStatsToCPU();
+        void copyCIRRawDataToCPU();
         void computeRayCountTexture(RenderContext* pRenderContext);
 
+        // Helper methods for static parameter computation
+        float computeReceiverArea(const ref<Camera>& pCamera, const uint2& frameDim);
+        float computeLEDLambertianOrder(const ref<Scene>& pScene);
+        float computeReceiverFOV(const ref<Camera>& pCamera);
+
+        // Helper methods for CIR data export
+        std::string generateTimestampedFilename(CIRExportFormat format);
+        bool ensureCIRDataDirectory();
+        bool exportCIRDataCSV(const std::string& filename, const CIRStaticParameters& staticParams);
+        bool exportCIRDataJSONL(const std::string& filename, const CIRStaticParameters& staticParams);
+        bool exportCIRDataTXT(const std::string& filename, const CIRStaticParameters& staticParams);
+
         static const uint32_t kRayTypeCount = (uint32_t)PixelStatsRayType::Count;
+        static const uint32_t kCIRTypeCount = (uint32_t)PixelStatsCIRType::Count;
 
         ref<Device>                         mpDevice;
 
@@ -120,6 +263,14 @@ namespace Falcor
         // Configuration
         bool                                mEnabled = false;               ///< Enable pixel statistics.
         bool                                mEnableLogging = false;         ///< Enable printing to logfile.
+        CollectionMode                      mCollectionMode = CollectionMode::Both;  ///< Data collection mode.
+        uint32_t                            mMaxCIRPathsPerFrame = 1000000; ///< Maximum CIR paths to collect per frame.
+
+        // CIR export configuration
+        CIRExportFormat                     mCIRExportFormat = CIRExportFormat::CSV; ///< Selected CIR export format.
+
+        // Scene reference for CIR parameter computation
+        ref<Scene>                          mpScene;                        ///< Scene reference for static parameter calculation.
 
         // Runtime data
         bool                                mRunning = false;               ///< True inbetween begin() / end() calls.
@@ -136,6 +287,19 @@ namespace Falcor
         ref<Texture>                        mpStatsPathVertexCount;         ///< Buffer for per-pixel path vertex count.
         ref<Texture>                        mpStatsVolumeLookupCount;       ///< Buffer for per-pixel volume lookup count.
         bool                                mStatsBuffersValid = false;     ///< True if per-pixel stats buffers contain valid data.
+
+        // CIR statistics buffers
+        ref<Texture>                        mpStatsCIRData[kCIRTypeCount];  ///< Buffers for per-pixel CIR data stats.
+        ref<Texture>                        mpStatsCIRValidSamples;         ///< Buffer for per-pixel valid CIR sample count.
+
+        // CIR raw data collection buffers
+        ref<Buffer>                         mpCIRRawDataBuffer;             ///< GPU buffer for raw CIR path data.
+        ref<Buffer>                         mpCIRCounterBuffer;             ///< GPU buffer for path counter.
+        ref<Buffer>                         mpCIRRawDataReadback;           ///< CPU-readable buffer for CIR raw data.
+        ref<Buffer>                         mpCIRCounterReadback;           ///< CPU-readable buffer for path counter.
+        bool                                mCIRRawDataValid = false;       ///< True if raw CIR data is valid.
+        uint32_t                            mCollectedCIRPaths = 0;         ///< Number of CIR paths collected in last frame.
+        std::vector<CIRPathData>            mCIRRawData;                    ///< CPU copy of raw CIR data.
 
         ref<ComputePass>                    mpComputeRayCount;              ///< Pass for computing per-pixel total ray count.
     };

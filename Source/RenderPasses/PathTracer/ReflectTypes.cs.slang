@@ -36,6 +36,7 @@ import RenderPasses.Shared.Denoising.NRDData;
 import PathTracer;
 import ColorType;
 import GuideData;
+import CIRPathData;
 
 ParameterBlock<PathTracer> pathTracer;
 
@@ -47,5 +48,6 @@ StructuredBuffer<float4> sampleNRDPrimaryHitNeeOnDelta;
 StructuredBuffer<float4> sampleNRDEmission;
 StructuredBuffer<float4> sampleNRDReflectance;
 StructuredBuffer<float4> sampleInitialRayInfo;
+RWStructuredBuffer<CIRPathData> sampleCIRData;
 
 void main() {}
