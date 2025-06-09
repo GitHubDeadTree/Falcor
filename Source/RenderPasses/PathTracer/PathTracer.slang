@@ -1268,9 +1268,8 @@ struct PathTracer
         }
     }
 
-    /** Update CIR data during path tracing (DIAGNOSTIC TEST VERSION 2).
-        DIAGNOSTIC: Force emission angle to test value for ALL path interactions.
-        This will help identify whether the issue is in calculation or data transfer.
+    /** Update CIR data during path tracing.
+        Calculates emission angle based on material properties and surface geometry.
         \param[in,out] path Path state.
         \param[in] surfaceNormal Surface normal at hit point.
         \param[in] bsdfProperties BSDF properties for emission angle calculation.
@@ -1280,14 +1279,6 @@ struct PathTracer
         const uint vertexIndex = path.getVertexIndex();
         const bool isPrimaryHit = (vertexIndex == 1);
         
-        // ===== DIAGNOSTIC TEST: Force emission angle for ALL interactions =====
-        // Removing condition to ensure this always executes
-        path.cirEmissionAngle = 1.047198f; // 60 degrees for testing
-        // This value should appear in both statistics and cir_data.txt file
-        
-        // Original strategies commented out for diagnostic test
-        // They will be restored after confirming data pipeline works
-        /*
         // Strategy 1: Check for emissive materials (LED modeled as emissive surfaces)
         if (any(bsdfProperties.emission > 0.0f))
         {
@@ -1309,7 +1300,7 @@ struct PathTracer
                 path.cirEmissionAngle = 0.785398f; // 45 degrees fallback
             }
         }
-        // Strategy 3: Final fallback
+        // Strategy 3: Final fallback for primary hits without calculated angle
         else if (isPrimaryHit && path.cirEmissionAngle == 0.0f)
         {
             float3 surfaceUp = float3(0, 1, 0);
@@ -1325,7 +1316,21 @@ struct PathTracer
                 path.cirEmissionAngle = 0.523599f; // 30 degrees fallback
             }
         }
-        */
+        
+        // Update reflectance using material properties
+        // This primarily affects pathways with surface interactions
+        if (!isPrimaryHit && vertexIndex > 1)
+        {
+            // Calculate combined reflectance from diffuse and specular components
+            float3 totalAlbedo = bsdfProperties.diffuseReflectionAlbedo + bsdfProperties.specularReflectionAlbedo;
+            float avgReflectance = dot(totalAlbedo, float3(0.33333f, 0.33333f, 0.33333f));
+            
+            // Apply reflectance only if valid
+            if (avgReflectance > 0.0f && avgReflectance <= 1.0f)
+            {
+                path.updateCIRReflectance(avgReflectance);
+            }
+        }
     }
 
     /** Output CIR data on path completion using PixelStats system.
