@@ -406,23 +406,37 @@ struct PathTracer
         path.L += path.thp * radiance;
     }
 
-    /** Update CIR data with thp-based reflectance (simplified version).
-        Since thp automatically accumulates all BSDF weights along the path,
-        we no longer need to manually calculate and multiply reflectance values.
-        This function is now kept for compatibility but does minimal work.
+    /** Update CIR data with material reflectance from BSDF properties.
+        Uses the material's actual diffuse and specular reflectance albedo values
+        instead of BSDF sampling weights, which contain additional factors.
         \param[in,out] path Path state.
-        \param[in] bsdfProperties Material properties (now unused).
-        \param[in] bsdfSample BSDF sample (now unused).
+        \param[in] bsdfProperties Material properties containing actual reflectance values.
+        \param[in] bsdfSample BSDF sample to determine if this is a reflection event.
     */
     void updateCIRWithMaterialReflectance(inout PathState path, BSDFProperties bsdfProperties, BSDFSample bsdfSample)
     {
-        // Note: thp field is automatically updated by updatePathThroughput() in generateScatterRay()
-        // The thp field accumulates all BSDF weights (which represent reflectances) automatically
-        // This provides more accurate reflectance calculation than manual material property extraction
-        
-        // Simply call the simplified updateCIRReflectance for compatibility
-        // The actual reflectance calculation is now done using thp in getCIRData()
-        path.updateCIRReflectance(0.0f); // Parameter is unused but kept for compatibility
+        const uint vertexIndex = path.getVertexIndex();
+        const bool isPrimaryHit = (vertexIndex == 1);
+
+        // Only accumulate reflectance for actual surface interactions (not primary hit from camera)
+        // and only for reflection events
+        if (!isPrimaryHit && (bsdfSample.isLobe(LobeType::Reflection) ||
+                              bsdfSample.isLobe(LobeType::DiffuseReflection) ||
+                              bsdfSample.isLobe(LobeType::SpecularReflection)))
+        {
+            // Calculate combined reflectance from diffuse and specular components
+            float3 totalAlbedo = bsdfProperties.diffuseReflectionAlbedo + bsdfProperties.specularReflectionAlbedo;
+            float reflectance = luminance(totalAlbedo);
+
+            // Ensure reflectance is within valid range [0,1] for VLC calculations
+            reflectance = clamp(reflectance, 0.0f, 1.0f);
+
+            // Apply reflectance only if valid
+            if (reflectance > 0.0f && !isnan(reflectance) && !isinf(reflectance))
+            {
+                path.updateCIRReflectance(reflectance);
+            }
+        }
     }
 
     /** Generates a new scatter ray or terminates the path.
@@ -435,10 +449,10 @@ struct PathTracer
     {
         BSDFSample result;
         bool valid = mi.sample(sd, path.sg, result, kUseBSDFSampling);
-        
+
         // Update CIR with real BSDF weight AFTER sampling but BEFORE processing the sample
         updateCIRWithMaterialReflectance(path, mi.getProperties(sd), result);
-        
+
         if (valid) valid = generateScatterRay(result, sd, mi, path);
 
         // Ignore valid on purpose for now.
@@ -1278,7 +1292,7 @@ struct PathTracer
     {
         const uint vertexIndex = path.getVertexIndex();
         const bool isPrimaryHit = (vertexIndex == 1);
-        
+
         // Strategy 1: Check for emissive materials (LED modeled as emissive surfaces)
         if (any(bsdfProperties.emission > 0.0f))
         {
@@ -1290,7 +1304,7 @@ struct PathTracer
             float3 emissionNormal = normalize(surfaceNormal);
             float3 lightDirection = normalize(-path.initialDir);
             float cosAngle = abs(dot(lightDirection, emissionNormal));
-            
+
             if (cosAngle > 0.001f && !isnan(cosAngle) && !isinf(cosAngle))
             {
                 path.cirEmissionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
@@ -1306,7 +1320,7 @@ struct PathTracer
             float3 surfaceUp = float3(0, 1, 0);
             float3 normal = normalize(surfaceNormal);
             float cosAngle = abs(dot(normal, surfaceUp));
-            
+
             if (cosAngle > 0.001f)
             {
                 path.cirEmissionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
@@ -1316,7 +1330,7 @@ struct PathTracer
                 path.cirEmissionAngle = 0.523599f; // 30 degrees fallback
             }
         }
-        
+
         // Update reflectance using material properties
         // This primarily affects pathways with surface interactions
         if (!isPrimaryHit && vertexIndex > 1)
@@ -1324,7 +1338,7 @@ struct PathTracer
             // Calculate combined reflectance from diffuse and specular components
             float3 totalAlbedo = bsdfProperties.diffuseReflectionAlbedo + bsdfProperties.specularReflectionAlbedo;
             float avgReflectance = dot(totalAlbedo, float3(0.33333f, 0.33333f, 0.33333f));
-            
+
             // Apply reflectance only if valid
             if (avgReflectance > 0.0f && avgReflectance <= 1.0f)
             {
@@ -1344,10 +1358,10 @@ struct PathTracer
         {
             path.updateCIRReceptionAngle(path.dir, path.normal);
         }
-        
+
         // Dynamically generate complete CIR data (utilizing reused fields)
         CIRPathData cirData = path.getCIRData();
-        
+
         // UNIFIED VALIDATION: Use single validation point for both statistics and raw data
         // This ensures consistency between statistical aggregation and file output
         logCIRPathComplete(cirData);

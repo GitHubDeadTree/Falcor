@@ -269,6 +269,76 @@ results['quality_score'] = self.calculate_quality_score(results)
    • LOS Power Ratio: 0.680 (68.0%)
 ```
 
+### 3. 综合评估可视化
+
+#### 实现方法：`plot_evaluation_results()`
+
+**功能：**
+- 创建4×4布局的综合评估仪表板
+- 可视化所有评估指标和分析结果
+- 提供直观的图表和图形展示
+- 自动保存高质量的可视化结果
+
+**可视化内容包括：**
+
+1. **质量评分仪表板**（左上角）
+   - 四个核心指标的分项评分条形图
+   - 颜色编码：绿色（优秀）、橙色（一般）、红色（较差）
+   - 显示总体质量评分
+
+2. **数据质量验证**（右上角）
+   - 有效/无效路径的饼图
+   - 数据质量百分比显示
+   - 路径数量统计
+
+3. **多径功率分布**（第二行左）
+   - 按反射次数分组的功率分布条形图
+   - 显示各反射阶数的路径数量
+   - 功率百分比标注
+
+4. **角度分布指标**（第二行右）
+   - 发射角扩散、接收角扩散等指标
+   - 朗伯模式相关性分析
+   - 归一化百分比显示
+
+5. **时域特性分析**（第三行左）
+   - CIR时域响应曲线
+   - LOS成分标识和高亮
+   - RMS时延扩展信息
+
+6. **频域响应分析**（第三行右）
+   - 频域幅度响应曲线
+   - 相干带宽标记和-3dB线
+   - 频率范围优化显示
+
+7. **链路预算指标**（第四行左）
+   - 路径损耗、SNR、信道容量等关键指标
+   - 彩色条形图表示
+   - 数值标注
+
+8. **评估摘要**（第四行右）
+   - 文本形式的评估总结
+   - 大字体质量评分显示
+   - 星级评级系统
+
+**实现特点：**
+```python
+# 自适应图表布局
+fig = plt.figure(figsize=(20, 16))
+
+# 智能颜色编码
+colors = ['red' if score <= 5 else 'orange' if score <= 15 else 'green' for score in individual_scores]
+
+# 频域分析优化
+plot_mask = freqs_mhz <= 1000  # 限制显示到1GHz
+ax6.plot(freqs_mhz[plot_mask], magnitude_db[plot_mask], 'g-', linewidth=1.5)
+
+# 质量评级可视化
+if quality_score >= 80:
+    rating = "EXCELLENT ⭐⭐⭐⭐⭐"
+    color = 'green'
+```
+
 ## 主函数更新
 
 ### 主要修改：
@@ -285,12 +355,29 @@ evaluation_filename = csv_file.stem + "_CIR_Evaluation.json"
 calculator.save_evaluation_results(evaluation_results, evaluation_filename)
 ```
 
-3. **质量评级显示**：
+3. **双重可视化输出**：
+```python
+# 基础CIR分析图
+plot_filename = csv_file.stem + "_CIR_Analysis.png"
+calculator.plot_cir_results(save_path=plot_filename)
+
+# 评估仪表板
+evaluation_plot_filename = csv_file.stem + "_CIR_Evaluation_Dashboard.png"
+calculator.plot_evaluation_results(evaluation_results, save_path=evaluation_plot_filename)
+```
+
+4. **质量评级显示**：
 ```python
 quality_score = evaluation_results.get('quality_score', 0)
 if quality_score >= 80:
     print("🌟 Excellent CIR quality! Ready for high-speed VLC communication.")
 ```
+
+5. **完整输出文件列表**：
+   - `*_CIR_Analysis.png`：基础CIR分析图表
+   - `*_CIR_Evaluation_Dashboard.png`：综合评估仪表板
+   - `*_CIR_Results.csv`：CIR时域数据
+   - `*_CIR_Evaluation.json`：完整评估结果
 
 ## 异常处理
 
@@ -376,7 +463,17 @@ else:
 1. **六大评估维度**：数据质量、时域特性、多径分析、角度分布、频域特性、链路预算
 2. **综合评分系统**：基于关键指标的100分制评分
 3. **完善的异常处理**：确保代码在各种数据条件下的稳定性
-4. **丰富的输出格式**：JSON文件和格式化控制台显示
-5. **向后兼容性**：保持原有功能的同时增加新特性
+4. **丰富的输出格式**：JSON文件、格式化控制台显示和综合可视化仪表板
+5. **双重可视化系统**：
+   - 基础CIR分析图：展示传统的CIR时域和频域特性
+   - 评估仪表板：4×4布局的综合评估可视化
+6. **向后兼容性**：保持原有功能的同时增加新特性
 
-该实现为VLC系统的CIR质量评估提供了全面、可靠的工具，支持从数据验证到质量评级的完整工作流程。
+**新增可视化功能特点：**
+- 智能颜色编码和自适应布局
+- 8个专业图表覆盖所有评估维度
+- 质量评分的直观显示和星级评级
+- 高分辨率图像输出（300 DPI）
+- 专业的仪表板式布局设计
+
+该实现为VLC系统的CIR质量评估提供了全面、可靠且直观的工具，支持从数据验证到质量评级的完整工作流程，特别是新增的可视化功能大大提升了结果的可读性和专业性。

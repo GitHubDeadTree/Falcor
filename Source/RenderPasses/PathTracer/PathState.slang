@@ -111,7 +111,7 @@ struct PathState
 
     // === CIR (Channel Impulse Response) specific fields (12 bytes) ===
     float cirEmissionAngle;             ///< φ_i: Emission angle at LED surface (radians)
-    float cirReceptionAngle;            ///< θ_i: Reception angle at receiver surface (radians)  
+    float cirReceptionAngle;            ///< θ_i: Reception angle at receiver surface (radians)
     float cirReflectanceProduct;        ///< r_i: Accumulated product of surface reflectances [0,1]
 
     // Accessors
@@ -231,7 +231,7 @@ struct PathState
     }
 
     // === CIR (Channel Impulse Response) data management methods ===
-    
+
     /** Initialize CIR data with default values.
         Called when a new path is generated.
     */
@@ -251,14 +251,14 @@ struct PathState
         float3 rayDir = normalize(dir);
         float3 normal = normalize(surfaceNormal);
         float cosAngle = abs(dot(rayDir, normal));
-        
+
         // Error checking: ensure cosAngle is in valid range
         if (cosAngle < 0.0f || cosAngle > 1.0f || isnan(cosAngle) || isinf(cosAngle))
         {
             cirEmissionAngle = 0.0f; // Default value: perpendicular emission
             return;
         }
-        
+
         cirEmissionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
     }
 
@@ -272,71 +272,81 @@ struct PathState
         float3 incDir = normalize(-incomingDir);
         float3 normal = normalize(surfaceNormal);
         float cosAngle = abs(dot(incDir, normal));
-        
+
         // Error checking: ensure cosAngle is in valid range
         if (cosAngle < 0.0f || cosAngle > 1.0f || isnan(cosAngle) || isinf(cosAngle))
         {
             cirReceptionAngle = 0.0f; // Default value: perpendicular reception
             return;
         }
-        
+
         cirReceptionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
     }
 
-    /** Update reflectance using thp (throughput) as cumulative reflectance.
-        Since thp already accumulates the product of all BSDF weights along the path,
-        we no longer need to manually multiply reflectance values.
-        \param[in] reflectance This parameter is now unused but kept for compatibility.
+    /** Update reflectance by accumulating surface reflectance values.
+        This follows the VLC standard method of computing the product of
+        all surface reflectances along the light path.
+        \param[in] reflectance Surface reflectance value to accumulate [0,1].
     */
     [mutating] void updateCIRReflectance(float reflectance)
     {
-        // Note: No longer manually updating cirReflectanceProduct
-        // The thp field automatically accumulates all BSDF weights (reflectances)
-        // This is more accurate than manual reflectance calculation
-        
-        // Keep cirReflectanceProduct for backward compatibility, but it's no longer used
-        // in getCIRData() which now uses luminance(thp) instead
-        cirReflectanceProduct = luminance(thp);
-        
-        // Clamp to valid range for VLC systems
+        // Error checking: ensure reflectance is in valid range
+        if (reflectance < 0.0f || reflectance > 1.0f || isnan(reflectance) || isinf(reflectance))
+        {
+            // Skip invalid reflectance values to maintain data integrity
+            return;
+        }
+
+        // VLC standard method: multiply surface reflectances
+        cirReflectanceProduct *= reflectance;
+
+        // Numerical stability: prevent underflow
+        if (cirReflectanceProduct < 1e-6f)
+        {
+            cirReflectanceProduct = 1e-6f;
+        }
+
+        // Ensure within valid range for VLC systems
         cirReflectanceProduct = clamp(cirReflectanceProduct, 0.0f, 1.0f);
     }
 
-    /** Generate complete CIR data by combining existing fields with CIR-specific fields.
+        /** Generate complete CIR data by combining existing fields with CIR-specific fields.
         This method maximizes data reuse by utilizing existing PathState fields.
-        Now uses thp (throughput) as the cumulative reflectance for better accuracy.
+        Uses accumulated surface reflectance product for VLC calculations.
         \return Complete CIR data structure ready for output.
     */
     CIRPathData getCIRData()
     {
         CIRPathData cir;
-        
+
         // ✅ Reuse existing fields (7/9 parameters - 77.8% reuse rate)
         cir.pathLength = float(sceneLength);                                    // Reuse existing field
-        cir.reflectionCount = getBounces(BounceType::Diffuse) + 
+        cir.reflectionCount = getBounces(BounceType::Diffuse) +
                              getBounces(BounceType::Specular);                  // Reuse existing field
         cir.emittedPower = getLightIntensity();                                 // Reuse existing field
         uint2 pixel = getPixel();
         cir.pixelX = pixel.x;                                                   // Reuse existing field
         cir.pixelY = pixel.y;                                                   // Reuse existing field
         cir.pathIndex = id;                                                     // Reuse existing field
-        
-        // ✅ Use thp as cumulative reflectance (most accurate approach)
-        cir.reflectanceProduct = luminance(thp);                               // Use thp instead of cirReflectanceProduct
-        
+
+        // ✅ Use accumulated reflectance product from surface materials
+        cir.reflectanceProduct = cirReflectanceProduct;                         // Use accumulated material reflectance
+
         // ❌ Use CIR-specific fields (2/9 parameters)
         cir.emissionAngle = cirEmissionAngle;                                   // CIR-specific field
         cir.receptionAngle = cirReceptionAngle;                                 // CIR-specific field
-        
-        // Ensure reflectance product is within valid range for VLC systems
-        cir.reflectanceProduct = clamp(cir.reflectanceProduct, 0.0f, 1.0f);
-        
-        // Debug fallback: if thp-based reflectance is 0, use debug value
+
+        // Final validation and error handling
         if (cir.reflectanceProduct <= 0.0f || isnan(cir.reflectanceProduct) || isinf(cir.reflectanceProduct))
         {
-            cir.reflectanceProduct = 0.666f;
+            cir.reflectanceProduct = 0.666f; // Debug value to identify problematic paths
         }
-        
+        else
+        {
+            // Ensure within valid range for VLC systems
+            cir.reflectanceProduct = clamp(cir.reflectanceProduct, 0.0f, 1.0f);
+        }
+
         return cir;
     }
 };
