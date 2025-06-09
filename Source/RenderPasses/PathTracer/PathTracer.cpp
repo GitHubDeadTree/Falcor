@@ -452,6 +452,12 @@ void PathTracer::setScene(RenderContext* pRenderContext, const ref<Scene>& pScen
     resetPrograms();
     resetLighting();
 
+    // Set scene reference for PixelStats to enable CIR static parameter calculation
+    if (mpPixelStats)
+    {
+        mpPixelStats->setScene(pScene);
+    }
+
     if (mpScene)
     {
         mUpdateFlagsConnection = mpScene->getUpdateFlagsSignal().connect([&](IScene::UpdateFlags flags) { mUpdateFlags |= flags; });

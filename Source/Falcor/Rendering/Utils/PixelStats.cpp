@@ -27,12 +27,25 @@
  **************************************************************************/
 #include "PixelStats.h"
 #include "Core/API/RenderContext.h"
+#include "Scene/Scene.h"
+#include "Scene/Camera/Camera.h"
+#include "Scene/Lights/Light.h"
+#include "Utils/Math/FalcorMath.h"
 #include "Utils/Logger.h"
 #include "Utils/Scripting/ScriptBindings.h"
 #include <sstream>
 #include <iomanip>
 #include <fstream>
 #include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <algorithm>
+
+// Additional headers for enhanced CIR export functionality
+#include <chrono>
+#include <filesystem>
+#include <iomanip>
+#include <sstream>
 
 namespace Falcor
 {
@@ -292,12 +305,33 @@ namespace Falcor
             {
                 widget.var("Max CIR paths per frame", mMaxCIRPathsPerFrame, 1000u, 10000000u);
                 
+                // CIR export format selection
+                const Gui::DropdownList kExportFormatList = {
+                    {(uint32_t)CIRExportFormat::CSV, "CSV (Excel compatible)"},
+                    {(uint32_t)CIRExportFormat::JSONL, "JSONL (JSON Lines)"},
+                    {(uint32_t)CIRExportFormat::TXT, "TXT (Original format)"}
+                };
+                
+                uint32_t format = (uint32_t)mCIRExportFormat;
+                if (widget.dropdown("Export format", kExportFormatList, format))
+                {
+                    mCIRExportFormat = (CIRExportFormat)format;
+                }
+                
                 // CIR raw data controls
                 copyCIRRawDataToCPU();
                 widget.text(fmt::format("Collected CIR paths: {}", mCollectedCIRPaths));
-                if (widget.button("Export CIR Data"))
+                
+                if (widget.button("Export CIR Data (Auto-timestamped)"))
                 {
-                    exportCIRData("cir_data.txt");
+                    // Export with automatic timestamp and format selection
+                    exportCIRDataWithTimestamp(mCIRExportFormat, mpScene);
+                }
+                
+                if (widget.button("Export CIR Data (Original)"))
+                {
+                    // Legacy export for compatibility
+                    exportCIRData("cir_data.txt", mpScene);
                 }
             }
         }
@@ -560,7 +594,7 @@ namespace Falcor
         return mCIRRawDataValid ? static_cast<uint32_t>(mCIRRawData.size()) : 0;
     }
 
-    bool PixelStats::exportCIRData(const std::string& filename)
+    bool PixelStats::exportCIRData(const std::string& filename, const ref<Scene>& pScene)
     {
         copyCIRRawDataToCPU();
         if (!mCIRRawDataValid || mCIRRawData.empty())
@@ -578,12 +612,28 @@ namespace Falcor
                 return false;
             }
 
-            // Write header
-            file << "# CIR Path Data Export\n";
-            file << "# Format: PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W)\n";
+            // Compute static parameters if scene is provided
+            CIRStaticParameters staticParams;
+            ref<Scene> sceneToUse = pScene ? pScene : mpScene;
+            if (sceneToUse)
+            {
+                staticParams = computeCIRStaticParameters(sceneToUse, mFrameDim);
+            }
+
+            // Write header with static parameters
+            file << "# CIR Path Data Export with Static Parameters\n";
+            file << "# Static Parameters for VLC Channel Impulse Response Calculation:\n";
+            file << "# A_receiver_area_m2=" << std::scientific << std::setprecision(6) << staticParams.receiverArea << "\n";
+            file << "# m_led_lambertian_order=" << std::fixed << std::setprecision(3) << staticParams.ledLambertianOrder << "\n";
+            file << "# c_light_speed_ms=" << std::scientific << std::setprecision(3) << staticParams.lightSpeed << "\n";
+            file << "# FOV_receiver_rad=" << std::fixed << std::setprecision(3) << staticParams.receiverFOV << "\n";
+            file << "# T_s_optical_filter_gain=" << std::fixed << std::setprecision(1) << staticParams.opticalFilterGain << "\n";
+            file << "# g_optical_concentration=" << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
+            file << "#\n";
+            file << "# Path Data Format: PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W)\n";
             file << std::fixed << std::setprecision(6);
 
-            // Write data
+            // Write path data
             for (size_t i = 0; i < mCIRRawData.size(); i++)
             {
                 const auto& data = mCIRRawData[i];
@@ -599,7 +649,7 @@ namespace Falcor
             }
 
             file.close();
-            logInfo(fmt::format("PixelStats: Exported {} CIR paths to {}", mCIRRawData.size(), filename));
+            logInfo(fmt::format("PixelStats: Exported {} CIR paths with static parameters to {}", mCIRRawData.size(), filename));
             return true;
         }
         catch (const std::exception& e)
@@ -607,6 +657,425 @@ namespace Falcor
             logError(fmt::format("PixelStats::exportCIRData() - Error writing file: {}", e.what()));
             return false;
         }
+    }
+
+    float PixelStats::computeReceiverArea(const ref<Camera>& pCamera, const uint2& frameDim)
+    {
+        if (!pCamera) return 1e-4f; // Default 1 cm²
+
+        try
+        {
+            // Get camera parameters for calculating sensor area
+            float focalLength = pCamera->getFocalLength(); // mm
+            float frameHeight = pCamera->getFrameHeight(); // mm
+            float aspectRatio = pCamera->getAspectRatio();
+
+            // Calculate FOV from focal length and frame height
+            float fovY = focalLengthToFovY(focalLength, frameHeight); // radians
+          
+            // Calculate physical sensor dimensions in meters
+            float sensorHeightM = frameHeight * 1e-3f; // Convert mm to meters
+            float sensorWidthM = sensorHeightM * aspectRatio;
+          
+            // Calculate total sensor area
+            float totalSensorArea = sensorWidthM * sensorHeightM; // m²
+          
+            // Calculate pixel area (total sensor area divided by number of pixels)
+            uint32_t totalPixels = frameDim.x * frameDim.y;
+            float pixelArea = totalSensorArea / totalPixels;
+          
+            logInfo("PixelStats: Computed receiver area = {:.6e} m² (total sensor: {:.6e} m², pixels: {})",
+                   pixelArea, totalSensorArea, totalPixels);
+                 
+            return pixelArea;
+        }
+        catch (const std::exception& e)
+        {
+            logError("PixelStats: Error computing receiver area: {}", e.what());
+            return 1e-4f; // Default fallback
+        }
+    }
+
+    float PixelStats::computeLEDLambertianOrder(const ref<Scene>& pScene)
+    {
+        if (!pScene) return 1.0f; // Default Lambertian order
+
+        try
+        {
+            const auto& lights = pScene->getLights();
+            if (lights.empty())
+            {
+                logWarning("PixelStats: No lights found in scene, using default Lambertian order = 1.0");
+                return 1.0f;
+            }
+
+            // Find first point light and calculate Lambertian order
+            for (const auto& pLight : lights)
+            {
+                if (pLight->getType() == LightType::Point)
+                {
+                    const auto* pPointLight = static_cast<const PointLight*>(pLight.get());
+                    float openingAngle = pPointLight->getOpeningAngle(); // radians
+                  
+                    // Calculate Lambertian order using m = -ln(2)/ln(cos(θ_1/2))
+                    if (openingAngle >= (float)M_PI)
+                    {
+                        // Isotropic light source: m = 1 (Lambertian)
+                        logInfo("PixelStats: Found isotropic point light, Lambertian order = 1.0");
+                        return 1.0f;
+                    }
+                    else
+                    {
+                        float halfAngle = openingAngle * 0.5f;
+                        float cosHalfAngle = std::cos(halfAngle);
+                      
+                        if (cosHalfAngle > 0.0f && cosHalfAngle < 1.0f)
+                        {
+                            float lambertianOrder = -std::log(2.0f) / std::log(cosHalfAngle);
+                            logInfo("PixelStats: Computed LED Lambertian order = {:.3f} (half-angle = {:.3f} rad)",
+                                   lambertianOrder, halfAngle);
+                            return std::max(0.1f, lambertianOrder); // Ensure positive value
+                        }
+                    }
+                }
+            }
+          
+            logWarning("PixelStats: No suitable point light found, using default Lambertian order = 1.0");
+            return 1.0f;
+        }
+        catch (const std::exception& e)
+        {
+            logError("PixelStats: Error computing LED Lambertian order: {}", e.what());
+            return 1.0f; // Default fallback
+        }
+    }
+
+    float PixelStats::computeReceiverFOV(const ref<Camera>& pCamera)
+    {
+        if (!pCamera) return (float)M_PI; // Default wide FOV
+
+        try
+        {
+            float focalLength = pCamera->getFocalLength(); // mm
+            float frameHeight = pCamera->getFrameHeight(); // mm
+          
+            // Calculate vertical FOV
+            float fovY = focalLengthToFovY(focalLength, frameHeight); // radians
+          
+            logInfo("PixelStats: Computed receiver FOV = {:.3f} rad ({:.1f} degrees)",
+                   fovY, fovY * 180.0f / (float)M_PI);
+                 
+            return fovY;
+        }
+        catch (const std::exception& e)
+        {
+            logError("PixelStats: Error computing receiver FOV: {}", e.what());
+            return (float)M_PI; // Default fallback
+        }
+    }
+
+    CIRStaticParameters PixelStats::computeCIRStaticParameters(const ref<Scene>& pScene, const uint2& frameDim)
+    {
+        CIRStaticParameters params;
+      
+        if (!pScene)
+        {
+            logWarning("PixelStats: No scene provided, using default CIR static parameters");
+            return params;
+        }
+
+        try
+        {
+            // Get camera for receiver calculations
+            ref<Camera> pCamera = pScene->getCamera();
+          
+            if (pCamera)
+            {
+                // 1. Compute receiver effective area (A)
+                params.receiverArea = computeReceiverArea(pCamera, frameDim);
+              
+                // 4. Compute receiver field of view (FOV)
+                params.receiverFOV = computeReceiverFOV(pCamera);
+            }
+            else
+            {
+                logWarning("PixelStats: No camera found, using default receiver parameters");
+                params.receiverArea = 1e-4f; // 1 cm²
+                params.receiverFOV = (float)M_PI; // 180 degrees
+            }
+          
+            // 2. Compute LED Lambertian order (m)
+            params.ledLambertianOrder = computeLEDLambertianOrder(pScene);
+          
+            // 3. Light speed (c) - physical constant
+            params.lightSpeed = 3.0e8f; // m/s
+          
+            // 5. Optical filter transmittance (T_s) - set to 1.0 (no filter)
+            params.opticalFilterGain = 1.0f;
+          
+            // 6. Optical concentration gain (g) - set to 1.0 (no concentration)
+            params.opticalConcentration = 1.0f;
+          
+            logInfo("PixelStats: Computed CIR static parameters:");
+            logInfo("  Receiver area: {:.6e} m²", params.receiverArea);
+            logInfo("  LED Lambertian order: {:.3f}", params.ledLambertianOrder);
+            logInfo("  Light speed: {:.3e} m/s", params.lightSpeed);
+            logInfo("  Receiver FOV: {:.3f} rad", params.receiverFOV);
+            logInfo("  Optical filter gain: {:.1f}", params.opticalFilterGain);
+            logInfo("  Optical concentration: {:.1f}", params.opticalConcentration);
+          
+            return params;
+        }
+        catch (const std::exception& e)
+        {
+            logError("PixelStats: Error computing CIR static parameters: {}", e.what());
+            return CIRStaticParameters(); // Return default parameters
+        }
+    }
+
+    std::string PixelStats::generateTimestampedFilename(CIRExportFormat format)
+    {
+        // Get current time
+        auto now = std::chrono::system_clock::now();
+        auto time_t_now = std::chrono::system_clock::to_time_t(now);
+        auto tm_now = *std::localtime(&time_t_now);
+        
+        // Generate timestamp string
+        std::ostringstream oss;
+        oss << std::put_time(&tm_now, "%Y%m%d_%H%M%S");
+        std::string timestamp = oss.str();
+        
+        // Get file extension based on format
+        std::string extension;
+        switch (format)
+        {
+            case CIRExportFormat::CSV:
+                extension = ".csv";
+                break;
+            case CIRExportFormat::JSONL:
+                extension = ".jsonl";
+                break;
+            case CIRExportFormat::TXT:
+            default:
+                extension = ".txt";
+                break;
+        }
+        
+        return "CIRData_" + timestamp + extension;
+    }
+
+    bool PixelStats::ensureCIRDataDirectory()
+    {
+        try
+        {
+            const std::string dirPath = "CIRData";
+            if (!std::filesystem::exists(dirPath))
+            {
+                if (std::filesystem::create_directories(dirPath))
+                {
+                    logInfo("PixelStats: Created CIRData directory");
+                }
+                else
+                {
+                    logError("PixelStats: Failed to create CIRData directory");
+                    return false;
+                }
+            }
+            return true;
+        }
+        catch (const std::exception& e)
+        {
+            logError("PixelStats: Error creating CIRData directory: {}", e.what());
+            return false;
+        }
+    }
+
+    bool PixelStats::exportCIRDataWithTimestamp(CIRExportFormat format, const ref<Scene>& pScene)
+    {
+        if (!ensureCIRDataDirectory())
+        {
+            return false;
+        }
+        
+        std::string filename = "CIRData/" + generateTimestampedFilename(format);
+        return exportCIRDataWithFormat(filename, format, pScene);
+    }
+
+    bool PixelStats::exportCIRDataWithFormat(const std::string& filename, CIRExportFormat format, const ref<Scene>& pScene)
+    {
+        copyCIRRawDataToCPU();
+        if (!mCIRRawDataValid || mCIRRawData.empty())
+        {
+            logWarning("PixelStats::exportCIRDataWithFormat() - No valid CIR data to export.");
+            return false;
+        }
+
+        try
+        {
+            // Compute static parameters if scene is provided
+            CIRStaticParameters staticParams;
+            ref<Scene> sceneToUse = pScene ? pScene : mpScene;
+            if (sceneToUse)
+            {
+                staticParams = computeCIRStaticParameters(sceneToUse, mFrameDim);
+            }
+
+            bool success = false;
+            switch (format)
+            {
+                case CIRExportFormat::CSV:
+                    success = exportCIRDataCSV(filename, staticParams);
+                    break;
+                case CIRExportFormat::JSONL:
+                    success = exportCIRDataJSONL(filename, staticParams);
+                    break;
+                case CIRExportFormat::TXT:
+                default:
+                    success = exportCIRDataTXT(filename, staticParams);
+                    break;
+            }
+
+            if (success)
+            {
+                logInfo("PixelStats: Exported {} CIR paths in {} format to {}", 
+                       mCIRRawData.size(), 
+                       format == CIRExportFormat::CSV ? "CSV" : 
+                       format == CIRExportFormat::JSONL ? "JSONL" : "TXT",
+                       filename);
+            }
+            
+            return success;
+        }
+        catch (const std::exception& e)
+        {
+            logError("PixelStats::exportCIRDataWithFormat() - Error: {}", e.what());
+            return false;
+        }
+    }
+
+    bool PixelStats::exportCIRDataCSV(const std::string& filename, const CIRStaticParameters& staticParams)
+    {
+        std::ofstream file(filename);
+        if (!file.is_open())
+        {
+            logError("PixelStats: Failed to open CSV file: {}", filename);
+            return false;
+        }
+
+        // Write header with static parameters as comments
+        file << "# CIR Path Data Export (CSV Format)\n";
+        file << "# Static Parameters for VLC Channel Impulse Response Calculation:\n";
+        file << "# A_receiver_area_m2," << std::scientific << std::setprecision(6) << staticParams.receiverArea << "\n";
+        file << "# m_led_lambertian_order," << std::fixed << std::setprecision(3) << staticParams.ledLambertianOrder << "\n";
+        file << "# c_light_speed_ms," << std::scientific << std::setprecision(3) << staticParams.lightSpeed << "\n";
+        file << "# FOV_receiver_rad," << std::fixed << std::setprecision(3) << staticParams.receiverFOV << "\n";
+        file << "# T_s_optical_filter_gain," << std::fixed << std::setprecision(1) << staticParams.opticalFilterGain << "\n";
+        file << "# g_optical_concentration," << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
+        file << "#\n";
+        
+        // Write CSV header
+        file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W\n";
+        
+        // Write data rows
+        file << std::fixed << std::setprecision(6);
+        for (size_t i = 0; i < mCIRRawData.size(); i++)
+        {
+            const auto& data = mCIRRawData[i];
+            file << i << "," 
+                 << data.pixelX << "," 
+                 << data.pixelY << ","
+                 << data.pathLength << ","
+                 << data.emissionAngle << ","
+                 << data.receptionAngle << ","
+                 << data.reflectanceProduct << ","
+                 << data.reflectionCount << ","
+                 << data.emittedPower << "\n";
+        }
+
+        file.close();
+        return true;
+    }
+
+    bool PixelStats::exportCIRDataJSONL(const std::string& filename, const CIRStaticParameters& staticParams)
+    {
+        std::ofstream file(filename);
+        if (!file.is_open())
+        {
+            logError("PixelStats: Failed to open JSONL file: {}", filename);
+            return false;
+        }
+
+        // Write static parameters as first JSON object
+        file << "{\"type\":\"static_parameters\",\"data\":{";
+        file << "\"receiver_area_m2\":" << std::scientific << std::setprecision(6) << staticParams.receiverArea << ",";
+        file << "\"led_lambertian_order\":" << std::fixed << std::setprecision(3) << staticParams.ledLambertianOrder << ",";
+        file << "\"light_speed_ms\":" << std::scientific << std::setprecision(3) << staticParams.lightSpeed << ",";
+        file << "\"receiver_fov_rad\":" << std::fixed << std::setprecision(3) << staticParams.receiverFOV << ",";
+        file << "\"optical_filter_gain\":" << std::fixed << std::setprecision(1) << staticParams.opticalFilterGain << ",";
+        file << "\"optical_concentration\":" << std::fixed << std::setprecision(1) << staticParams.opticalConcentration;
+        file << "}}\n";
+
+        // Write path data as JSON objects
+        file << std::fixed << std::setprecision(6);
+        for (size_t i = 0; i < mCIRRawData.size(); i++)
+        {
+            const auto& data = mCIRRawData[i];
+            file << "{\"type\":\"path_data\",\"data\":{";
+            file << "\"path_index\":" << i << ",";
+            file << "\"pixel_x\":" << data.pixelX << ",";
+            file << "\"pixel_y\":" << data.pixelY << ",";
+            file << "\"path_length_m\":" << data.pathLength << ",";
+            file << "\"emission_angle_rad\":" << data.emissionAngle << ",";
+            file << "\"reception_angle_rad\":" << data.receptionAngle << ",";
+            file << "\"reflectance_product\":" << data.reflectanceProduct << ",";
+            file << "\"reflection_count\":" << data.reflectionCount << ",";
+            file << "\"emitted_power_w\":" << data.emittedPower;
+            file << "}}\n";
+        }
+
+        file.close();
+        return true;
+    }
+
+    bool PixelStats::exportCIRDataTXT(const std::string& filename, const CIRStaticParameters& staticParams)
+    {
+        std::ofstream file(filename);
+        if (!file.is_open())
+        {
+            logError("PixelStats: Failed to open TXT file: {}", filename);
+            return false;
+        }
+
+        // Write header with static parameters (original format)
+        file << "# CIR Path Data Export with Static Parameters\n";
+        file << "# Static Parameters for VLC Channel Impulse Response Calculation:\n";
+        file << "# A_receiver_area_m2=" << std::scientific << std::setprecision(6) << staticParams.receiverArea << "\n";
+        file << "# m_led_lambertian_order=" << std::fixed << std::setprecision(3) << staticParams.ledLambertianOrder << "\n";
+        file << "# c_light_speed_ms=" << std::scientific << std::setprecision(3) << staticParams.lightSpeed << "\n";
+        file << "# FOV_receiver_rad=" << std::fixed << std::setprecision(3) << staticParams.receiverFOV << "\n";
+        file << "# T_s_optical_filter_gain=" << std::fixed << std::setprecision(1) << staticParams.opticalFilterGain << "\n";
+        file << "# g_optical_concentration=" << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
+        file << "#\n";
+        file << "# Path Data Format: PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W)\n";
+        file << std::fixed << std::setprecision(6);
+
+        // Write path data
+        for (size_t i = 0; i < mCIRRawData.size(); i++)
+        {
+            const auto& data = mCIRRawData[i];
+            file << i << "," 
+                 << data.pixelX << "," 
+                 << data.pixelY << ","
+                 << data.pathLength << ","
+                 << data.emissionAngle << ","
+                 << data.receptionAngle << ","
+                 << data.reflectanceProduct << ","
+                 << data.reflectionCount << ","
+                 << data.emittedPower << "\n";
+        }
+
+        file.close();
+        return true;
     }
 
     FALCOR_SCRIPT_BINDING(PixelStats)

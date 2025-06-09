@@ -38,8 +38,17 @@
 #include <vector>
 #include <string>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 namespace Falcor
 {
+    // Forward declarations
+    class Scene;
+    class Camera;
+    class Light;
+
     // Forward declaration for CIR path data structure
     struct CIRPathData
     {
@@ -61,6 +70,34 @@ namespace Falcor
                    reflectanceProduct >= 0.0f && reflectanceProduct <= 1.0f &&
                    emittedPower > 0.0f;
         }
+    };
+
+    // CIR export format enumeration
+    enum class CIRExportFormat
+    {
+        CSV,        // Comma-separated values (default, compatible with Excel)
+        JSONL,      // JSON Lines format
+        TXT         // Original text format
+    };
+
+    // CIR static parameters structure for VLC analysis
+    struct CIRStaticParameters
+    {
+        float receiverArea;         // A: Receiver effective area (m²)
+        float ledLambertianOrder;   // m: LED Lambertian order
+        float lightSpeed;           // c: Light propagation speed (m/s)
+        float receiverFOV;          // FOV: Receiver field of view (radians)
+        float opticalFilterGain;    // T_s(θ): Optical filter transmittance
+        float opticalConcentration; // g(θ): Optical concentration gain
+      
+        CIRStaticParameters()
+            : receiverArea(1e-4f)
+            , ledLambertianOrder(1.0f)
+            , lightSpeed(3.0e8f)
+            , receiverFOV((float)M_PI)
+            , opticalFilterGain(1.0f)
+            , opticalConcentration(1.0f)
+        {}
     };
 
     /** Helper class for collecting runtime stats in the path tracer.
@@ -104,6 +141,9 @@ namespace Falcor
 
         void setEnabled(bool enabled) { mEnabled = enabled; }
         bool isEnabled() const { return mEnabled; }
+
+        // Scene reference for CIR parameter calculation
+        void setScene(const ref<Scene>& pScene) { mpScene = pScene; }
 
         // Collection mode configuration
         void setCollectionMode(CollectionMode mode) { mCollectionMode = mode; }
@@ -163,16 +203,52 @@ namespace Falcor
         */
         uint32_t getCIRPathCount();
         
-        /** Export CIR raw data to a file.
+        /** Export CIR raw data to a file with static parameters.
             \param[in] filename Output filename for the CIR data.
+            \param[in] pScene Scene pointer for parameter calculation (optional, will use stored scene if null).
             \return True if export was successful, false otherwise.
         */
-        bool exportCIRData(const std::string& filename);
+        bool exportCIRData(const std::string& filename, const ref<Scene>& pScene = nullptr);
+
+        /** Export CIR raw data with automatic timestamped filename and format selection.
+            Data is saved to ./CIRData/ directory with timestamp suffix.
+            \param[in] format Export format (CSV, JSONL, or TXT).
+            \param[in] pScene Scene pointer for parameter calculation (optional, will use stored scene if null).
+            \return True if export was successful, false otherwise.
+        */
+        bool exportCIRDataWithTimestamp(CIRExportFormat format = CIRExportFormat::CSV, const ref<Scene>& pScene = nullptr);
+
+        /** Export CIR raw data to specified file with format selection.
+            \param[in] filename Output filename for the CIR data.
+            \param[in] format Export format (CSV, JSONL, or TXT).
+            \param[in] pScene Scene pointer for parameter calculation (optional, will use stored scene if null).
+            \return True if export was successful, false otherwise.
+        */
+        bool exportCIRDataWithFormat(const std::string& filename, CIRExportFormat format, const ref<Scene>& pScene = nullptr);
+
+        /** Compute CIR static parameters from scene information.
+            \param[in] pScene Scene containing camera and light information.
+            \param[in] frameDim Frame dimensions for area calculation.
+            \return Computed static parameters structure.
+        */
+        CIRStaticParameters computeCIRStaticParameters(const ref<Scene>& pScene, const uint2& frameDim);
 
     protected:
         void copyStatsToCPU();
         void copyCIRRawDataToCPU();
         void computeRayCountTexture(RenderContext* pRenderContext);
+
+        // Helper methods for static parameter computation
+        float computeReceiverArea(const ref<Camera>& pCamera, const uint2& frameDim);
+        float computeLEDLambertianOrder(const ref<Scene>& pScene);
+        float computeReceiverFOV(const ref<Camera>& pCamera);
+
+        // Helper methods for CIR data export
+        std::string generateTimestampedFilename(CIRExportFormat format);
+        bool ensureCIRDataDirectory();
+        bool exportCIRDataCSV(const std::string& filename, const CIRStaticParameters& staticParams);
+        bool exportCIRDataJSONL(const std::string& filename, const CIRStaticParameters& staticParams);
+        bool exportCIRDataTXT(const std::string& filename, const CIRStaticParameters& staticParams);
 
         static const uint32_t kRayTypeCount = (uint32_t)PixelStatsRayType::Count;
         static const uint32_t kCIRTypeCount = (uint32_t)PixelStatsCIRType::Count;
@@ -189,6 +265,12 @@ namespace Falcor
         bool                                mEnableLogging = false;         ///< Enable printing to logfile.
         CollectionMode                      mCollectionMode = CollectionMode::Both;  ///< Data collection mode.
         uint32_t                            mMaxCIRPathsPerFrame = 1000000; ///< Maximum CIR paths to collect per frame.
+
+        // CIR export configuration
+        CIRExportFormat                     mCIRExportFormat = CIRExportFormat::CSV; ///< Selected CIR export format.
+
+        // Scene reference for CIR parameter computation
+        ref<Scene>                          mpScene;                        ///< Scene reference for static parameter calculation.
 
         // Runtime data
         bool                                mRunning = false;               ///< True inbetween begin() / end() calls.
