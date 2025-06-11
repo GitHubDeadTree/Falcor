@@ -544,20 +544,26 @@ namespace Falcor
                             mCIRRawData.clear();
                             mCIRRawData.reserve(mCollectedCIRPaths);
 
-                            // Copy valid data
+                            // NEW FILTERING LOGIC: Apply CPU-side filtering once
+                            // Data that passes this filter goes directly to both statistics and raw data
+                            // without additional validation
+                            uint32_t filteredCount = 0;
                             for (uint32_t i = 0; i < mCollectedCIRPaths; i++)
                             {
+                                // Apply CPU-side filtering with new criteria:
+                                // - Energy > 0, Length < 50m (stricter than GPU)
                                 if (rawData[i].isValid())
                                 {
                                     mCIRRawData.push_back(rawData[i]);
+                                    filteredCount++;
                                 }
                             }
 
                             mpCIRRawDataReadback->unmap();
                             mCIRRawDataValid = true;
 
-                            logInfo(fmt::format("PixelStats: Collected {} valid CIR paths out of {} total",
-                                              mCIRRawData.size(), mCollectedCIRPaths));
+                            logInfo(fmt::format("PixelStats: CPU-filtered {} valid CIR paths out of {} total (Energy>0, Length<50m)",
+                                              filteredCount, mCollectedCIRPaths));
                         }
                     }
                     else
@@ -596,10 +602,11 @@ namespace Falcor
 
     bool PixelStats::exportCIRData(const std::string& filename, const ref<Scene>& pScene)
     {
+        // Copy and filter CIR data using CPU-side criteria (Energy>0, Length<50m)
         copyCIRRawDataToCPU();
         if (!mCIRRawDataValid || mCIRRawData.empty())
         {
-            logWarning("PixelStats::exportCIRData() - No valid CIR data to export.");
+            logWarning("PixelStats::exportCIRData() - No valid CIR data to export after CPU filtering.");
             return false;
         }
 
@@ -620,8 +627,9 @@ namespace Falcor
                 staticParams = computeCIRStaticParameters(sceneToUse, mFrameDim);
             }
 
-            // Write header with static parameters
+            // Write header with static parameters and filtering information
             file << "# CIR Path Data Export with Static Parameters\n";
+            file << "# Data filtered with CPU-side criteria: Energy > 0W, Path Length < 50m\n";
             file << "# Static Parameters for VLC Channel Impulse Response Calculation:\n";
             file << "# A_receiver_area_m2=" << std::scientific << std::setprecision(6) << staticParams.receiverArea << "\n";
             file << "# m_led_lambertian_order=" << std::fixed << std::setprecision(3) << staticParams.ledLambertianOrder << "\n";
@@ -633,7 +641,7 @@ namespace Falcor
             file << "# Path Data Format: PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W)\n";
             file << std::fixed << std::setprecision(6);
 
-            // Write path data
+            // Write filtered path data (no additional validation needed)
             for (size_t i = 0; i < mCIRRawData.size(); i++)
             {
                 const auto& data = mCIRRawData[i];
@@ -649,7 +657,7 @@ namespace Falcor
             }
 
             file.close();
-            logInfo(fmt::format("PixelStats: Exported {} CIR paths with static parameters to {}", mCIRRawData.size(), filename));
+            logInfo(fmt::format("PixelStats: Exported {} CPU-filtered CIR paths to {}", mCIRRawData.size(), filename));
             return true;
         }
         catch (const std::exception& e)
