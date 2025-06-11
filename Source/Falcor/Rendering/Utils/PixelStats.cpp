@@ -112,7 +112,7 @@ namespace Falcor
                 mpStatsPathLength = mpDevice->createTexture2D(frameDim.x, frameDim.y, ResourceFormat::R32Uint, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
                 mpStatsPathVertexCount = mpDevice->createTexture2D(frameDim.x, frameDim.y, ResourceFormat::R32Uint, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
                 mpStatsVolumeLookupCount = mpDevice->createTexture2D(frameDim.x, frameDim.y, ResourceFormat::R32Uint, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-                
+
                 // Create CIR statistics buffers
                 for (uint32_t i = 0; i < kCIRTypeCount; i++)
                 {
@@ -135,7 +135,7 @@ namespace Falcor
             pRenderContext->clearUAV(mpStatsPathLength->getUAV().get(), uint4(0, 0, 0, 0));
             pRenderContext->clearUAV(mpStatsPathVertexCount->getUAV().get(), uint4(0, 0, 0, 0));
             pRenderContext->clearUAV(mpStatsVolumeLookupCount->getUAV().get(), uint4(0, 0, 0, 0));
-            
+
             // Clear CIR statistics buffers
             for (uint32_t i = 0; i < kCIRTypeCount; i++)
             {
@@ -180,7 +180,7 @@ namespace Falcor
             {
                 // Copy counter to readback buffer
                 pRenderContext->copyBufferRegion(mpCIRCounterReadback.get(), 0, mpCIRCounterBuffer.get(), 0, sizeof(uint32_t));
-                
+
                 // Copy raw data to readback buffer
                 pRenderContext->copyBufferRegion(mpCIRRawDataReadback.get(), 0, mpCIRRawDataBuffer.get(), 0, mMaxCIRPathsPerFrame * sizeof(CIRPathData));
             }
@@ -201,7 +201,7 @@ namespace Falcor
         if (mEnabled)
         {
             pProgram->addDefine("_PIXEL_STATS_ENABLED");
-            
+
             // Bind statistics buffers if statistics collection is enabled
             if (mCollectionMode == CollectionMode::Statistics || mCollectionMode == CollectionMode::Both)
             {
@@ -212,7 +212,7 @@ namespace Falcor
                 var["gStatsPathLength"] = mpStatsPathLength;
                 var["gStatsPathVertexCount"] = mpStatsPathVertexCount;
                 var["gStatsVolumeLookupCount"] = mpStatsVolumeLookupCount;
-                
+
                 // Bind CIR statistics buffers
                 for (uint32_t i = 0; i < kCIRTypeCount; i++)
                 {
@@ -220,12 +220,12 @@ namespace Falcor
                 }
                 var["gStatsCIRValidSamples"] = mpStatsCIRValidSamples;
             }
-            
+
             // Bind raw CIR data buffers if raw data collection is enabled
             if (mCollectionMode == CollectionMode::RawData || mCollectionMode == CollectionMode::Both)
             {
                 pProgram->addDefine("_PIXEL_STATS_RAW_DATA_ENABLED");
-                
+
                 // Create CIR buffers using PixelInspectorPass pattern - reflector-based creation
                 if (!mpCIRRawDataBuffer || mpCIRRawDataBuffer->getElementCount() < mMaxCIRPathsPerFrame)
                 {
@@ -236,13 +236,13 @@ namespace Falcor
                         MemoryType::DeviceLocal, nullptr, false
                     );
                     mpCIRRawDataReadback = mpDevice->createBuffer(
-                        mMaxCIRPathsPerFrame * sizeof(CIRPathData), 
-                        ResourceBindFlags::None, 
+                        mMaxCIRPathsPerFrame * sizeof(CIRPathData),
+                        ResourceBindFlags::None,
                         MemoryType::ReadBack
                     );
                     logInfo("Created CIR raw data buffer using reflector: {} elements", mMaxCIRPathsPerFrame);
                 }
-                
+
                 if (!mpCIRCounterBuffer)
                 {
                     mpCIRCounterBuffer = mpDevice->createBuffer(
@@ -257,12 +257,12 @@ namespace Falcor
                     );
                     logInfo("Created CIR counter buffer: {} bytes", sizeof(uint32_t));
                 }
-                
+
                 // Direct binding following PixelInspectorPass pattern - variables always exist now
                 var["gCIRRawDataBuffer"] = mpCIRRawDataBuffer;
                 var["gCIRCounterBuffer"] = mpCIRCounterBuffer;
                 var["PerFrameCB"]["gMaxCIRPaths"] = mMaxCIRPathsPerFrame;
-                
+
                 logDebug("Successfully bound CIR raw data buffers to shader variables");
             }
             else
@@ -287,47 +287,47 @@ namespace Falcor
         if (mEnabled)
         {
             widget.text("Collection Mode:");
-            
+
             // Create dropdown list for collection modes
             const Gui::DropdownList kCollectionModeList = {
                 {(uint32_t)CollectionMode::Statistics, "Statistics"},
                 {(uint32_t)CollectionMode::RawData, "Raw Data"},
                 {(uint32_t)CollectionMode::Both, "Both"}
             };
-            
+
             uint32_t mode = (uint32_t)mCollectionMode;
             if (widget.dropdown("Mode", kCollectionModeList, mode))
             {
                 mCollectionMode = (CollectionMode)mode;
             }
-            
+
             if (mCollectionMode == CollectionMode::RawData || mCollectionMode == CollectionMode::Both)
             {
                 widget.var("Max CIR paths per frame", mMaxCIRPathsPerFrame, 1000u, 10000000u);
-                
+
                 // CIR export format selection
                 const Gui::DropdownList kExportFormatList = {
                     {(uint32_t)CIRExportFormat::CSV, "CSV (Excel compatible)"},
                     {(uint32_t)CIRExportFormat::JSONL, "JSONL (JSON Lines)"},
                     {(uint32_t)CIRExportFormat::TXT, "TXT (Original format)"}
                 };
-                
+
                 uint32_t format = (uint32_t)mCIRExportFormat;
                 if (widget.dropdown("Export format", kExportFormatList, format))
                 {
                     mCIRExportFormat = (CIRExportFormat)format;
                 }
-                
+
                 // CIR raw data controls
                 copyCIRRawDataToCPU();
                 widget.text(fmt::format("Collected CIR paths: {}", mCollectedCIRPaths));
-                
+
                 if (widget.button("Export CIR Data (Auto-timestamped)"))
                 {
                     // Export with automatic timestamp and format selection
                     exportCIRDataWithTimestamp(mCIRExportFormat, mpScene);
                 }
-                
+
                 if (widget.button("Export CIR Data (Original)"))
                 {
                     // Legacy export for compatibility
@@ -362,7 +362,7 @@ namespace Falcor
                 << "ClosestHit rays: " << mStats.closestHitRays << "\n"
                 << "Volume lookups: " << mStats.volumeLookups << "\n"
                 << "Volume lookups (avg): " << mStats.avgVolumeLookups << "\n";
-            
+
             // Add CIR statistics to display
             if (mStats.validCIRSamples > 0)
             {
@@ -488,12 +488,12 @@ namespace Falcor
                 // Process CIR statistics
                 const uint32_t validCIRSamples = result[kRayTypeCount + 3 + kCIRTypeCount].x;
                 mStats.validCIRSamples = validCIRSamples;
-                
+
                 if (validCIRSamples > 0)
                 {
                     // Cast to float4 for CIR data which are stored as floats
                     const float4* cirResult = reinterpret_cast<const float4*>(result);
-                    
+
                     mStats.avgCIRPathLength = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::PathLength].x / validCIRSamples;
                     mStats.avgCIREmissionAngle = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::EmissionAngle].x / validCIRSamples;
                     mStats.avgCIRReceptionAngle = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::ReceptionAngle].x / validCIRSamples;
@@ -525,8 +525,8 @@ namespace Falcor
         {
             // Wait for signal.
             mpFence->wait();
-            
-            try 
+
+            try
             {
                 // Map the counter buffer to get actual path count
                 const uint32_t* counterData = static_cast<const uint32_t*>(mpCIRCounterReadback->map());
@@ -534,7 +534,7 @@ namespace Falcor
                 {
                     mCollectedCIRPaths = std::min(*counterData, mMaxCIRPathsPerFrame);
                     mpCIRCounterReadback->unmap();
-                    
+
                     if (mCollectedCIRPaths > 0)
                     {
                         // Map the raw data buffer
@@ -543,7 +543,7 @@ namespace Falcor
                         {
                             mCIRRawData.clear();
                             mCIRRawData.reserve(mCollectedCIRPaths);
-                            
+
                             // Copy valid data
                             for (uint32_t i = 0; i < mCollectedCIRPaths; i++)
                             {
@@ -552,11 +552,11 @@ namespace Falcor
                                     mCIRRawData.push_back(rawData[i]);
                                 }
                             }
-                            
+
                             mpCIRRawDataReadback->unmap();
                             mCIRRawDataValid = true;
-                            
-                            logInfo(fmt::format("PixelStats: Collected {} valid CIR paths out of {} total", 
+
+                            logInfo(fmt::format("PixelStats: Collected {} valid CIR paths out of {} total",
                                               mCIRRawData.size(), mCollectedCIRPaths));
                         }
                     }
@@ -637,8 +637,8 @@ namespace Falcor
             for (size_t i = 0; i < mCIRRawData.size(); i++)
             {
                 const auto& data = mCIRRawData[i];
-                file << i << "," 
-                     << data.pixelX << "," 
+                file << i << ","
+                     << data.pixelX << ","
                      << data.pixelY << ","
                      << data.pathLength << ","
                      << data.emissionAngle << ","
@@ -672,21 +672,21 @@ namespace Falcor
 
             // Calculate FOV from focal length and frame height
             float fovY = focalLengthToFovY(focalLength, frameHeight); // radians
-          
+
             // Calculate physical sensor dimensions in meters
             float sensorHeightM = frameHeight * 1e-3f; // Convert mm to meters
             float sensorWidthM = sensorHeightM * aspectRatio;
-          
+
             // Calculate total sensor area
             float totalSensorArea = sensorWidthM * sensorHeightM; // m²
-          
+
             // Calculate pixel area (total sensor area divided by number of pixels)
             uint32_t totalPixels = frameDim.x * frameDim.y;
             float pixelArea = totalSensorArea / totalPixels;
-          
+
             logInfo("PixelStats: Computed receiver area = {:.6e} m² (total sensor: {:.6e} m², pixels: {})",
                    pixelArea, totalSensorArea, totalPixels);
-                 
+
             return pixelArea;
         }
         catch (const std::exception& e)
@@ -716,7 +716,7 @@ namespace Falcor
                 {
                     const auto* pPointLight = static_cast<const PointLight*>(pLight.get());
                     float openingAngle = pPointLight->getOpeningAngle(); // radians
-                  
+
                     // Calculate Lambertian order using m = -ln(2)/ln(cos(θ_1/2))
                     if (openingAngle >= (float)M_PI)
                     {
@@ -728,7 +728,7 @@ namespace Falcor
                     {
                         float halfAngle = openingAngle * 0.5f;
                         float cosHalfAngle = std::cos(halfAngle);
-                      
+
                         if (cosHalfAngle > 0.0f && cosHalfAngle < 1.0f)
                         {
                             float lambertianOrder = -std::log(2.0f) / std::log(cosHalfAngle);
@@ -739,7 +739,7 @@ namespace Falcor
                     }
                 }
             }
-          
+
             logWarning("PixelStats: No suitable point light found, using default Lambertian order = 1.0");
             return 1.0f;
         }
@@ -758,13 +758,13 @@ namespace Falcor
         {
             float focalLength = pCamera->getFocalLength(); // mm
             float frameHeight = pCamera->getFrameHeight(); // mm
-          
+
             // Calculate vertical FOV
             float fovY = focalLengthToFovY(focalLength, frameHeight); // radians
-          
+
             logInfo("PixelStats: Computed receiver FOV = {:.3f} rad ({:.1f} degrees)",
                    fovY, fovY * 180.0f / (float)M_PI);
-                 
+
             return fovY;
         }
         catch (const std::exception& e)
@@ -777,7 +777,7 @@ namespace Falcor
     CIRStaticParameters PixelStats::computeCIRStaticParameters(const ref<Scene>& pScene, const uint2& frameDim)
     {
         CIRStaticParameters params;
-      
+
         if (!pScene)
         {
             logWarning("PixelStats: No scene provided, using default CIR static parameters");
@@ -788,12 +788,12 @@ namespace Falcor
         {
             // Get camera for receiver calculations
             ref<Camera> pCamera = pScene->getCamera();
-          
+
             if (pCamera)
             {
                 // 1. Compute receiver effective area (A)
                 params.receiverArea = computeReceiverArea(pCamera, frameDim);
-              
+
                 // 4. Compute receiver field of view (FOV)
                 params.receiverFOV = computeReceiverFOV(pCamera);
             }
@@ -803,19 +803,19 @@ namespace Falcor
                 params.receiverArea = 1e-4f; // 1 cm²
                 params.receiverFOV = (float)M_PI; // 180 degrees
             }
-          
+
             // 2. Compute LED Lambertian order (m)
             params.ledLambertianOrder = computeLEDLambertianOrder(pScene);
-          
+
             // 3. Light speed (c) - physical constant
             params.lightSpeed = 3.0e8f; // m/s
-          
+
             // 5. Optical filter transmittance (T_s) - set to 1.0 (no filter)
             params.opticalFilterGain = 1.0f;
-          
+
             // 6. Optical concentration gain (g) - set to 1.0 (no concentration)
             params.opticalConcentration = 1.0f;
-          
+
             logInfo("PixelStats: Computed CIR static parameters:");
             logInfo("  Receiver area: {:.6e} m²", params.receiverArea);
             logInfo("  LED Lambertian order: {:.3f}", params.ledLambertianOrder);
@@ -823,7 +823,7 @@ namespace Falcor
             logInfo("  Receiver FOV: {:.3f} rad", params.receiverFOV);
             logInfo("  Optical filter gain: {:.1f}", params.opticalFilterGain);
             logInfo("  Optical concentration: {:.1f}", params.opticalConcentration);
-          
+
             return params;
         }
         catch (const std::exception& e)
@@ -839,12 +839,12 @@ namespace Falcor
         auto now = std::chrono::system_clock::now();
         auto time_t_now = std::chrono::system_clock::to_time_t(now);
         auto tm_now = *std::localtime(&time_t_now);
-        
+
         // Generate timestamp string
         std::ostringstream oss;
         oss << std::put_time(&tm_now, "%Y%m%d_%H%M%S");
         std::string timestamp = oss.str();
-        
+
         // Get file extension based on format
         std::string extension;
         switch (format)
@@ -860,7 +860,7 @@ namespace Falcor
                 extension = ".txt";
                 break;
         }
-        
+
         return "CIRData_" + timestamp + extension;
     }
 
@@ -896,7 +896,7 @@ namespace Falcor
         {
             return false;
         }
-        
+
         std::string filename = "CIRData/" + generateTimestampedFilename(format);
         return exportCIRDataWithFormat(filename, format, pScene);
     }
@@ -937,13 +937,13 @@ namespace Falcor
 
             if (success)
             {
-                logInfo("PixelStats: Exported {} CIR paths in {} format to {}", 
-                       mCIRRawData.size(), 
-                       format == CIRExportFormat::CSV ? "CSV" : 
+                logInfo("PixelStats: Exported {} CIR paths in {} format to {}",
+                       mCIRRawData.size(),
+                       format == CIRExportFormat::CSV ? "CSV" :
                        format == CIRExportFormat::JSONL ? "JSONL" : "TXT",
                        filename);
             }
-            
+
             return success;
         }
         catch (const std::exception& e)
@@ -972,17 +972,17 @@ namespace Falcor
         file << "# T_s_optical_filter_gain," << std::fixed << std::setprecision(1) << staticParams.opticalFilterGain << "\n";
         file << "# g_optical_concentration," << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
         file << "#\n";
-        
+
         // Write CSV header
         file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W\n";
-        
+
         // Write data rows
         file << std::fixed << std::setprecision(6);
         for (size_t i = 0; i < mCIRRawData.size(); i++)
         {
             const auto& data = mCIRRawData[i];
-            file << i << "," 
-                 << data.pixelX << "," 
+            file << i << ","
+                 << data.pixelX << ","
                  << data.pixelY << ","
                  << data.pathLength << ","
                  << data.emissionAngle << ","
@@ -1063,8 +1063,8 @@ namespace Falcor
         for (size_t i = 0; i < mCIRRawData.size(); i++)
         {
             const auto& data = mCIRRawData[i];
-            file << i << "," 
-                 << data.pixelX << "," 
+            file << i << ","
+                 << data.pixelX << ","
                  << data.pixelY << ","
                  << data.pathLength << ","
                  << data.emissionAngle << ","

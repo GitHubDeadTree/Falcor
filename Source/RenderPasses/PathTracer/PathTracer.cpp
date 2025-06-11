@@ -111,7 +111,7 @@ namespace
         { kOutputNRDDeltaTransmissionPathLength,            "",     "Output delta transmission path length", true /* optional */, ResourceFormat::R16Float },
         { kOutputNRDDeltaTransmissionPosW,                  "",     "Output delta transmission position", true /* optional */, ResourceFormat::RGBA32Float },
         { kOutputNRDResidualRadianceHitDist,                "",     "Output residual color (linear) and hit distance", true /* optional */, ResourceFormat::RGBA32Float },
-        
+
         // === CIR data output channel ===
         { kOutputCIRData,                                   "",     "CIR path data for VLC analysis", true /* optional */, ResourceFormat::Unknown },
     };
@@ -395,9 +395,9 @@ RenderPassReflection PathTracer::reflect(const CompileData& compileData)
 
     addRenderPassInputs(reflector, kInputChannels);
     addRenderPassOutputs(reflector, kOutputChannels, ResourceBindFlags::UnorderedAccess, sz);
-    
+
     // === CIR data buffer output reflection ===
-    try 
+    try
     {
         const uint32_t maxSamples = sz.x * sz.y * mStaticParams.samplesPerPixel;
         const uint32_t cirDataSize = maxSamples * 36; // 36 bytes = size of CIRPathData structure
@@ -410,7 +410,7 @@ RenderPassReflection PathTracer::reflect(const CompileData& compileData)
     {
         logError("PathTracer: Exception adding CIR output reflection: {}", e.what());
     }
-    
+
     return reflector;
 }
 
