@@ -53,8 +53,8 @@ struct CIRPathData
     */
     bool isValid()
     {
-        // Path length validation: modified range for VLC analysis [1, 200] meters
-        if (pathLength < 1.0f || pathLength > 200.0f) return false;
+        // Path length validation: modified range for VLC analysis [1, 75] meters
+        if (pathLength < 1.0f || pathLength > 75.0f) return false;
 
         // Angle validation: must be within [0, π]
         if (emissionAngle < 0.0f || emissionAngle > 3.14159f) return false;
@@ -77,32 +77,22 @@ struct CIRPathData
         return true;
     }
 
-    /** Sanitize CIR data by clamping values to valid ranges.
-        MODIFIED: Adjusted sanitization to preserve zero power values.
-        ADDED: Special handling for zero emission angle.
-        This method ensures all parameters are within physically reasonable bounds.
+    /** Sanitize CIR data by fixing only critical data integrity issues.
+        MODIFIED: Removed path length clamping to allow proper filtering of invalid paths.
+        This method only fixes NaN/infinity values but preserves original data for filtering.
     */
     [mutating] void sanitize()
     {
-        // Clamp path length to modified range [1, 200] meters
-        pathLength = clamp(pathLength, 1.0f, 200.0f);
-
-        // Clamp angles to [0, π] range
-        emissionAngle = clamp(emissionAngle, 0.0f, 3.14159f);
-        receptionAngle = clamp(receptionAngle, 0.0f, 3.14159f);
-
-        // Clamp reflectance product to [0, 1] range
-        reflectanceProduct = clamp(reflectanceProduct, 0.0f, 1.0f);
-
-        // MODIFIED: Allow zero emitted power, only ensure non-negative
-        emittedPower = max(emittedPower, 0.0f);
-
-        // Handle NaN and infinity values with reasonable defaults
+        // Only fix NaN and infinity values with reasonable defaults
+        // DO NOT clamp valid values - let isValid() handle filtering
         if (isnan(pathLength) || isinf(pathLength)) pathLength = 1.0f;
-        if (isnan(emissionAngle) || isinf(emissionAngle)) emissionAngle = 0.785398f; // 45 degrees instead of 0
+        if (isnan(emissionAngle) || isinf(emissionAngle)) emissionAngle = 0.785398f; // 45 degrees
         if (isnan(receptionAngle) || isinf(receptionAngle)) receptionAngle = 0.0f;
         if (isnan(reflectanceProduct) || isinf(reflectanceProduct)) reflectanceProduct = 0.5f;
-        if (isnan(emittedPower) || isinf(emittedPower)) emittedPower = 0.0f; // Allow zero power
+        if (isnan(emittedPower) || isinf(emittedPower)) emittedPower = 0.0f;
+
+        // Only ensure emitted power is non-negative (fix negative values only)
+        if (emittedPower < 0.0f) emittedPower = 0.0f;
 
         // SPECIAL HANDLING: Fix zero emission angle issue in file output
         // If emission angle is exactly zero, set it to 1.1 radians (approximately 63 degrees)

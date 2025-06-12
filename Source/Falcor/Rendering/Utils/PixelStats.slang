@@ -196,17 +196,16 @@ void logCIRRawPath(CIRPathData pathData)
 #endif
 }
 
-// Unified CIR logging function - MODIFIED: Removed validation, direct data logging
+// Unified CIR logging function - MODIFIED: Added path filtering to remove invalid paths
 void logCIRPathComplete(CIRPathData pathData)
 {
-    // NEW LOGIC: GPU-side does basic sanitization only,
-    // CPU-side will handle final filtering with stricter criteria
-
     // Apply basic sanitization to handle NaN/infinity values
     CIRPathData sanitizedData = validateAndSanitizeCIRData(pathData);
 
-    // Direct logging to both systems without additional validation
-    // CPU-side filtering will apply stricter criteria (Energy>0, Length<50m)
+    // Filter out invalid paths - this will remove paths outside [1, 50]m range
+    if (!sanitizedData.isValid()) return;
+
+    // Only log valid paths that pass all validation criteria
     logCIRStatisticsInternal(sanitizedData);
     logCIRRawPathInternal(sanitizedData);
 }
