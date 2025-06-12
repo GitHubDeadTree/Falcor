@@ -83,7 +83,7 @@ void setNRDSampleHitDist(NRDBuffers outputNRD, const PathState path, const uint 
 {
     if (path.getVertexIndex() == 2)
     {
-        outputNRD.sampleHitDist[outSampleIdx] = float(path.sceneLength);
+        outputNRD.sampleHitDist[outSampleIdx] = path.sceneLength;
     }
 }
 

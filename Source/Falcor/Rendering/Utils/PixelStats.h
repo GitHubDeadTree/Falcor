@@ -64,14 +64,14 @@ namespace Falcor
 
         bool isValid() const
         {
-            // NEW CPU-side filtering criteria:
-            // 1. Path length: must be > 0 and < 50m (instead of 1000m)
+            // CPU-side filtering criteria updated:
+            // 1. Path length: modified range [1, 200] meters for VLC analysis
             // 2. Energy (emitted power): must be > 0 (stricter than GPU)
             // 3. Angles: within [0, π]
             // 4. Reflectance: within [0, 1]
             // 5. No NaN/infinity checks (handled by GPU)
 
-            return pathLength > 0.0f && pathLength < 50.0f &&
+            return pathLength >= 1.0f && pathLength <= 200.0f &&
                    emissionAngle >= 0.0f && emissionAngle <= 3.14159f &&
                    receptionAngle >= 0.0f && receptionAngle <= 3.14159f &&
                    reflectanceProduct >= 0.0f && reflectanceProduct <= 1.0f &&

@@ -53,8 +53,8 @@ struct CIRPathData
     */
     bool isValid()
     {
-        // Path length validation: reasonable range for indoor VLC
-        if (pathLength < 0.01f || pathLength > 1000.0f) return false;
+        // Path length validation: modified range for VLC analysis [1, 200] meters
+        if (pathLength < 1.0f || pathLength > 200.0f) return false;
 
         // Angle validation: must be within [0, π]
         if (emissionAngle < 0.0f || emissionAngle > 3.14159f) return false;
@@ -84,8 +84,8 @@ struct CIRPathData
     */
     [mutating] void sanitize()
     {
-        // Clamp path length to reasonable range
-        pathLength = clamp(pathLength, 0.01f, 1000.0f);
+        // Clamp path length to modified range [1, 200] meters
+        pathLength = clamp(pathLength, 1.0f, 200.0f);
 
         // Clamp angles to [0, π] range
         emissionAngle = clamp(emissionAngle, 0.0f, 3.14159f);
