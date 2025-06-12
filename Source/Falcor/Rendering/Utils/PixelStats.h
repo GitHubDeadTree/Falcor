@@ -61,14 +61,21 @@ namespace Falcor
         uint32_t pixelX;
         uint32_t pixelY;
         uint32_t pathIndex;
-        
+
         bool isValid() const
         {
-            return pathLength > 0.01f && pathLength < 1000.0f &&
+            // CPU-side filtering criteria updated:
+            // 1. Path length: modified range [1, 200] meters for VLC analysis
+            // 2. Energy (emitted power): must be > 0 (stricter than GPU)
+            // 3. Angles: within [0, π]
+            // 4. Reflectance: within [0, 1]
+            // 5. No NaN/infinity checks (handled by GPU)
+
+            return pathLength >= 1.0f && pathLength <= 200.0f &&
                    emissionAngle >= 0.0f && emissionAngle <= 3.14159f &&
                    receptionAngle >= 0.0f && receptionAngle <= 3.14159f &&
                    reflectanceProduct >= 0.0f && reflectanceProduct <= 1.0f &&
-                   emittedPower > 0.0f;
+                   emittedPower > 0.0f;  // Must be positive (stricter than GPU)
         }
     };
 
@@ -89,7 +96,7 @@ namespace Falcor
         float receiverFOV;          // FOV: Receiver field of view (radians)
         float opticalFilterGain;    // T_s(θ): Optical filter transmittance
         float opticalConcentration; // g(θ): Optical concentration gain
-      
+
         CIRStaticParameters()
             : receiverArea(1e-4f)
             , ledLambertianOrder(1.0f)
@@ -105,7 +112,7 @@ namespace Falcor
         Per-pixel stats are logged in buffers on the GPU, which are immediately ready for consumption
         after end() is called. These stats are summarized in a reduction pass, which are
         available in getStats() or printStats() after async readback to the CPU.
-        
+
         Extended to support both statistical aggregation and raw CIR path data collection.
     */
     class FALCOR_API PixelStats
@@ -126,7 +133,7 @@ namespace Falcor
             float    avgPathLength = 0.f;
             float    avgPathVertices = 0.f;
             float    avgVolumeLookups = 0.f;
-            
+
             // CIR statistics
             uint32_t validCIRSamples = 0;
             float    avgCIRPathLength = 0.f;
@@ -148,7 +155,7 @@ namespace Falcor
         // Collection mode configuration
         void setCollectionMode(CollectionMode mode) { mCollectionMode = mode; }
         CollectionMode getCollectionMode() const { return mCollectionMode; }
-        
+
         // CIR raw data configuration
         void setMaxCIRPathsPerFrame(uint32_t maxPaths) { mMaxCIRPathsPerFrame = maxPaths; }
         uint32_t getMaxCIRPathsPerFrame() const { return mMaxCIRPathsPerFrame; }
@@ -197,12 +204,12 @@ namespace Falcor
             \return True if data is available, false otherwise.
         */
         bool getCIRRawData(std::vector<CIRPathData>& outData);
-        
+
         /** Get the number of CIR paths collected in the last frame.
             \return Number of paths collected, or 0 if no data available.
         */
         uint32_t getCIRPathCount();
-        
+
         /** Export CIR raw data to a file with static parameters.
             \param[in] filename Output filename for the CIR data.
             \param[in] pScene Scene pointer for parameter calculation (optional, will use stored scene if null).

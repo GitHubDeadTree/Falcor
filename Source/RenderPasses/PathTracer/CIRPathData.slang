@@ -31,7 +31,7 @@
     needed for calculating the Channel Impulse Response in visible light communication systems.
     Each path represents light traveling from an LED transmitter through possible reflections
     to a photodiode receiver.
-    
+
     Note: This structure must match exactly with the corresponding CPU structure
     for proper GPU-CPU data transfer.
 */
@@ -53,27 +53,27 @@ struct CIRPathData
     */
     bool isValid()
     {
-        // Path length validation: reasonable range for indoor VLC
-        if (pathLength < 0.01f || pathLength > 1000.0f) return false;
-        
+        // Path length validation: modified range for VLC analysis [1, 200] meters
+        if (pathLength < 1.0f || pathLength > 200.0f) return false;
+
         // Angle validation: must be within [0, π]
         if (emissionAngle < 0.0f || emissionAngle > 3.14159f) return false;
         if (receptionAngle < 0.0f || receptionAngle > 3.14159f) return false;
-        
+
         // Reflectance product validation: must be within [0, 1]
         if (reflectanceProduct < 0.0f || reflectanceProduct > 1.0f) return false;
-        
+
         // Emitted power validation: RELAXED - allow zero and small positive values
         // This preserves valid angle data even when power calculation has issues
         if (emittedPower < 0.0f || emittedPower > 10000.0f) return false;
-        
+
         // Check for NaN and infinity
         if (isnan(pathLength) || isinf(pathLength)) return false;
         if (isnan(emissionAngle) || isinf(emissionAngle)) return false;
         if (isnan(receptionAngle) || isinf(receptionAngle)) return false;
         if (isnan(reflectanceProduct) || isinf(reflectanceProduct)) return false;
         if (isnan(emittedPower) || isinf(emittedPower)) return false;
-        
+
         return true;
     }
 
@@ -84,26 +84,26 @@ struct CIRPathData
     */
     [mutating] void sanitize()
     {
-        // Clamp path length to reasonable range
-        pathLength = clamp(pathLength, 0.01f, 1000.0f);
-        
+        // Clamp path length to modified range [1, 200] meters
+        pathLength = clamp(pathLength, 1.0f, 200.0f);
+
         // Clamp angles to [0, π] range
         emissionAngle = clamp(emissionAngle, 0.0f, 3.14159f);
         receptionAngle = clamp(receptionAngle, 0.0f, 3.14159f);
-        
+
         // Clamp reflectance product to [0, 1] range
         reflectanceProduct = clamp(reflectanceProduct, 0.0f, 1.0f);
-        
+
         // MODIFIED: Allow zero emitted power, only ensure non-negative
         emittedPower = max(emittedPower, 0.0f);
-        
+
         // Handle NaN and infinity values with reasonable defaults
         if (isnan(pathLength) || isinf(pathLength)) pathLength = 1.0f;
         if (isnan(emissionAngle) || isinf(emissionAngle)) emissionAngle = 0.785398f; // 45 degrees instead of 0
         if (isnan(receptionAngle) || isinf(receptionAngle)) receptionAngle = 0.0f;
         if (isnan(reflectanceProduct) || isinf(reflectanceProduct)) reflectanceProduct = 0.5f;
         if (isnan(emittedPower) || isinf(emittedPower)) emittedPower = 0.0f; // Allow zero power
-        
+
         // SPECIAL HANDLING: Fix zero emission angle issue in file output
         // If emission angle is exactly zero, set it to 1.1 radians (approximately 63 degrees)
         if (emissionAngle == 0.0f)
@@ -111,4 +111,4 @@ struct CIRPathData
             emissionAngle = 1.1f; // Distinctive value for debugging and analysis
         }
     }
-}; 
+};

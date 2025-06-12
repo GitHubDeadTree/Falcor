@@ -424,18 +424,49 @@ struct PathTracer
                               bsdfSample.isLobe(LobeType::DiffuseReflection) ||
                               bsdfSample.isLobe(LobeType::SpecularReflection)))
         {
-            // Calculate combined reflectance from diffuse and specular components
-            float3 totalAlbedo = bsdfProperties.diffuseReflectionAlbedo + bsdfProperties.specularReflectionAlbedo;
-            float reflectance = luminance(totalAlbedo);
+            // Calculate separate diffuse and specular components
+            float3 diffuseAlbedo = bsdfProperties.diffuseReflectionAlbedo;
+            float3 specularAlbedo = bsdfProperties.specularReflectionAlbedo;
+
+            float diffuseReflectance = dot(diffuseAlbedo, float3(0.333f, 0.333f, 0.333f));
+            float specularReflectance = dot(specularAlbedo, float3(0.333f, 0.333f, 0.333f));
+
+            // Use combined diffuse and specular components for total reflectance
+            float3 totalAlbedo = diffuseAlbedo + specularAlbedo;
+            // Use equal-weight averaging instead of luminance for more physically accurate VLC calculations
+            float reflectance = dot(totalAlbedo, float3(0.333f, 0.333f, 0.333f));
+
+            // DEBUG: Add signal values to identify different scenarios
+            if (diffuseReflectance <= 0.001f && specularReflectance <= 0.001f)
+            {
+                // DEBUG: No reflectance at all - signal value 0.11111 (1/9)
+                reflectance = 0.11111f;
+            }
+            else if (diffuseReflectance <= 0.001f && specularReflectance > 0.001f)
+            {
+                // DEBUG: Only specular, no diffuse - signal value 0.16666 (1/6)
+                reflectance = 0.16666f;
+            }
+            else if (specularReflectance <= 0.001f && diffuseReflectance > 0.001f)
+            {
+                // DEBUG: Only diffuse, no specular - signal value 0.33333 (1/3)
+                reflectance = 0.33333f;
+            }
+            else if (reflectance > 0.9f)
+            {
+                // DEBUG: Very high total reflectance - signal value 0.99999 (nearly 1)
+                reflectance = 0.99999f;
+            }
+            else if (reflectance < 0.05f)
+            {
+                // DEBUG: Very low total reflectance - signal value 0.05555 (1/18)
+                reflectance = 0.05555f;
+            }
+            // else: use normal combined reflectance value
 
             // Ensure reflectance is within valid range [0,1] for VLC calculations
             reflectance = clamp(reflectance, 0.0f, 1.0f);
-
-            // Apply reflectance only if valid
-            if (reflectance > 0.0f && !isnan(reflectance) && !isinf(reflectance))
-            {
-                path.updateCIRReflectance(reflectance);
-            }
+            path.updateCIRReflectance(reflectance);
         }
     }
 
@@ -1335,6 +1366,9 @@ struct PathTracer
         // This primarily affects pathways with surface interactions
         if (!isPrimaryHit && vertexIndex > 1)
         {
+            // COMMENTED OUT: This was causing double accumulation of reflectance values
+            // The high-level function updateCIRWithMaterialReflectance() already handles this
+            /*
             // Calculate combined reflectance from diffuse and specular components
             float3 totalAlbedo = bsdfProperties.diffuseReflectionAlbedo + bsdfProperties.specularReflectionAlbedo;
             float avgReflectance = dot(totalAlbedo, float3(0.33333f, 0.33333f, 0.33333f));
@@ -1344,6 +1378,7 @@ struct PathTracer
             {
                 path.updateCIRReflectance(avgReflectance);
             }
+            */
         }
     }
 

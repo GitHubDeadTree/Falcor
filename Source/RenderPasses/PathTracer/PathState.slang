@@ -88,7 +88,7 @@ struct PathState
     uint        flagsAndVertexIndex;    ///< Higher kPathFlagsBitCount bits: Flags indicating the current status. This can be multiple PathFlags flags OR'ed together.
                                         ///< Lower kVertexIndexBitCount bits: Current vertex index (0 = camera, 1 = primary hit, 2 = secondary hit, etc.).
     uint16_t    rejectedHits;           ///< Number of false intersections rejected along the path. This is used as a safeguard to avoid deadlock in pathological cases.
-    float16_t   sceneLength;            ///< Path length in scene units (0.f at primary hit).
+    float       sceneLength;            ///< Path length in scene units (0.f at primary hit). Changed from float16_t to float for better precision.
     uint        bounceCounters;         ///< Packed counters for different types of bounces (see BounceType).
 
     // Scatter ray
@@ -320,7 +320,7 @@ struct PathState
         CIRPathData cir;
 
         // ✅ Reuse existing fields (7/9 parameters - 77.8% reuse rate)
-        cir.pathLength = float(sceneLength);                                    // Reuse existing field
+        cir.pathLength = sceneLength;                                           // Direct assignment, no conversion needed
         cir.reflectionCount = getBounces(BounceType::Diffuse) +
                              getBounces(BounceType::Specular);                  // Reuse existing field
         cir.emittedPower = getLightIntensity();                                 // Reuse existing field

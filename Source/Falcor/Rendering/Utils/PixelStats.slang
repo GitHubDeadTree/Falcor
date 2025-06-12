@@ -97,7 +97,8 @@ void logVolumeLookup()
 #endif
 }
 
-// CIR statistics logging functions - MODIFIED: Removed individual validation
+// CIR statistics logging functions - MODIFIED: No validation, direct accumulation
+// GPU-side accumulates all sanitized data, CPU-side applies final filtering
 void logCIRPathLength(float pathLength)
 {
 #ifdef _PIXEL_STATS_ENABLED
@@ -141,14 +142,14 @@ void logCIRReflectionCount(uint count)
 #endif
 }
 
-// Internal function for raw CIR data collection - no validation
+// Internal function for raw CIR data collection - MODIFIED: No validation, direct storage
 void logCIRRawPathInternal(CIRPathData pathData)
 {
 #ifdef _PIXEL_STATS_RAW_DATA_ENABLED
     // Atomically increment the counter to get a unique index
     uint index = 0;
     gCIRCounterBuffer.InterlockedAdd(0, 1, index);
-    
+
     // Check if we have space in the buffer
     if (index < gMaxCIRPaths)
     {
@@ -157,7 +158,7 @@ void logCIRRawPathInternal(CIRPathData pathData)
 #endif
 }
 
-// Internal function for statistics collection - no validation
+// Internal function for statistics collection - MODIFIED: No validation, direct accumulation
 void logCIRStatisticsInternal(CIRPathData pathData)
 {
 #ifdef _PIXEL_STATS_ENABLED
@@ -175,10 +176,10 @@ CIRPathData validateAndSanitizeCIRData(CIRPathData pathData)
 {
     // Create a copy for modification
     CIRPathData validatedData = pathData;
-    
+
     // First sanitize the data to fix invalid values
     validatedData.sanitize();
-    
+
     // Return the sanitized data
     return validatedData;
 }
@@ -190,25 +191,22 @@ void logCIRRawPath(CIRPathData pathData)
     // Maintain legacy behavior with validation for compatibility
     pathData.sanitize();
     if (!pathData.isValid()) return;
-    
+
     logCIRRawPathInternal(pathData);
 #endif
 }
 
-// Unified CIR logging function with single validation point
+// Unified CIR logging function - MODIFIED: Removed validation, direct data logging
 void logCIRPathComplete(CIRPathData pathData)
 {
-    // UNIFIED VALIDATION: Single point of validation for both statistics and raw data
-    CIRPathData validatedData = validateAndSanitizeCIRData(pathData);
-    
-    // Check if the sanitized data is valid
-    if (!validatedData.isValid()) 
-    {
-        // Data is invalid even after sanitization, skip logging
-        return;
-    }
-    
-    // Log to both systems using the same validated data
-    logCIRStatisticsInternal(validatedData);
-    logCIRRawPathInternal(validatedData);
+    // NEW LOGIC: GPU-side does basic sanitization only,
+    // CPU-side will handle final filtering with stricter criteria
+
+    // Apply basic sanitization to handle NaN/infinity values
+    CIRPathData sanitizedData = validateAndSanitizeCIRData(pathData);
+
+    // Direct logging to both systems without additional validation
+    // CPU-side filtering will apply stricter criteria (Energy>0, Length<50m)
+    logCIRStatisticsInternal(sanitizedData);
+    logCIRRawPathInternal(sanitizedData);
 }

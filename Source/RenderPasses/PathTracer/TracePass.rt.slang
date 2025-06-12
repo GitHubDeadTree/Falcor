@@ -74,7 +74,7 @@ struct PathPayload
         p.packed[1].w = path.flagsAndVertexIndex;
 
         p.packed[2].xyz = asuint(path.normal);
-        p.packed[2].w = uint(path.rejectedHits) | ((f32tof16(path.sceneLength) & 0xffff) << 16);
+        p.packed[2].w = uint(path.rejectedHits) | ((f32tof16(path.sceneLength) & 0xffff) << 16); // Keep packing for serialization
 
         p.packed[3].xyz = asuint(path.thp);
         p.packed[3].w = path.bounceCounters;
@@ -94,17 +94,17 @@ struct PathPayload
         uint emissionAngle16 = f32tof16(path.cirEmissionAngle);
         uint receptionAngle16 = f32tof16(path.cirReceptionAngle);
         uint reflectanceProduct16 = f32tof16(path.cirReflectanceProduct);
-        
+
         // Efficient bit allocation for CIR data
         uint emissionAngle10 = (emissionAngle16 >> 6) & 0x3FF;      // 10 bits for angle [0-π]
-        uint receptionAngle10 = (receptionAngle16 >> 6) & 0x3FF;    // 10 bits for angle [0-π]  
+        uint receptionAngle10 = (receptionAngle16 >> 6) & 0x3FF;    // 10 bits for angle [0-π]
         uint reflectanceProduct8 = (reflectanceProduct16 >> 8) & 0xFF; // 8 bits for reflectance [0-1]
-        
+
         // Pack initialDir Y and Z components into remaining 4 bits (coarse precision)
         uint initialDirY4 = (f32tof16(path.initialDir.y) >> 12) & 0xF;  // 4 bits coarse
-        
-        p.packed_cir = emissionAngle10 | 
-                       (receptionAngle10 << 10) | 
+
+        p.packed_cir = emissionAngle10 |
+                       (receptionAngle10 << 10) |
                        (reflectanceProduct8 << 20) |
                        (initialDirY4 << 28);
 
@@ -128,7 +128,7 @@ struct PathPayload
 
         path.normal = asfloat(p.packed[2].xyz);
         path.rejectedHits = uint16_t(p.packed[2].w & 0xffff);
-        path.sceneLength = float16_t(f16tof32(p.packed[2].w >> 16));
+        path.sceneLength = f16tof32(p.packed[2].w >> 16); // Direct assignment to float
 
         path.thp = asfloat(p.packed[3].xyz);
         path.bounceCounters = p.packed[3].w;
@@ -147,18 +147,18 @@ struct PathPayload
         uint receptionAngle10 = (p.packed_cir >> 10) & 0x3FF;          // Next 10 bits
         uint reflectanceProduct8 = (p.packed_cir >> 20) & 0xFF;        // Next 8 bits
         uint initialDirY4 = (p.packed_cir >> 28) & 0xF;                // Upper 4 bits
-        
+
         // Reconstruct 16-bit values by shifting back and adding appropriate padding
         uint emissionAngle16 = (emissionAngle10 << 6);         // Restore to 16-bit range
         uint receptionAngle16 = (receptionAngle10 << 6);       // Restore to 16-bit range
         uint reflectanceProduct16 = (reflectanceProduct8 << 8); // Restore to 16-bit range
         uint initialDirY16 = (initialDirY4 << 12);             // Restore to 16-bit range (coarse)
-        
+
         path.cirEmissionAngle = f16tof32(emissionAngle16);
         path.cirReceptionAngle = f16tof32(receptionAngle16);
         path.cirReflectanceProduct = f16tof32(reflectanceProduct16);
         path.initialDir.y = f16tof32(initialDirY16);
-        
+
         // Initialize initialDir.z to zero since we don't have space for it
         // This field is used for irradiance calculation but has lower priority
         path.initialDir.z = 0.0f;
@@ -266,7 +266,7 @@ struct ReorderingScheduler
     {
         PathState path = PathPayload::unpack(payload);
         path.clearHit();
-        path.sceneLength = float16_t(kNRDInvalidPathLength);
+        path.sceneLength = kNRDInvalidPathLength;
 
         gPathTracer.setupPathLogging(path);
         gPathTracer.handleMiss(path);
@@ -303,7 +303,7 @@ struct ReorderingScheduler
 
         gPathTracer.generatePath(pathID, path);
         gPathTracer.setupPathLogging(path);
-        
+
         // === Initialize CIR data ===
         path.initCIRData();
 
@@ -379,12 +379,12 @@ struct ReorderingScheduler
                 if (hitObject.IsHit())
                 {
                     path.setHit(makeHitInfo(hitObject));
-                    path.sceneLength += float16_t(hitObject.GetRayDesc().TMax);
+                    path.sceneLength += hitObject.GetRayDesc().TMax;
                 }
                 else
                 {
                     path.clearHit();
-                    path.sceneLength = float16_t(kNRDInvalidPathLength);
+                    path.sceneLength = kNRDInvalidPathLength;
                 }
             }
 
@@ -402,7 +402,7 @@ struct ReorderingScheduler
 
 #if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS)
         gPathTracer.writeOutput(path);
-        
+
         // === Output CIR data on path completion ===
         gPathTracer.outputCIRDataOnPathCompletion(path);
 #endif
@@ -453,7 +453,7 @@ struct Scheduler
     {
         PathState path = PathPayload::unpack(payload);
         path.clearHit();
-        path.sceneLength = float16_t(kNRDInvalidPathLength);
+                            path.sceneLength = kNRDInvalidPathLength;
 
         gPathTracer.setupPathLogging(path);
         gPathTracer.handleMiss(path);
@@ -470,7 +470,7 @@ struct Scheduler
     {
         PathState path = PathPayload::unpack(payload);
         path.setHit(hit);
-        path.sceneLength += float16_t(hitT);
+        path.sceneLength += hitT;
 
         gPathTracer.setupPathLogging(path);
 
@@ -515,7 +515,7 @@ struct Scheduler
 
         gPathTracer.generatePath(pathID, path);
         gPathTracer.setupPathLogging(path);
-        
+
         // === Initialize CIR data ===
         path.initCIRData();
 
@@ -546,7 +546,7 @@ struct Scheduler
 
 #if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS)
         gPathTracer.writeOutput(path);
-        
+
         // === Output CIR data on path completion ===
         gPathTracer.outputCIRDataOnPathCompletion(path);
 #endif
@@ -582,7 +582,7 @@ struct Scheduler
 void scatterMiss(inout PathPayload payload : SV_RayPayload)
 {
     gScheduler.handleMiss(payload);
-    
+
     // === Output CIR data on path miss (if path has valid vertices) ===
     PathState path = PathPayload::unpack(payload);
     if (path.getVertexIndex() > 0)
