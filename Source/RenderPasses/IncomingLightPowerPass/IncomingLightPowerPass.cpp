@@ -1914,3 +1914,43 @@ void IncomingLightPowerPass::prepareResources(RenderContext* pRenderContext, con
 
     // Add any buffer initialization or other resource preparation here
 }
+
+void IncomingLightPowerPass::startBatchExport()
+{
+    if (!mpScene || mpScene->getViewpointCount() == 0)
+    {
+        logWarning("No scene or no viewpoints available for batch export.");
+        return;
+    }
+
+    mBatchExportActive = true;
+    mBatchExportCurrentViewpoint = 0;
+    mBatchExportFrameCount = mBatchExportFramesToWait;
+    mBatchExportFormat = mExportFormat;
+
+    const std::string timestamp = std::to_string(std::time(nullptr));
+    mBatchExportBaseDirectory = mExportDirectory + "/batch_export_" + timestamp;
+
+    if (!std::filesystem::create_directories(mBatchExportBaseDirectory))
+    {
+        logError("Failed to create base directory for batch export: " + mBatchExportBaseDirectory);
+        mBatchExportActive = false;
+        return;
+    }
+
+    mOriginalViewpoint = mpScene->getCurrentViewpoint();
+
+    mpScene->selectViewpoint(mBatchExportCurrentViewpoint);
+
+    logInfo("Starting batch export for " + std::to_string(mpScene->getViewpointCount()) + " viewpoints to " + mBatchExportBaseDirectory);
+}
+
+void IncomingLightPowerPass::finishBatchExport()
+{
+    logInfo("Batch export finished for all viewpoints.");
+    mpScene->selectViewpoint(mOriginalViewpoint);
+
+    mBatchExportActive = false;
+    mBatchExportCurrentViewpoint = 0;
+    mBatchExportFrameCount = 0;
+}
