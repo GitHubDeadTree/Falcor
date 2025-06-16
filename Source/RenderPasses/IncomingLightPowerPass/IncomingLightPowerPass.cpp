@@ -730,6 +730,8 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     {
         calculateStatistics(pRenderContext, renderData);
     }
+
+    processBatchExport();
 }
 
 void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
@@ -1917,12 +1919,14 @@ void IncomingLightPowerPass::prepareResources(RenderContext* pRenderContext, con
 
 void IncomingLightPowerPass::startBatchExport()
 {
-    if (!mpScene || mpScene->getViewpointCount() == 0)
+    if (!mpScene)
     {
-        logWarning("No scene or no viewpoints available for batch export.");
+        logWarning("No scene available for batch export.");
         return;
     }
 
+    // In Falcor, we'll use camera positions as viewpoints
+    // For this demo, we'll create a simple orbit around the current camera position
     mBatchExportActive = true;
     mBatchExportCurrentViewpoint = 0;
     mBatchExportFrameCount = mBatchExportFramesToWait;
@@ -1938,19 +1942,108 @@ void IncomingLightPowerPass::startBatchExport()
         return;
     }
 
-    mOriginalViewpoint = mpScene->getCurrentViewpoint();
+    // Store the original camera position and parameters
+    if (mpScene->getCamera())
+    {
+        mOriginalCameraPosition = mpScene->getCamera()->getPosition();
+        mOriginalCameraTarget = mpScene->getCamera()->getTarget();
+        mOriginalCameraUp = mpScene->getCamera()->getUpVector();
+    }
+    else
+    {
+        logWarning("No camera in scene. Using default positions for batch export.");
+        mOriginalCameraPosition = float3(0, 0, 5);
+        mOriginalCameraTarget = float3(0, 0, 0);
+        mOriginalCameraUp = float3(0, 1, 0);
+    }
 
-    mpScene->selectViewpoint(mBatchExportCurrentViewpoint);
+    // We'll use 8 viewpoints around the scene
+    mTotalViewpoints = 8;
 
-    logInfo("Starting batch export for " + std::to_string(mpScene->getViewpointCount()) + " viewpoints to " + mBatchExportBaseDirectory);
+    // Set first viewpoint
+    setViewpointPosition(mBatchExportCurrentViewpoint);
+
+    logInfo("Starting batch export for " + std::to_string(mTotalViewpoints) + " viewpoints to " + mBatchExportBaseDirectory);
 }
 
 void IncomingLightPowerPass::finishBatchExport()
 {
     logInfo("Batch export finished for all viewpoints.");
-    mpScene->selectViewpoint(mOriginalViewpoint);
+
+    // Restore original camera position
+    if (mpScene && mpScene->getCamera())
+    {
+        mpScene->getCamera()->setPosition(mOriginalCameraPosition);
+        mpScene->getCamera()->setTarget(mOriginalCameraTarget);
+        mpScene->getCamera()->setUpVector(mOriginalCameraUp);
+    }
 
     mBatchExportActive = false;
     mBatchExportCurrentViewpoint = 0;
     mBatchExportFrameCount = 0;
+}
+
+void IncomingLightPowerPass::setViewpointPosition(uint32_t viewpointIndex)
+{
+    if (!mpScene || !mpScene->getCamera())
+        return;
+
+    // Calculate position around a circle centered on the original target
+    float angle = (float)viewpointIndex / (float)mTotalViewpoints * 2.0f * 3.14159f;
+    float distance = length(mOriginalCameraPosition - mOriginalCameraTarget);
+
+    float3 newPosition;
+    newPosition.x = mOriginalCameraTarget.x + distance * std::cos(angle);
+    newPosition.y = mOriginalCameraPosition.y; // Keep the same height
+    newPosition.z = mOriginalCameraTarget.z + distance * std::sin(angle);
+
+    mpScene->getCamera()->setPosition(newPosition);
+    mpScene->getCamera()->setTarget(mOriginalCameraTarget);
+    mpScene->getCamera()->setUpVector(mOriginalCameraUp);
+}
+
+void IncomingLightPowerPass::processBatchExport()
+{
+    if (!mBatchExportActive) return;
+
+    if (mBatchExportFrameCount > 0)
+    {
+        mBatchExportFrameCount--;
+        return;
+    }
+
+    const std::string timestamp = std::to_string(std::time(nullptr));
+    std::string viewpointDir = mBatchExportBaseDirectory + "/viewpoint_" + std::to_string(mBatchExportCurrentViewpoint);
+    std::filesystem::create_directories(viewpointDir);
+
+    const std::string powerExt = mBatchExportFormat == OutputFormat::PNG ? ".png" :
+                                 mBatchExportFormat == OutputFormat::EXR ? ".exr" :
+                                 mBatchExportFormat == OutputFormat::CSV ? ".csv" : ".json";
+    std::string powerFilename = viewpointDir + "/power_" + timestamp + powerExt;
+    bool powerSuccess = exportPowerData(powerFilename, mBatchExportFormat);
+
+    OutputFormat statsFormat = (mBatchExportFormat == OutputFormat::CSV) ? OutputFormat::CSV : OutputFormat::JSON;
+    const std::string statsExt = (statsFormat == OutputFormat::CSV) ? ".csv" : ".json";
+    std::string statsFilename = viewpointDir + "/stats_" + timestamp + statsExt;
+    bool statsSuccess = exportStatistics(statsFilename, statsFormat);
+
+    if (!powerSuccess || !statsSuccess)
+    {
+        logWarning("Failed to export data for viewpoint " + std::to_string(mBatchExportCurrentViewpoint));
+    }
+    else
+    {
+        logInfo("Successfully exported data for viewpoint " + std::to_string(mBatchExportCurrentViewpoint));
+    }
+
+    mBatchExportCurrentViewpoint++;
+    if (mBatchExportCurrentViewpoint >= mTotalViewpoints)
+    {
+        finishBatchExport();
+    }
+    else
+    {
+        setViewpointPosition(mBatchExportCurrentViewpoint);
+        mBatchExportFrameCount = mBatchExportFramesToWait;
+    }
 }

@@ -28,7 +28,6 @@ public:
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
     virtual void setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) override;
-    virtual void endFrame(RenderContext* pRenderContext, const Fbo::SharedPtr& pTargetFbo) override;
 
     // Wavelength filtering modes
     enum class FilterMode
@@ -239,8 +238,15 @@ private:
     std::string mBatchExportBaseDirectory;
     OutputFormat mBatchExportFormat;
 
+    // Camera position-based viewpoints
+    float3 mOriginalCameraPosition;
+    float3 mOriginalCameraTarget;
+    float3 mOriginalCameraUp;
+    uint32_t mTotalViewpoints = 8;
+
     // Batch export helper functions
     void startBatchExport();
     void processBatchExport();
     void finishBatchExport();
+    void setViewpointPosition(uint32_t viewpointIndex);
 };
