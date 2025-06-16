@@ -1047,10 +1047,10 @@ void IncomingLightPowerPass::renderExportUI(Gui::Widgets& widget)
 
         // Export format selector
         Gui::DropdownList formatList;
-        formatList.push_back({ 0, "PNG" });
-        formatList.push_back({ 1, "EXR" });
-        formatList.push_back({ 2, "CSV" });
-        formatList.push_back({ 3, "JSON" });
+        formatList.push_back({0, "PNG"});
+        formatList.push_back({1, "EXR"});
+        formatList.push_back({2, "CSV"});
+        formatList.push_back({3, "JSON"});
 
         uint32_t currentFormat = static_cast<uint32_t>(mExportFormat);
         if (widget.dropdown("Export Format", formatList, currentFormat))
@@ -1058,24 +1058,82 @@ void IncomingLightPowerPass::renderExportUI(Gui::Widgets& widget)
             mExportFormat = static_cast<OutputFormat>(currentFormat);
         }
 
-        // Export buttons
-        if (widget.button("Export Power Data"))
+        // Checkboxes to select what to export
+        static bool sExportPower = true;
+        static bool sExportStats = true;
+        widget.checkbox("Export Power Data", sExportPower);
+        widget.checkbox("Export Statistics", sExportStats);
+
+        // Export button
+        if (widget.button("Export Selected Data"))
         {
-            const std::string baseName = "light_power_" + std::to_string(std::time(nullptr));
-            const std::string ext = mExportFormat == OutputFormat::PNG ? ".png" :
-                                   mExportFormat == OutputFormat::EXR ? ".exr" :
-                                   mExportFormat == OutputFormat::CSV ? ".csv" : ".json";
+            if (!sExportPower && !sExportStats)
+            {
+                logWarning("No data selected for export.");
+            }
+            else
+            {
+                const std::string timestamp = std::to_string(std::time(nullptr));
+                bool powerSuccess = false;
+                bool statsSuccess = false;
 
-            exportPowerData(mExportDirectory + "/" + baseName + ext, mExportFormat);
-        }
+                if (sExportPower)
+                {
+                    const std::string ext = mExportFormat == OutputFormat::PNG   ? ".png"
+                                            : mExportFormat == OutputFormat::EXR ? ".exr"
+                                            : mExportFormat == OutputFormat::CSV ? ".csv"
+                                                                                 : ".json";
 
-        if (widget.button("Export Statistics"))
-        {
-            const std::string baseName = "light_stats_" + std::to_string(std::time(nullptr));
-            const std::string ext = mExportFormat == OutputFormat::CSV ? ".csv" : ".json";
+                    const std::string filename = mExportDirectory + "/light_power_" + timestamp + ext;
+                    if (exportPowerData(filename, mExportFormat))
+                    {
+                        powerSuccess = true;
+                        logInfo("Power data exported successfully to " + filename);
+                    }
+                    else
+                    {
+                        logError("Failed to export power data.");
+                    }
+                }
 
-            exportStatistics(mExportDirectory + "/" + baseName + ext,
-                            mExportFormat == OutputFormat::CSV ? OutputFormat::CSV : OutputFormat::JSON);
+                if (sExportStats)
+                {
+                    // Statistics only support CSV and JSON
+                    OutputFormat statsFormat = (mExportFormat == OutputFormat::CSV) ? OutputFormat::CSV : OutputFormat::JSON;
+                    const std::string ext = (statsFormat == OutputFormat::CSV) ? ".csv" : ".json";
+                    const std::string filename = mExportDirectory + "/light_stats_" + timestamp + ext;
+
+                    if (exportStatistics(filename, statsFormat))
+                    {
+                        statsSuccess = true;
+                        logInfo("Statistics exported successfully to " + filename);
+                    }
+                    else
+                    {
+                        logError("Failed to export statistics.");
+                    }
+                }
+
+                if (sExportPower && sExportStats)
+                {
+                    if (powerSuccess && statsSuccess)
+                    {
+                        logInfo("Successfully exported both power data and statistics.");
+                    }
+                    else if (powerSuccess)
+                    {
+                        logWarning("Power data exported, but statistics export failed.");
+                    }
+                    else if (statsSuccess)
+                    {
+                        logWarning("Statistics exported, but power data export failed.");
+                    }
+                    else
+                    {
+                        logError("Both power data and statistics exports failed.");
+                    }
+                }
+            }
         }
     }
 }
