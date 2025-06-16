@@ -1036,6 +1036,8 @@ void IncomingLightPowerPass::renderStatisticsUI(Gui::Widgets& widget)
 
 void IncomingLightPowerPass::renderExportUI(Gui::Widgets& widget)
 {
+    widget.text("Export Options");
+
     auto exportGroup = widget.group("Export Results", true);
     if (exportGroup)
     {
@@ -1134,6 +1136,25 @@ void IncomingLightPowerPass::renderExportUI(Gui::Widgets& widget)
                     }
                 }
             }
+        }
+    }
+
+    widget.separator();
+    widget.text("Batch Export");
+    widget.tooltip("Export data for all viewpoints in the scene.");
+
+    widget.var("Frames to wait", mBatchExportFramesToWait, 1u, 120u);
+    widget.tooltip("Number of frames to wait for rendering to stabilize after switching viewpoints.");
+
+    if (widget.button("Export All Viewpoints"))
+    {
+        if (mBatchExportActive)
+        {
+            logWarning("Batch export is already in progress.");
+        }
+        else
+        {
+            startBatchExport();
         }
     }
 }

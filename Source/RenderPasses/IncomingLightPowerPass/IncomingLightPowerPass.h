@@ -28,6 +28,7 @@ public:
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
     virtual void setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) override;
+    virtual void endFrame(RenderContext* pRenderContext, const Fbo::SharedPtr& pTargetFbo) override;
 
     // Wavelength filtering modes
     enum class FilterMode
@@ -228,4 +229,18 @@ private:
     void renderExportUI(Gui::Widgets& widget);
     std::string getFormattedStatistics() const;
     void resetStatistics();
+
+    // Batch export state
+    bool mBatchExportActive = false;
+    uint32_t mBatchExportFrameCount = 0;
+    uint32_t mBatchExportFramesToWait = 20;
+    uint32_t mBatchExportCurrentViewpoint = 0;
+    uint32_t mOriginalViewpoint = 0;
+    std::string mBatchExportBaseDirectory;
+    OutputFormat mBatchExportFormat;
+
+    // Batch export helper functions
+    void startBatchExport();
+    void processBatchExport();
+    void finishBatchExport();
 };
