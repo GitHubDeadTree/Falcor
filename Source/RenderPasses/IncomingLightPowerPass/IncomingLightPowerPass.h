@@ -238,7 +238,10 @@ private:
     std::string mBatchExportBaseDirectory;
     OutputFormat mBatchExportFormat;
 
-    // Camera position-based viewpoints
+    // Use loaded viewpoints or generate positions
+    bool mUseLoadedViewpoints = true;
+
+    // Camera position-based viewpoints (fallback if no viewpoints loaded)
     float3 mOriginalCameraPosition;
     float3 mOriginalCameraTarget;
     float3 mOriginalCameraUp;

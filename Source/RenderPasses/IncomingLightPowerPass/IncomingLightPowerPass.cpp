@@ -1148,6 +1148,17 @@ void IncomingLightPowerPass::renderExportUI(Gui::Widgets& widget)
     widget.var("Frames to wait", mBatchExportFramesToWait, 1u, 120u);
     widget.tooltip("Number of frames to wait for rendering to stabilize after switching viewpoints.");
 
+    if (mpScene && mpScene->hasSavedViewpoints())
+    {
+        widget.text("Scene has loaded viewpoints");
+        widget.tooltip("Batch export will use the scene's saved viewpoints.");
+    }
+    else
+    {
+        widget.text("No loaded viewpoints");
+        widget.tooltip("Batch export will generate 8 viewpoints around the current camera.");
+    }
+
     if (widget.button("Export All Viewpoints"))
     {
         if (mBatchExportActive)
@@ -1925,8 +1936,6 @@ void IncomingLightPowerPass::startBatchExport()
         return;
     }
 
-    // In Falcor, we'll use camera positions as viewpoints
-    // For this demo, we'll create a simple orbit around the current camera position
     mBatchExportActive = true;
     mBatchExportCurrentViewpoint = 0;
     mBatchExportFrameCount = mBatchExportFramesToWait;
@@ -1957,25 +1966,59 @@ void IncomingLightPowerPass::startBatchExport()
         mOriginalCameraUp = float3(0, 1, 0);
     }
 
-    // We'll use 8 viewpoints around the scene
-    mTotalViewpoints = 8;
+    // Check if the scene has saved viewpoints
+    mUseLoadedViewpoints = mpScene->hasSavedViewpoints();
 
-    // Set first viewpoint
-    setViewpointPosition(mBatchExportCurrentViewpoint);
+    if (mUseLoadedViewpoints)
+    {
+        // Store original camera state to restore it later
+        float3 originalPosition = mpScene->getCamera()->getPosition();
+        float3 originalTarget = mpScene->getCamera()->getTarget();
+        float3 originalUp = mpScene->getCamera()->getUpVector();
 
-    logInfo("Starting batch export for " + std::to_string(mTotalViewpoints) + " viewpoints to " + mBatchExportBaseDirectory);
+        // Store original viewpoint to restore later
+        mOriginalViewpoint = 0; // Assume 0 is current viewpoint (default)
+
+        // Set first viewpoint (index 1, since 0 is typically the default viewpoint)
+        mBatchExportCurrentViewpoint = 1; // Start from first non-default viewpoint
+        mpScene->selectViewpoint(mBatchExportCurrentViewpoint);
+
+        logInfo("Starting batch export for loaded viewpoints to " + mBatchExportBaseDirectory);
+    }
+
+    if (!mUseLoadedViewpoints)
+    {
+        // Fallback to generating our own viewpoints around the original camera position
+        mTotalViewpoints = 8; // Default to 8 generated viewpoints
+        mBatchExportCurrentViewpoint = 0; // Start from 0 for generated viewpoints
+
+        // Set first viewpoint
+        setViewpointPosition(mBatchExportCurrentViewpoint);
+
+        logInfo("Starting batch export for " + std::to_string(mTotalViewpoints) +
+               " generated viewpoints to " + mBatchExportBaseDirectory);
+    }
 }
 
 void IncomingLightPowerPass::finishBatchExport()
 {
     logInfo("Batch export finished for all viewpoints.");
 
-    // Restore original camera position
-    if (mpScene && mpScene->getCamera())
+    // Restore original camera state
+    if (mpScene)
     {
-        mpScene->getCamera()->setPosition(mOriginalCameraPosition);
-        mpScene->getCamera()->setTarget(mOriginalCameraTarget);
-        mpScene->getCamera()->setUpVector(mOriginalCameraUp);
+        if (mUseLoadedViewpoints)
+        {
+            // Restore to original viewpoint
+            mpScene->selectViewpoint(mOriginalViewpoint);
+        }
+        else if (mpScene->getCamera())
+        {
+            // Restore original camera position
+            mpScene->getCamera()->setPosition(mOriginalCameraPosition);
+            mpScene->getCamera()->setTarget(mOriginalCameraTarget);
+            mpScene->getCamera()->setUpVector(mOriginalCameraUp);
+        }
     }
 
     mBatchExportActive = false;
@@ -2036,14 +2079,52 @@ void IncomingLightPowerPass::processBatchExport()
         logInfo("Successfully exported data for viewpoint " + std::to_string(mBatchExportCurrentViewpoint));
     }
 
+    // Advance to next viewpoint
     mBatchExportCurrentViewpoint++;
-    if (mBatchExportCurrentViewpoint >= mTotalViewpoints)
+
+    if (mUseLoadedViewpoints)
     {
-        finishBatchExport();
+
+        // Try to select the next viewpoint
+        // Note: selectViewpoint doesn't throw exceptions, it just logs a warning if index is invalid
+        // We need to remember the camera state before trying to select a new viewpoint
+        float3 prevPosition = mpScene->getCamera()->getPosition();
+        float3 prevTarget = mpScene->getCamera()->getTarget();
+
+        // Try to select the viewpoint
+        mpScene->selectViewpoint(mBatchExportCurrentViewpoint);
+
+        // Check if camera actually moved (if viewpoint was valid)
+        float3 currentPosition = mpScene->getCamera()->getPosition();
+        float3 currentTarget = mpScene->getCamera()->getTarget();
+
+        // Calculate distances between previous and current positions
+        float posDistance = length(prevPosition - currentPosition);
+        float targetDistance = length(prevTarget - currentTarget);
+
+        // If distances are very small, consider positions unchanged
+        const float epsilon = 0.0001f; // Small threshold for floating-point comparison
+        if (posDistance < epsilon && targetDistance < epsilon)
+        {
+            // Camera didn't move, meaning we've reached the end of viewpoint list
+            logInfo("Reached the end of loaded viewpoints at index " + std::to_string(mBatchExportCurrentViewpoint-1));
+            finishBatchExport();
+            return;
+        }
+
+        mBatchExportFrameCount = mBatchExportFramesToWait;
     }
     else
     {
-        setViewpointPosition(mBatchExportCurrentViewpoint);
-        mBatchExportFrameCount = mBatchExportFramesToWait;
+        // Using generated viewpoints
+        if (mBatchExportCurrentViewpoint >= mTotalViewpoints)
+        {
+            finishBatchExport();
+        }
+        else
+        {
+            setViewpointPosition(mBatchExportCurrentViewpoint);
+            mBatchExportFrameCount = mBatchExportFramesToWait;
+        }
     }
 }
