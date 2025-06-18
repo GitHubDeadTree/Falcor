@@ -333,6 +333,100 @@ namespace Falcor
                     // Legacy export for compatibility
                     exportCIRData("cir_data.txt", mpScene);
                 }
+
+                // Add CIR filtering parameters UI
+                if (auto group = widget.group("CIR Filtering Parameters")) {
+                    try {
+                        // Path Length Filtering
+                        group.text("Path Length Filtering:");
+                        if (group.var("Min Path Length (m)", mCIRMinPathLength, 0.1f, 500.0f, 0.1f)) {
+                            // Ensure min <= max
+                            if (mCIRMinPathLength > mCIRMaxPathLength) {
+                                mCIRMaxPathLength = mCIRMinPathLength;
+                                logWarning("CIR UI: Adjusted max path length to match min value");
+                            }
+                        }
+                        group.tooltip("Minimum path length for CIR data filtering (meters)");
+
+                        if (group.var("Max Path Length (m)", mCIRMaxPathLength, 1.0f, 1000.0f, 1.0f)) {
+                            // Ensure max >= min
+                            if (mCIRMaxPathLength < mCIRMinPathLength) {
+                                mCIRMinPathLength = mCIRMaxPathLength;
+                                logWarning("CIR UI: Adjusted min path length to match max value");
+                            }
+                        }
+                        group.tooltip("Maximum path length for CIR data filtering (meters)");
+
+                        // Emitted Power Filtering
+                        group.text("Emitted Power Filtering:");
+                        if (group.var("Min Emitted Power (W)", mCIRMinEmittedPower, 0.0f, 100.0f, 0.01f)) {
+                            if (mCIRMinEmittedPower > mCIRMaxEmittedPower) {
+                                mCIRMaxEmittedPower = mCIRMinEmittedPower;
+                                logWarning("CIR UI: Adjusted max emitted power to match min value");
+                            }
+                        }
+                        group.tooltip("Minimum emitted power for CIR data filtering (watts)");
+
+                        if (group.var("Max Emitted Power (W)", mCIRMaxEmittedPower, 1.0f, 50000.0f, 1.0f)) {
+                            if (mCIRMaxEmittedPower < mCIRMinEmittedPower) {
+                                mCIRMinEmittedPower = mCIRMaxEmittedPower;
+                                logWarning("CIR UI: Adjusted min emitted power to match max value");
+                            }
+                        }
+                        group.tooltip("Maximum emitted power for CIR data filtering (watts)");
+
+                        // Angle Filtering
+                        group.text("Angle Filtering:");
+                        if (group.var("Min Angle (rad)", mCIRMinAngle, 0.0f, 3.14159f, 0.01f)) {
+                            if (mCIRMinAngle > mCIRMaxAngle) {
+                                mCIRMaxAngle = mCIRMinAngle;
+                                logWarning("CIR UI: Adjusted max angle to match min value");
+                            }
+                        }
+                        group.tooltip("Minimum angle for emission/reception filtering (radians)");
+
+                        if (group.var("Max Angle (rad)", mCIRMaxAngle, 0.0f, 3.14159f, 0.01f)) {
+                            if (mCIRMaxAngle < mCIRMinAngle) {
+                                mCIRMinAngle = mCIRMaxAngle;
+                                logWarning("CIR UI: Adjusted min angle to match max value");
+                            }
+                        }
+                        group.tooltip("Maximum angle for emission/reception filtering (radians)");
+
+                        // Reflectance Filtering
+                        group.text("Reflectance Filtering:");
+                        if (group.var("Min Reflectance", mCIRMinReflectance, 0.0f, 1.0f, 0.01f)) {
+                            if (mCIRMinReflectance > mCIRMaxReflectance) {
+                                mCIRMaxReflectance = mCIRMinReflectance;
+                                logWarning("CIR UI: Adjusted max reflectance to match min value");
+                            }
+                        }
+                        group.tooltip("Minimum reflectance product for CIR data filtering");
+
+                        if (group.var("Max Reflectance", mCIRMaxReflectance, 0.0f, 1.0f, 0.01f)) {
+                            if (mCIRMaxReflectance < mCIRMinReflectance) {
+                                mCIRMinReflectance = mCIRMaxReflectance;
+                                logWarning("CIR UI: Adjusted min reflectance to match max value");
+                            }
+                        }
+                        group.tooltip("Maximum reflectance product for CIR data filtering");
+
+                        // Reset Button
+                        if (group.button("Reset to Defaults")) {
+                            mCIRMinPathLength = 1.0f;
+                            mCIRMaxPathLength = 200.0f;
+                            mCIRMinEmittedPower = 0.0f;
+                            mCIRMaxEmittedPower = 10000.0f;
+                            mCIRMinAngle = 0.0f;
+                            mCIRMaxAngle = 3.14159f;
+                            mCIRMinReflectance = 0.0f;
+                            mCIRMaxReflectance = 1.0f;
+                        }
+                    } catch (const std::exception& e) {
+                        logError("CIR UI rendering error: {}", e.what());
+                        // UI continues to function with current values
+                    }
+                }
             }
         }
 
@@ -548,22 +642,41 @@ namespace Falcor
                             // Data that passes this filter goes directly to both statistics and raw data
                             // without additional validation
                             uint32_t filteredCount = 0;
+                            uint32_t totalCount = static_cast<uint32_t>(mCollectedCIRPaths);
+
                             for (uint32_t i = 0; i < mCollectedCIRPaths; i++)
                             {
-                                // Apply CPU-side filtering with new criteria:
-                                // - Energy > 0, Length < 50m (stricter than GPU)
-                                if (rawData[i].isValid())
-                                {
-                                    mCIRRawData.push_back(rawData[i]);
-                                    filteredCount++;
+                                try {
+                                    // Apply CPU-side filtering with configurable criteria
+                                    if (rawData[i].isValid(mCIRMinPathLength, mCIRMaxPathLength,
+                                                          mCIRMinEmittedPower, mCIRMaxEmittedPower,
+                                                          mCIRMinAngle, mCIRMaxAngle,
+                                                          mCIRMinReflectance, mCIRMaxReflectance))
+                                    {
+                                        mCIRRawData.push_back(rawData[i]);
+                                        filteredCount++;
+                                    }
+                                } catch (const std::exception& e) {
+                                    logError("CIR filtering error at index {}: {}", i, e.what());
+                                    // Continue processing other data points
+                                    continue;
+                                }
+                            }
+
+                            // Log filtering statistics
+                            if (totalCount > 0) {
+                                float filterRatio = static_cast<float>(filteredCount) / totalCount;
+                                if (filterRatio < 0.1f) {
+                                    logWarning("CIR filtering: Only {:.1%} of data passed filters ({}/{})",
+                                              filterRatio, filteredCount, totalCount);
                                 }
                             }
 
                             mpCIRRawDataReadback->unmap();
                             mCIRRawDataValid = true;
 
-                            logInfo(fmt::format("PixelStats: CPU-filtered {} valid CIR paths out of {} total (Energy>0, Length<50m)",
-                                              filteredCount, mCollectedCIRPaths));
+                            logInfo("PixelStats: CPU-filtered {} valid CIR paths out of {} total (configurable criteria)",
+                                   filteredCount, totalCount);
                         }
                     }
                     else
@@ -575,10 +688,9 @@ namespace Falcor
             }
             catch (const std::exception& e)
             {
-                logError(fmt::format("PixelStats: Error reading CIR raw data: {}", e.what()));
-                mCIRRawDataValid = false;
-                mCollectedCIRPaths = 0;
+                logError("PixelStats: Error reading CIR raw data: {}", e.what());
                 mCIRRawData.clear();
+                mCollectedCIRPaths = 0;
             }
         }
     }
@@ -602,7 +714,7 @@ namespace Falcor
 
     bool PixelStats::exportCIRData(const std::string& filename, const ref<Scene>& pScene)
     {
-        // Copy and filter CIR data using CPU-side criteria (Energy>0, Length<50m)
+        // Copy and filter CIR data using CPU-side configurable criteria
         copyCIRRawDataToCPU();
         if (!mCIRRawDataValid || mCIRRawData.empty())
         {
@@ -615,7 +727,7 @@ namespace Falcor
             std::ofstream file(filename);
             if (!file.is_open())
             {
-                logError(fmt::format("PixelStats::exportCIRData() - Failed to open file: {}", filename));
+                logError("PixelStats::exportCIRData() - Failed to open file: {}", filename);
                 return false;
             }
 
@@ -629,7 +741,7 @@ namespace Falcor
 
             // Write header with static parameters and filtering information
             file << "# CIR Path Data Export with Static Parameters\n";
-            file << "# Data filtered with CPU-side criteria: Energy > 0W, Path Length < 50m\n";
+            file << "# Data filtered with CPU-side configurable criteria\n";
             file << "# Static Parameters for VLC Channel Impulse Response Calculation:\n";
             file << "# A_receiver_area_m2=" << std::scientific << std::setprecision(6) << staticParams.receiverArea << "\n";
             file << "# m_led_lambertian_order=" << std::fixed << std::setprecision(3) << staticParams.ledLambertianOrder << "\n";
@@ -657,12 +769,12 @@ namespace Falcor
             }
 
             file.close();
-            logInfo(fmt::format("PixelStats: Exported {} CPU-filtered CIR paths to {}", mCIRRawData.size(), filename));
+            logInfo("PixelStats: Exported {} CPU-filtered CIR paths to {}", mCIRRawData.size(), filename);
             return true;
         }
         catch (const std::exception& e)
         {
-            logError(fmt::format("PixelStats::exportCIRData() - Error writing file: {}", e.what()));
+            logError("PixelStats::exportCIRData() - Error writing file: {}", e.what());
             return false;
         }
     }
