@@ -348,7 +348,7 @@ namespace Falcor
                         }
                         group.tooltip("Minimum path length for CIR data filtering (meters)");
 
-                        if (group.var("Max Path Length (m)", mCIRMaxPathLength, 1.0f, 1000.0f, 1.0f)) {
+                        if (group.var("Max Path Length (m)", mCIRMaxPathLength, 1.0f, 10000.0f, 1.0f)) {
                             // Ensure max >= min
                             if (mCIRMaxPathLength < mCIRMinPathLength) {
                                 mCIRMinPathLength = mCIRMaxPathLength;

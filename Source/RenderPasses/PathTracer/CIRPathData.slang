@@ -53,27 +53,10 @@ struct CIRPathData
     */
     bool isValid()
     {
-        // Path length validation: modified range for VLC analysis [1, 75] meters
-        if (pathLength < 1.0f || pathLength > 75.0f) return false;
-
-        // Angle validation: must be within [0, π]
-        if (emissionAngle < 0.0f || emissionAngle > 3.14159f) return false;
-        if (receptionAngle < 0.0f || receptionAngle > 3.14159f) return false;
-
-        // Reflectance product validation: must be within [0, 1]
-        if (reflectanceProduct < 0.0f || reflectanceProduct > 1.0f) return false;
-
-        // Emitted power validation: RELAXED - allow zero and small positive values
-        // This preserves valid angle data even when power calculation has issues
-        if (emittedPower < 0.0f || emittedPower > 10000.0f) return false;
-
-        // Check for NaN and infinity
+        // GPU端只检查路径长度的NaN/无穷大值
         if (isnan(pathLength) || isinf(pathLength)) return false;
-        if (isnan(emissionAngle) || isinf(emissionAngle)) return false;
-        if (isnan(receptionAngle) || isinf(receptionAngle)) return false;
-        if (isnan(reflectanceProduct) || isinf(reflectanceProduct)) return false;
-        if (isnan(emittedPower) || isinf(emittedPower)) return false;
 
+        // 其他所有验证都移到CPU端
         return true;
     }
 
@@ -83,22 +66,13 @@ struct CIRPathData
     */
     [mutating] void sanitize()
     {
-        // Only fix NaN and infinity values with reasonable defaults
-        // DO NOT clamp valid values - let isValid() handle filtering
-        if (isnan(pathLength) || isinf(pathLength)) pathLength = 1.0f;
-        if (isnan(emissionAngle) || isinf(emissionAngle)) emissionAngle = 0.785398f; // 45 degrees
-        if (isnan(receptionAngle) || isinf(receptionAngle)) receptionAngle = 0.0f;
-        if (isnan(reflectanceProduct) || isinf(reflectanceProduct)) reflectanceProduct = 0.5f;
-        if (isnan(emittedPower) || isinf(emittedPower)) emittedPower = 0.0f;
-
-        // Only ensure emitted power is non-negative (fix negative values only)
-        if (emittedPower < 0.0f) emittedPower = 0.0f;
-
-        // SPECIAL HANDLING: Fix zero emission angle issue in file output
-        // If emission angle is exactly zero, set it to 1.1 radians (approximately 63 degrees)
-        if (emissionAngle == 0.0f)
+        // GPU端只处理路径长度的NaN/无穷大值
+        // 其他所有验证和处理都交给CPU端
+        if (isnan(pathLength) || isinf(pathLength))
         {
-            emissionAngle = 1.1f; // Distinctive value for debugging and analysis
+            pathLength = 1.0f; // 设置默认值，但实际上这种情况下整条路径会被丢弃
         }
+
+        // 移除所有其他字段的处理逻辑
     }
 };

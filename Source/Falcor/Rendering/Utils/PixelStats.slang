@@ -199,13 +199,15 @@ void logCIRRawPath(CIRPathData pathData)
 // Unified CIR logging function - MODIFIED: Added path filtering to remove invalid paths
 void logCIRPathComplete(CIRPathData pathData)
 {
-    // Apply basic sanitization to handle NaN/infinity values
-    CIRPathData sanitizedData = validateAndSanitizeCIRData(pathData);
+    // 只检查路径长度的NaN/无穷大值，如果异常则直接丢弃整条光路
+    if (isnan(pathData.pathLength) || isinf(pathData.pathLength))
+    {
+        // 直接返回，不记录任何数据到缓冲区
+        return;
+    }
 
-    // Filter out invalid paths - this will remove paths outside [1, 50]m range
-    if (!sanitizedData.isValid()) return;
-
-    // Only log valid paths that pass all validation criteria
-    logCIRStatisticsInternal(sanitizedData);
-    logCIRRawPathInternal(sanitizedData);
+    // 对于路径长度有效的数据，直接记录而不进行任何修改
+    // 其他字段的验证交给CPU端处理
+    logCIRStatisticsInternal(pathData);
+    logCIRRawPathInternal(pathData);
 }
