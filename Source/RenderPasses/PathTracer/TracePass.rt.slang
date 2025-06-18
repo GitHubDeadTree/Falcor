@@ -400,7 +400,13 @@ struct ReorderingScheduler
                 if (hitObject.IsHit())
                 {
                     path.setHit(makeHitInfo(hitObject));
-                    path.sceneLength += hitObject.GetRayDesc().TMax;
+                    // Only skip path length update if:
+                    // 1. We've already hit an emissive surface previously
+                    // 2. AND we already have accumulated some path length
+                    if (!(path.hitEmissiveSurface && path.sceneLength > 0.0f))
+                    {
+                        path.sceneLength += hitObject.GetRayDesc().TMax;
+                    }
                 }
                 else
                 {
@@ -491,7 +497,13 @@ struct Scheduler
     {
         PathState path = PathPayload::unpack(payload);
         path.setHit(hit);
-        path.sceneLength += hitT;
+        // Only skip path length update if:
+        // 1. We've already hit an emissive surface previously
+        // 2. AND we already have accumulated some path length
+        if (!(path.hitEmissiveSurface && path.sceneLength > 0.0f))
+        {
+            path.sceneLength += hitT;
+        }
 
         gPathTracer.setupPathLogging(path);
 
