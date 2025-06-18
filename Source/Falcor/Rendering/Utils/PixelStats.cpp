@@ -423,7 +423,7 @@ namespace Falcor
                             mCIRMaxReflectance = 1.0f;
                         }
                     } catch (const std::exception& e) {
-                        logError("CIR UI rendering error: {}", e.what());
+                        logError("CIR UI rendering error: " + std::string(e.what()));
                         // UI continues to function with current values
                     }
                 }
@@ -657,7 +657,7 @@ namespace Falcor
                                         filteredCount++;
                                     }
                                 } catch (const std::exception& e) {
-                                    logError("CIR filtering error at index {}: {}", i, e.what());
+                                    logError("CIR filtering error at index " + std::to_string(i) + ": " + std::string(e.what()));
                                     // Continue processing other data points
                                     continue;
                                 }
@@ -688,7 +688,7 @@ namespace Falcor
             }
             catch (const std::exception& e)
             {
-                logError("PixelStats: Error reading CIR raw data: {}", e.what());
+                logError("PixelStats: Error reading CIR raw data: " + std::string(e.what()));
                 mCIRRawData.clear();
                 mCollectedCIRPaths = 0;
             }
@@ -774,7 +774,7 @@ namespace Falcor
         }
         catch (const std::exception& e)
         {
-            logError("PixelStats::exportCIRData() - Error writing file: {}", e.what());
+            logError("PixelStats::exportCIRData() - Error writing file: " + std::string(e.what()));
             return false;
         }
     }
@@ -811,7 +811,7 @@ namespace Falcor
         }
         catch (const std::exception& e)
         {
-            logError("PixelStats: Error computing receiver area: {}", e.what());
+            logError("PixelStats: Error computing receiver area: " + std::string(e.what()));
             return 1e-4f; // Default fallback
         }
     }
@@ -865,7 +865,7 @@ namespace Falcor
         }
         catch (const std::exception& e)
         {
-            logError("PixelStats: Error computing LED Lambertian order: {}", e.what());
+            logError("PixelStats: Error computing LED Lambertian order: " + std::string(e.what()));
             return 1.0f; // Default fallback
         }
     }
@@ -889,7 +889,7 @@ namespace Falcor
         }
         catch (const std::exception& e)
         {
-            logError("PixelStats: Error computing receiver FOV: {}", e.what());
+            logError("PixelStats: Error computing receiver FOV: " + std::string(e.what()));
             return (float)M_PI; // Default fallback
         }
     }
@@ -948,7 +948,7 @@ namespace Falcor
         }
         catch (const std::exception& e)
         {
-            logError("PixelStats: Error computing CIR static parameters: {}", e.what());
+            logError("PixelStats: Error computing CIR static parameters: " + std::string(e.what()));
             return CIRStaticParameters(); // Return default parameters
         }
     }
@@ -1005,7 +1005,7 @@ namespace Falcor
         }
         catch (const std::exception& e)
         {
-            logError("PixelStats: Error creating CIRData directory: {}", e.what());
+            logError("PixelStats: Error creating CIRData directory: " + std::string(e.what()));
             return false;
         }
     }
@@ -1068,7 +1068,7 @@ namespace Falcor
         }
         catch (const std::exception& e)
         {
-            logError("PixelStats::exportCIRDataWithFormat() - Error: {}", e.what());
+            logError("PixelStats::exportCIRDataWithFormat() - Error: " + std::string(e.what()));
             return false;
         }
     }
