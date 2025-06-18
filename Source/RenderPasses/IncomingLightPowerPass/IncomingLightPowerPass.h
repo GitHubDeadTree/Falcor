@@ -159,7 +159,7 @@ private:
     std::vector<float> mBandWavelengths; ///< Specific wavelength bands to filter
     std::vector<float> mBandTolerances;  ///< Tolerances for specific wavelength bands
     static constexpr float kDefaultTolerance = 5.0f; ///< Default tolerance for specific bands in nm
-    float mPixelAreaScale = 1000.0f;     ///< Scale factor for pixel area calculation
+    float mPixelAreaScale = 1.0f;     ///< Scale factor for pixel area calculation
 
     // UI variables
     bool mEnabled = true;                ///< Enable/disable the pass

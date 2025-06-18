@@ -415,6 +415,9 @@ struct PathTracer
     */
     void updateCIRWithMaterialReflectance(inout PathState path, BSDFProperties bsdfProperties, BSDFSample bsdfSample)
     {
+        // If already hit emissive surface, do not update reflectance
+        if (path.hitEmissiveSurface) return;
+
         const uint vertexIndex = path.getVertexIndex();
         const bool isPrimaryHit = (vertexIndex == 1);
 
@@ -545,6 +548,15 @@ struct PathTracer
         path.pdf = bs.pdf;
 
         path.clearEventFlags();
+
+        // If already hit emissive surface, do not update bounce counters
+        if (path.hitEmissiveSurface)
+        {
+            // Only update essential path information, skip bounce counting
+            path.normal = sd.getOrientedFaceNormal();
+            bool valid = any(path.thp > 0.f);
+            return valid;
+        }
 
         // Handle reflection events.
         if (bs.isLobe(LobeType::Reflection))
@@ -1327,6 +1339,7 @@ struct PathTracer
         // Strategy 1: Check for emissive materials (LED modeled as emissive surfaces)
         if (any(bsdfProperties.emission > 0.0f))
         {
+            path.hitEmissiveSurface = true;  // Set flag when hitting emissive surface
             path.updateCIREmissionAngle(surfaceNormal);
         }
         // Strategy 2: For VLC systems, calculate emission angle at primary hit
