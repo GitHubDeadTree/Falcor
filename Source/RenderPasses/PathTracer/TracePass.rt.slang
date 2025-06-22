@@ -100,13 +100,15 @@ struct PathPayload
         uint receptionAngle10 = (receptionAngle16 >> 6) & 0x3FF;    // 10 bits for angle [0-π]
         uint reflectanceProduct8 = (reflectanceProduct16 >> 8) & 0xFF; // 8 bits for reflectance [0-1]
 
-        // Pack initialDir Y and Z components into remaining 4 bits (coarse precision)
-        uint initialDirY4 = (f32tof16(path.initialDir.y) >> 12) & 0xF;  // 4 bits coarse
+        // Pack initialDir Y and hitEmissiveSurface flag into remaining 4 bits
+        uint initialDirY3 = (f32tof16(path.initialDir.y) >> 13) & 0x7;  // 3 bits coarse
+        uint hitEmissiveBit = path.hitEmissiveSurface ? 1 : 0;           // 1 bit
 
         p.packed_cir = emissionAngle10 |
                        (receptionAngle10 << 10) |
                        (reflectanceProduct8 << 20) |
-                       (initialDirY4 << 28);
+                       (initialDirY3 << 28) |
+                       (hitEmissiveBit << 31);  // Use highest bit for hitEmissiveSurface
 
         p.hit = path.hit.pack();
         p.guideData = path.guideData;
@@ -143,21 +145,40 @@ struct PathPayload
         path.initialDir.x = f16tof32(initialDirX16);
 
         // Unpack CIR data + additional critical fields: comprehensive restoration
-        uint emissionAngle10 = p.packed_cir & 0x3FF;                    // Lower 10 bits
-        uint receptionAngle10 = (p.packed_cir >> 10) & 0x3FF;          // Next 10 bits
-        uint reflectanceProduct8 = (p.packed_cir >> 20) & 0xFF;        // Next 8 bits
-        uint initialDirY4 = (p.packed_cir >> 28) & 0xF;                // Upper 4 bits
+        uint emissionAngle10 = p.packed_cir & 0x3FF;                 // Lower 10 bits
+        uint receptionAngle10 = (p.packed_cir >> 10) & 0x3FF;        // Next 10 bits
+        uint reflectanceProduct8 = (p.packed_cir >> 20) & 0xFF;      // Next 8 bits
+        uint initialDirY3 = (p.packed_cir >> 28) & 0x7;              // Next 3 bits
+        uint hitEmissiveBit = (p.packed_cir >> 31) & 0x1;            // Highest bit
 
         // Reconstruct 16-bit values by shifting back and adding appropriate padding
         uint emissionAngle16 = (emissionAngle10 << 6);         // Restore to 16-bit range
         uint receptionAngle16 = (receptionAngle10 << 6);       // Restore to 16-bit range
         uint reflectanceProduct16 = (reflectanceProduct8 << 8); // Restore to 16-bit range
-        uint initialDirY16 = (initialDirY4 << 12);             // Restore to 16-bit range (coarse)
+        uint initialDirY16 = (initialDirY3 << 13);             // Restore to 16-bit range (coarse)
 
         path.cirEmissionAngle = f16tof32(emissionAngle16);
         path.cirReceptionAngle = f16tof32(receptionAngle16);
         path.cirReflectanceProduct = f16tof32(reflectanceProduct16);
         path.initialDir.y = f16tof32(initialDirY16);
+        path.hitEmissiveSurface = hitEmissiveBit != 0;
+
+        // Error handling: validate unpacked CIR values
+        if (isnan(path.cirEmissionAngle) || isinf(path.cirEmissionAngle))
+        {
+            path.cirEmissionAngle = 0.0f;  // Default value for invalid emission angle
+        }
+
+        if (isnan(path.cirReceptionAngle) || isinf(path.cirReceptionAngle))
+        {
+            path.cirReceptionAngle = 0.0f;  // Default value for invalid reception angle
+        }
+
+        if (isnan(path.cirReflectanceProduct) || isinf(path.cirReflectanceProduct) ||
+            path.cirReflectanceProduct < 0.0f || path.cirReflectanceProduct > 1.0f)
+        {
+            path.cirReflectanceProduct = 0.666f;  // Debug marker value for invalid reflectance
+        }
 
         // Initialize initialDir.z to zero since we don't have space for it
         // This field is used for irradiance calculation but has lower priority
@@ -379,7 +400,13 @@ struct ReorderingScheduler
                 if (hitObject.IsHit())
                 {
                     path.setHit(makeHitInfo(hitObject));
-                    path.sceneLength += hitObject.GetRayDesc().TMax;
+                    // Only skip path length update if:
+                    // 1. We've already hit an emissive surface previously
+                    // 2. AND we already have accumulated some path length
+                    if (!(path.hitEmissiveSurface && path.sceneLength > 0.0f))
+                    {
+                        path.sceneLength += hitObject.GetRayDesc().TMax;
+                    }
                 }
                 else
                 {
@@ -470,7 +497,13 @@ struct Scheduler
     {
         PathState path = PathPayload::unpack(payload);
         path.setHit(hit);
-        path.sceneLength += hitT;
+        // Only skip path length update if:
+        // 1. We've already hit an emissive surface previously
+        // 2. AND we already have accumulated some path length
+        if (!(path.hitEmissiveSurface && path.sceneLength > 0.0f))
+        {
+            path.sceneLength += hitT;
+        }
 
         gPathTracer.setupPathLogging(path);
 

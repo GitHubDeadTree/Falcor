@@ -730,6 +730,8 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     {
         calculateStatistics(pRenderContext, renderData);
     }
+
+    processBatchExport();
 }
 
 void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
@@ -1036,6 +1038,8 @@ void IncomingLightPowerPass::renderStatisticsUI(Gui::Widgets& widget)
 
 void IncomingLightPowerPass::renderExportUI(Gui::Widgets& widget)
 {
+    widget.text("Export Options");
+
     auto exportGroup = widget.group("Export Results", true);
     if (exportGroup)
     {
@@ -1047,10 +1051,10 @@ void IncomingLightPowerPass::renderExportUI(Gui::Widgets& widget)
 
         // Export format selector
         Gui::DropdownList formatList;
-        formatList.push_back({ 0, "PNG" });
-        formatList.push_back({ 1, "EXR" });
-        formatList.push_back({ 2, "CSV" });
-        formatList.push_back({ 3, "JSON" });
+        formatList.push_back({0, "PNG"});
+        formatList.push_back({1, "EXR"});
+        formatList.push_back({2, "CSV"});
+        formatList.push_back({3, "JSON"});
 
         uint32_t currentFormat = static_cast<uint32_t>(mExportFormat);
         if (widget.dropdown("Export Format", formatList, currentFormat))
@@ -1058,24 +1062,112 @@ void IncomingLightPowerPass::renderExportUI(Gui::Widgets& widget)
             mExportFormat = static_cast<OutputFormat>(currentFormat);
         }
 
-        // Export buttons
-        if (widget.button("Export Power Data"))
-        {
-            const std::string baseName = "light_power_" + std::to_string(std::time(nullptr));
-            const std::string ext = mExportFormat == OutputFormat::PNG ? ".png" :
-                                   mExportFormat == OutputFormat::EXR ? ".exr" :
-                                   mExportFormat == OutputFormat::CSV ? ".csv" : ".json";
+        // Checkboxes to select what to export
+        static bool sExportPower = true;
+        static bool sExportStats = true;
+        widget.checkbox("Export Power Data", sExportPower);
+        widget.checkbox("Export Statistics", sExportStats);
 
-            exportPowerData(mExportDirectory + "/" + baseName + ext, mExportFormat);
+        // Export button
+        if (widget.button("Export Selected Data"))
+        {
+            if (!sExportPower && !sExportStats)
+            {
+                logWarning("No data selected for export.");
+            }
+            else
+            {
+                const std::string timestamp = std::to_string(std::time(nullptr));
+                bool powerSuccess = false;
+                bool statsSuccess = false;
+
+                if (sExportPower)
+                {
+                    const std::string ext = mExportFormat == OutputFormat::PNG   ? ".png"
+                                            : mExportFormat == OutputFormat::EXR ? ".exr"
+                                            : mExportFormat == OutputFormat::CSV ? ".csv"
+                                                                                 : ".json";
+
+                    const std::string filename = mExportDirectory + "/light_power_" + timestamp + ext;
+                    if (exportPowerData(filename, mExportFormat))
+                    {
+                        powerSuccess = true;
+                        logInfo("Power data exported successfully to " + filename);
+                    }
+                    else
+                    {
+                        logError("Failed to export power data.");
+                    }
+                }
+
+                if (sExportStats)
+                {
+                    // Statistics only support CSV and JSON
+                    OutputFormat statsFormat = (mExportFormat == OutputFormat::CSV) ? OutputFormat::CSV : OutputFormat::JSON;
+                    const std::string ext = (statsFormat == OutputFormat::CSV) ? ".csv" : ".json";
+                    const std::string filename = mExportDirectory + "/light_stats_" + timestamp + ext;
+
+                    if (exportStatistics(filename, statsFormat))
+                    {
+                        statsSuccess = true;
+                        logInfo("Statistics exported successfully to " + filename);
+                    }
+                    else
+                    {
+                        logError("Failed to export statistics.");
+                    }
+                }
+
+                if (sExportPower && sExportStats)
+                {
+                    if (powerSuccess && statsSuccess)
+                    {
+                        logInfo("Successfully exported both power data and statistics.");
+                    }
+                    else if (powerSuccess)
+                    {
+                        logWarning("Power data exported, but statistics export failed.");
+                    }
+                    else if (statsSuccess)
+                    {
+                        logWarning("Statistics exported, but power data export failed.");
+                    }
+                    else
+                    {
+                        logError("Both power data and statistics exports failed.");
+                    }
+                }
+            }
         }
+    }
 
-        if (widget.button("Export Statistics"))
+    widget.separator();
+    widget.text("Batch Export");
+    widget.tooltip("Export data for all viewpoints in the scene.");
+
+    widget.var("Frames to wait", mBatchExportFramesToWait, 1u, 120u);
+    widget.tooltip("Number of frames to wait for rendering to stabilize after switching viewpoints.");
+
+    if (mpScene && mpScene->hasSavedViewpoints())
+    {
+        widget.text("Scene has loaded viewpoints");
+        widget.tooltip("Batch export will use the scene's saved viewpoints.");
+    }
+    else
+    {
+        widget.text("No loaded viewpoints");
+        widget.tooltip("Batch export will generate 8 viewpoints around the current camera.");
+    }
+
+    if (widget.button("Export All Viewpoints"))
+    {
+        if (mBatchExportActive)
         {
-            const std::string baseName = "light_stats_" + std::to_string(std::time(nullptr));
-            const std::string ext = mExportFormat == OutputFormat::CSV ? ".csv" : ".json";
-
-            exportStatistics(mExportDirectory + "/" + baseName + ext,
-                            mExportFormat == OutputFormat::CSV ? OutputFormat::CSV : OutputFormat::JSON);
+            logWarning("Batch export is already in progress.");
+        }
+        else
+        {
+            startBatchExport();
         }
     }
 }
@@ -1834,4 +1926,205 @@ void IncomingLightPowerPass::prepareResources(RenderContext* pRenderContext, con
     }
 
     // Add any buffer initialization or other resource preparation here
+}
+
+void IncomingLightPowerPass::startBatchExport()
+{
+    if (!mpScene)
+    {
+        logWarning("No scene available for batch export.");
+        return;
+    }
+
+    mBatchExportActive = true;
+    mBatchExportCurrentViewpoint = 0;
+    mBatchExportFrameCount = mBatchExportFramesToWait;
+    mBatchExportFormat = mExportFormat;
+
+    const std::string timestamp = std::to_string(std::time(nullptr));
+    mBatchExportBaseDirectory = mExportDirectory + "/batch_export_" + timestamp;
+
+    if (!std::filesystem::create_directories(mBatchExportBaseDirectory))
+    {
+        logError("Failed to create base directory for batch export: " + mBatchExportBaseDirectory);
+        mBatchExportActive = false;
+        return;
+    }
+
+    // Store the original camera position and parameters
+    if (mpScene->getCamera())
+    {
+        mOriginalCameraPosition = mpScene->getCamera()->getPosition();
+        mOriginalCameraTarget = mpScene->getCamera()->getTarget();
+        mOriginalCameraUp = mpScene->getCamera()->getUpVector();
+    }
+    else
+    {
+        logWarning("No camera in scene. Using default positions for batch export.");
+        mOriginalCameraPosition = float3(0, 0, 5);
+        mOriginalCameraTarget = float3(0, 0, 0);
+        mOriginalCameraUp = float3(0, 1, 0);
+    }
+
+    // Check if the scene has saved viewpoints
+    mUseLoadedViewpoints = mpScene->hasSavedViewpoints();
+
+    if (mUseLoadedViewpoints)
+    {
+        // Store original camera state to restore it later
+        float3 originalPosition = mpScene->getCamera()->getPosition();
+        float3 originalTarget = mpScene->getCamera()->getTarget();
+        float3 originalUp = mpScene->getCamera()->getUpVector();
+
+        // Store original viewpoint to restore later
+        mOriginalViewpoint = 0; // Assume 0 is current viewpoint (default)
+
+        // Set first viewpoint (index 1, since 0 is typically the default viewpoint)
+        mBatchExportCurrentViewpoint = 1; // Start from first non-default viewpoint
+        mpScene->selectViewpoint(mBatchExportCurrentViewpoint);
+
+        logInfo("Starting batch export for loaded viewpoints to " + mBatchExportBaseDirectory);
+    }
+
+    if (!mUseLoadedViewpoints)
+    {
+        // Fallback to generating our own viewpoints around the original camera position
+        mTotalViewpoints = 8; // Default to 8 generated viewpoints
+        mBatchExportCurrentViewpoint = 0; // Start from 0 for generated viewpoints
+
+        // Set first viewpoint
+        setViewpointPosition(mBatchExportCurrentViewpoint);
+
+        logInfo("Starting batch export for " + std::to_string(mTotalViewpoints) +
+               " generated viewpoints to " + mBatchExportBaseDirectory);
+    }
+}
+
+void IncomingLightPowerPass::finishBatchExport()
+{
+    logInfo("Batch export finished for all viewpoints.");
+
+    // Restore original camera state
+    if (mpScene)
+    {
+        if (mUseLoadedViewpoints)
+        {
+            // Restore to original viewpoint
+            mpScene->selectViewpoint(mOriginalViewpoint);
+        }
+        else if (mpScene->getCamera())
+        {
+            // Restore original camera position
+            mpScene->getCamera()->setPosition(mOriginalCameraPosition);
+            mpScene->getCamera()->setTarget(mOriginalCameraTarget);
+            mpScene->getCamera()->setUpVector(mOriginalCameraUp);
+        }
+    }
+
+    mBatchExportActive = false;
+    mBatchExportCurrentViewpoint = 0;
+    mBatchExportFrameCount = 0;
+}
+
+void IncomingLightPowerPass::setViewpointPosition(uint32_t viewpointIndex)
+{
+    if (!mpScene || !mpScene->getCamera())
+        return;
+
+    // Calculate position around a circle centered on the original target
+    float angle = (float)viewpointIndex / (float)mTotalViewpoints * 2.0f * 3.14159f;
+    float distance = length(mOriginalCameraPosition - mOriginalCameraTarget);
+
+    float3 newPosition;
+    newPosition.x = mOriginalCameraTarget.x + distance * std::cos(angle);
+    newPosition.y = mOriginalCameraPosition.y; // Keep the same height
+    newPosition.z = mOriginalCameraTarget.z + distance * std::sin(angle);
+
+    mpScene->getCamera()->setPosition(newPosition);
+    mpScene->getCamera()->setTarget(mOriginalCameraTarget);
+    mpScene->getCamera()->setUpVector(mOriginalCameraUp);
+}
+
+void IncomingLightPowerPass::processBatchExport()
+{
+    if (!mBatchExportActive) return;
+
+    if (mBatchExportFrameCount > 0)
+    {
+        mBatchExportFrameCount--;
+        return;
+    }
+
+    const std::string timestamp = std::to_string(std::time(nullptr));
+    std::string viewpointDir = mBatchExportBaseDirectory + "/viewpoint_" + std::to_string(mBatchExportCurrentViewpoint);
+    std::filesystem::create_directories(viewpointDir);
+
+    const std::string powerExt = mBatchExportFormat == OutputFormat::PNG ? ".png" :
+                                 mBatchExportFormat == OutputFormat::EXR ? ".exr" :
+                                 mBatchExportFormat == OutputFormat::CSV ? ".csv" : ".json";
+    std::string powerFilename = viewpointDir + "/power_" + timestamp + powerExt;
+    bool powerSuccess = exportPowerData(powerFilename, mBatchExportFormat);
+
+    OutputFormat statsFormat = (mBatchExportFormat == OutputFormat::CSV) ? OutputFormat::CSV : OutputFormat::JSON;
+    const std::string statsExt = (statsFormat == OutputFormat::CSV) ? ".csv" : ".json";
+    std::string statsFilename = viewpointDir + "/stats_" + timestamp + statsExt;
+    bool statsSuccess = exportStatistics(statsFilename, statsFormat);
+
+    if (!powerSuccess || !statsSuccess)
+    {
+        logWarning("Failed to export data for viewpoint " + std::to_string(mBatchExportCurrentViewpoint));
+    }
+    else
+    {
+        logInfo("Successfully exported data for viewpoint " + std::to_string(mBatchExportCurrentViewpoint));
+    }
+
+    // Advance to next viewpoint
+    mBatchExportCurrentViewpoint++;
+
+    if (mUseLoadedViewpoints)
+    {
+
+        // Try to select the next viewpoint
+        // Note: selectViewpoint doesn't throw exceptions, it just logs a warning if index is invalid
+        // We need to remember the camera state before trying to select a new viewpoint
+        float3 prevPosition = mpScene->getCamera()->getPosition();
+        float3 prevTarget = mpScene->getCamera()->getTarget();
+
+        // Try to select the viewpoint
+        mpScene->selectViewpoint(mBatchExportCurrentViewpoint);
+
+        // Check if camera actually moved (if viewpoint was valid)
+        float3 currentPosition = mpScene->getCamera()->getPosition();
+        float3 currentTarget = mpScene->getCamera()->getTarget();
+
+        // Calculate distances between previous and current positions
+        float posDistance = length(prevPosition - currentPosition);
+        float targetDistance = length(prevTarget - currentTarget);
+
+        // If distances are very small, consider positions unchanged
+        const float epsilon = 0.0001f; // Small threshold for floating-point comparison
+        if (posDistance < epsilon && targetDistance < epsilon)
+        {
+            // Camera didn't move, meaning we've reached the end of viewpoint list
+            logInfo("Reached the end of loaded viewpoints at index " + std::to_string(mBatchExportCurrentViewpoint-1));
+            finishBatchExport();
+            return;
+        }
+
+        mBatchExportFrameCount = mBatchExportFramesToWait;
+    }
+    else
+    {
+        // Using generated viewpoints
+        if (mBatchExportCurrentViewpoint >= mTotalViewpoints)
+        {
+            finishBatchExport();
+        }
+        else
+        {
+            setViewpointPosition(mBatchExportCurrentViewpoint);
+            mBatchExportFrameCount = mBatchExportFramesToWait;
+        }
+    }
 }

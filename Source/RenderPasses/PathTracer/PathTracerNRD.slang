@@ -85,7 +85,13 @@ extension PathTracer
 
             // Add primary ray length to the path length.
             float primaryHitDist = length(sd.posW - path.origin);
-            path.sceneLength += primaryHitDist;
+            // Only skip path length update if:
+            // 1. We've already hit an emissive surface previously
+            // 2. AND we already have accumulated some path length
+            if (!(path.hitEmissiveSurface && path.sceneLength > 0.0f))
+            {
+                path.sceneLength += primaryHitDist;
+            }
             // Hijack pdf that we don't need.
             path.pdf += primaryHitDist;
 
@@ -217,7 +223,13 @@ extension PathTracer
         if (isPrimaryHit)
         {
             // Add primary ray length to the path length.
-            path.sceneLength += length(sd.posW - path.origin);
+            // Only skip path length update if:
+            // 1. We've already hit an emissive surface previously
+            // 2. AND we already have accumulated some path length
+            if (!(path.hitEmissiveSurface && path.sceneLength > 0.0f))
+            {
+                path.sceneLength += length(sd.posW - path.origin);
+            }
         }
         else
         {

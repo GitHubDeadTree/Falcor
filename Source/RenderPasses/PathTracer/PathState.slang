@@ -109,10 +109,11 @@ struct PathState
 
     float       wavelength;             ///< Light wavelength in nm (0 = not determined or white light)
 
-    // === CIR (Channel Impulse Response) specific fields (12 bytes) ===
+    // === CIR (Channel Impulse Response) specific fields (13 bytes) ===
     float cirEmissionAngle;             ///< φ_i: Emission angle at LED surface (radians)
     float cirReceptionAngle;            ///< θ_i: Reception angle at receiver surface (radians)
     float cirReflectanceProduct;        ///< r_i: Accumulated product of surface reflectances [0,1]
+    bool hitEmissiveSurface;            ///< Flag indicating if the path has hit an emissive surface
 
     // Accessors
 
@@ -240,6 +241,7 @@ struct PathState
         cirEmissionAngle = 0.0f;      // Default: perpendicular emission
         cirReceptionAngle = 0.0f;     // Default: perpendicular reception
         cirReflectanceProduct = 1.0f; // Initial value: no attenuation, will be multiplied by reflectances
+        hitEmissiveSurface = false;   // Default: not hit emissive surface
     }
 
     /** Update emission angle based on surface normal and ray direction.

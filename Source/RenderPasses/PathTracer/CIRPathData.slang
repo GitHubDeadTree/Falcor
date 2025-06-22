@@ -53,62 +53,26 @@ struct CIRPathData
     */
     bool isValid()
     {
-        // Path length validation: modified range for VLC analysis [1, 200] meters
-        if (pathLength < 1.0f || pathLength > 200.0f) return false;
-
-        // Angle validation: must be within [0, π]
-        if (emissionAngle < 0.0f || emissionAngle > 3.14159f) return false;
-        if (receptionAngle < 0.0f || receptionAngle > 3.14159f) return false;
-
-        // Reflectance product validation: must be within [0, 1]
-        if (reflectanceProduct < 0.0f || reflectanceProduct > 1.0f) return false;
-
-        // Emitted power validation: RELAXED - allow zero and small positive values
-        // This preserves valid angle data even when power calculation has issues
-        if (emittedPower < 0.0f || emittedPower > 10000.0f) return false;
-
-        // Check for NaN and infinity
+        // GPU端只检查路径长度的NaN/无穷大值
         if (isnan(pathLength) || isinf(pathLength)) return false;
-        if (isnan(emissionAngle) || isinf(emissionAngle)) return false;
-        if (isnan(receptionAngle) || isinf(receptionAngle)) return false;
-        if (isnan(reflectanceProduct) || isinf(reflectanceProduct)) return false;
-        if (isnan(emittedPower) || isinf(emittedPower)) return false;
 
+        // 其他所有验证都移到CPU端
         return true;
     }
 
-    /** Sanitize CIR data by clamping values to valid ranges.
-        MODIFIED: Adjusted sanitization to preserve zero power values.
-        ADDED: Special handling for zero emission angle.
-        This method ensures all parameters are within physically reasonable bounds.
+    /** Sanitize CIR data by fixing only critical data integrity issues.
+        MODIFIED: Removed path length clamping to allow proper filtering of invalid paths.
+        This method only fixes NaN/infinity values but preserves original data for filtering.
     */
     [mutating] void sanitize()
     {
-        // Clamp path length to modified range [1, 200] meters
-        pathLength = clamp(pathLength, 1.0f, 200.0f);
-
-        // Clamp angles to [0, π] range
-        emissionAngle = clamp(emissionAngle, 0.0f, 3.14159f);
-        receptionAngle = clamp(receptionAngle, 0.0f, 3.14159f);
-
-        // Clamp reflectance product to [0, 1] range
-        reflectanceProduct = clamp(reflectanceProduct, 0.0f, 1.0f);
-
-        // MODIFIED: Allow zero emitted power, only ensure non-negative
-        emittedPower = max(emittedPower, 0.0f);
-
-        // Handle NaN and infinity values with reasonable defaults
-        if (isnan(pathLength) || isinf(pathLength)) pathLength = 1.0f;
-        if (isnan(emissionAngle) || isinf(emissionAngle)) emissionAngle = 0.785398f; // 45 degrees instead of 0
-        if (isnan(receptionAngle) || isinf(receptionAngle)) receptionAngle = 0.0f;
-        if (isnan(reflectanceProduct) || isinf(reflectanceProduct)) reflectanceProduct = 0.5f;
-        if (isnan(emittedPower) || isinf(emittedPower)) emittedPower = 0.0f; // Allow zero power
-
-        // SPECIAL HANDLING: Fix zero emission angle issue in file output
-        // If emission angle is exactly zero, set it to 1.1 radians (approximately 63 degrees)
-        if (emissionAngle == 0.0f)
+        // GPU端只处理路径长度的NaN/无穷大值
+        // 其他所有验证和处理都交给CPU端
+        if (isnan(pathLength) || isinf(pathLength))
         {
-            emissionAngle = 1.1f; // Distinctive value for debugging and analysis
+            pathLength = 1.0f; // 设置默认值，但实际上这种情况下整条路径会被丢弃
         }
+
+        // 移除所有其他字段的处理逻辑
     }
 };

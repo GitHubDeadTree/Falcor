@@ -159,7 +159,7 @@ private:
     std::vector<float> mBandWavelengths; ///< Specific wavelength bands to filter
     std::vector<float> mBandTolerances;  ///< Tolerances for specific wavelength bands
     static constexpr float kDefaultTolerance = 5.0f; ///< Default tolerance for specific bands in nm
-    float mPixelAreaScale = 1000.0f;     ///< Scale factor for pixel area calculation
+    float mPixelAreaScale = 1.0f;     ///< Scale factor for pixel area calculation
 
     // UI variables
     bool mEnabled = true;                ///< Enable/disable the pass
@@ -228,4 +228,28 @@ private:
     void renderExportUI(Gui::Widgets& widget);
     std::string getFormattedStatistics() const;
     void resetStatistics();
+
+    // Batch export state
+    bool mBatchExportActive = false;
+    uint32_t mBatchExportFrameCount = 0;
+    uint32_t mBatchExportFramesToWait = 20;
+    uint32_t mBatchExportCurrentViewpoint = 0;
+    uint32_t mOriginalViewpoint = 0;
+    std::string mBatchExportBaseDirectory;
+    OutputFormat mBatchExportFormat;
+
+    // Use loaded viewpoints or generate positions
+    bool mUseLoadedViewpoints = true;
+
+    // Camera position-based viewpoints (fallback if no viewpoints loaded)
+    float3 mOriginalCameraPosition;
+    float3 mOriginalCameraTarget;
+    float3 mOriginalCameraUp;
+    uint32_t mTotalViewpoints = 8;
+
+    // Batch export helper functions
+    void startBatchExport();
+    void processBatchExport();
+    void finishBatchExport();
+    void setViewpointPosition(uint32_t viewpointIndex);
 };

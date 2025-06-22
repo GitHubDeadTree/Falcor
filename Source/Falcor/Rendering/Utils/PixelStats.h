@@ -34,6 +34,7 @@
 #include "Core/Pass/ComputePass.h"
 #include "Utils/UI/Gui.h"
 #include "Utils/Algorithm/ParallelReduction.h"
+#include "Utils/Logger.h"
 #include <memory>
 #include <vector>
 #include <string>
@@ -62,20 +63,36 @@ namespace Falcor
         uint32_t pixelY;
         uint32_t pathIndex;
 
-        bool isValid() const
+        bool isValid(float minPathLength, float maxPathLength,
+                    float minEmittedPower, float maxEmittedPower,
+                    float minAngle, float maxAngle,
+                    float minReflectance, float maxReflectance) const
         {
-            // CPU-side filtering criteria updated:
-            // 1. Path length: modified range [1, 200] meters for VLC analysis
-            // 2. Energy (emitted power): must be > 0 (stricter than GPU)
-            // 3. Angles: within [0, π]
-            // 4. Reflectance: within [0, 1]
-            // 5. No NaN/infinity checks (handled by GPU)
+            // Input validation - ensure parameters are in valid ranges
+            if (minPathLength < 0.0f || maxPathLength < minPathLength ||
+                minEmittedPower < 0.0f || maxEmittedPower < minEmittedPower ||
+                minAngle < 0.0f || maxAngle < minAngle ||
+                minReflectance < 0.0f || maxReflectance < minReflectance) {
+                logError("CIRPathData::isValid: Invalid parameter ranges");
+                return false;  // Default: reject invalid data
+            }
 
-            return pathLength >= 1.0f && pathLength <= 200.0f &&
-                   emissionAngle >= 0.0f && emissionAngle <= 3.14159f &&
-                   receptionAngle >= 0.0f && receptionAngle <= 3.14159f &&
-                   reflectanceProduct >= 0.0f && reflectanceProduct <= 1.0f &&
-                   emittedPower > 0.0f;  // Must be positive (stricter than GPU)
+            // Data validation - ensure all data values are physically reasonable
+            if (pathLength < 0.0f || emittedPower < 0.0f ||
+                emissionAngle < 0.0f || receptionAngle < 0.0f ||
+                reflectanceProduct < 0.0f) {
+                logWarning("CIRPathData::isValid: Invalid data values detected");
+                return false;  // Default: reject invalid data
+            }
+
+            // Apply filtering criteria with configurable parameters
+            bool valid = pathLength >= minPathLength && pathLength <= maxPathLength &&
+                        emissionAngle >= minAngle && emissionAngle <= maxAngle &&
+                        receptionAngle >= minAngle && receptionAngle <= maxAngle &&
+                        reflectanceProduct >= minReflectance && reflectanceProduct <= maxReflectance &&
+                        emittedPower > minEmittedPower && emittedPower <= maxEmittedPower;
+
+            return valid;
         }
     };
 
@@ -275,6 +292,16 @@ namespace Falcor
 
         // CIR export configuration
         CIRExportFormat                     mCIRExportFormat = CIRExportFormat::CSV; ///< Selected CIR export format.
+
+        // CIR filtering parameters (configurable via UI)
+        float                               mCIRMinPathLength = 1.0f;        ///< Minimum path length for CIR filtering (meters)
+        float                               mCIRMaxPathLength = 200.0f;      ///< Maximum path length for CIR filtering (meters)
+        float                               mCIRMinEmittedPower = 0.0f;      ///< Minimum emitted power for CIR filtering (watts)
+        float                               mCIRMaxEmittedPower = 10000.0f;  ///< Maximum emitted power for CIR filtering (watts)
+        float                               mCIRMinAngle = 0.0f;             ///< Minimum angle for CIR filtering (radians)
+        float                               mCIRMaxAngle = 3.14159f;         ///< Maximum angle for CIR filtering (radians)
+        float                               mCIRMinReflectance = 0.0f;       ///< Minimum reflectance for CIR filtering
+        float                               mCIRMaxReflectance = 1.0f;       ///< Maximum reflectance for CIR filtering
 
         // Scene reference for CIR parameter computation
         ref<Scene>                          mpScene;                        ///< Scene reference for static parameter calculation.

@@ -196,17 +196,18 @@ void logCIRRawPath(CIRPathData pathData)
 #endif
 }
 
-// Unified CIR logging function - MODIFIED: Removed validation, direct data logging
+// Unified CIR logging function - MODIFIED: Added path filtering to remove invalid paths
 void logCIRPathComplete(CIRPathData pathData)
 {
-    // NEW LOGIC: GPU-side does basic sanitization only,
-    // CPU-side will handle final filtering with stricter criteria
+    // 只检查路径长度的NaN/无穷大值，如果异常则直接丢弃整条光路
+    if (isnan(pathData.pathLength) || isinf(pathData.pathLength))
+    {
+        // 直接返回，不记录任何数据到缓冲区
+        return;
+    }
 
-    // Apply basic sanitization to handle NaN/infinity values
-    CIRPathData sanitizedData = validateAndSanitizeCIRData(pathData);
-
-    // Direct logging to both systems without additional validation
-    // CPU-side filtering will apply stricter criteria (Energy>0, Length<50m)
-    logCIRStatisticsInternal(sanitizedData);
-    logCIRRawPathInternal(sanitizedData);
+    // 对于路径长度有效的数据，直接记录而不进行任何修改
+    // 其他字段的验证交给CPU端处理
+    logCIRStatisticsInternal(pathData);
+    logCIRRawPathInternal(pathData);
 }
