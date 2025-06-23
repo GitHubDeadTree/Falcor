@@ -23,6 +23,7 @@ public:
     float getPower() const override;
     void setIntensity(const float3& intensity) override;
     void updateFromAnimation(const float4x4& transform) override;
+    Light::Changes beginFrame() override;
 
     // LED specific interface
     void setLEDShape(LEDShape shape);
@@ -62,6 +63,9 @@ public:
     // Data access methods (for scene renderer)
     const std::vector<float2>& getSpectrumData() const { return mSpectrumData; }
     const std::vector<float2>& getLightFieldData() const { return mLightFieldData; }
+
+    // Override getData() for debugging Scene data access
+    const LightData& getData() const;
 
 private:
     void update();

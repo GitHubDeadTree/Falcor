@@ -21,19 +21,32 @@ LEDLight::LEDLight(const std::string& name) : Light(name, LightType::LED)
     mData.lambertN = 1.0f;
     mData.shapeType = (uint32_t)LEDShape::Sphere;
 
-    updateGeometry();
+    // Set initial position to (10, 10, 10)
+    mTransformMatrix[3] = float4(10.0f, 10.0f, 10.0f, 1.0f);
+
+    logInfo("LEDLight::LEDLight - Light '{}' created with initial position ({:.3f}, {:.3f}, {:.3f})",
+            name, mTransformMatrix[3].x, mTransformMatrix[3].y, mTransformMatrix[3].z);
+
+    update();
     mPrevData = mData;
 }
 
 void LEDLight::updateFromAnimation(const float4x4& transform)
 {
+    // Only extract position and direction, don't directly overwrite the entire transform matrix
+    float3 pos = transform.getCol(3).xyz();
     float3 direction = normalize(transformVector(transform, float3(0.0f, 0.0f, -1.0f)));
-    float3 scaling = float3(math::length(transform[0].xyz()), math::length(transform[1].xyz()), math::length(transform[2].xyz()));
+    float3 scaling = float3(math::length(transform[0].xyz()),
+                           math::length(transform[1].xyz()),
+                           math::length(transform[2].xyz()));
 
-    mTransformMatrix = transform;
+    logError("### LEDLight::updateFromAnimation CALLED - Light '{}': Animation position ({:.3f}, {:.3f}, {:.3f}), Current position ({:.3f}, {:.3f}, {:.3f})",
+            getName(), pos.x, pos.y, pos.z, mTransformMatrix[3].x, mTransformMatrix[3].y, mTransformMatrix[3].z);
+
+    // Maintain manual setting priority, only update when needed
+    setWorldPosition(pos);
+    setWorldDirection(direction);
     mScaling = scaling;
-    mData.dirW = direction;
-    // Use update() like AnalyticAreaLight to ensure proper position synchronization
     update();
 }
 
@@ -41,7 +54,21 @@ void LEDLight::update()
 {
     // Like AnalyticAreaLight::update() - ensure position consistency
     // Update mData.posW from transform matrix to maintain consistency
+    float3 oldGpuPos = mData.posW;
     mData.posW = mTransformMatrix[3].xyz();
+
+    logError("### LEDLight::update CALLED - Light '{}': GPU position synced from ({:.3f}, {:.3f}, {:.3f}) to ({:.3f}, {:.3f}, {:.3f})",
+             getName(), oldGpuPos.x, oldGpuPos.y, oldGpuPos.z, mData.posW.x, mData.posW.y, mData.posW.z);
+
+    // Check what Scene's beginFrame() would detect for position changes
+    float3 prevPos = mPrevData.posW;
+    float3 currentPos = mData.posW;
+
+    // Manually check for position changes like Light::beginFrame() does
+    bool hasPositionChange = any(prevPos != currentPos);
+
+    logError("### LEDLight::update - Position change detection: Previous ({:.3f}, {:.3f}, {:.3f}), Current ({:.3f}, {:.3f}, {:.3f}), Will Scene detect change? {}",
+             prevPos.x, prevPos.y, prevPos.z, currentPos.x, currentPos.y, currentPos.z, hasPositionChange ? "YES" : "NO");
 
     // Update the final transformation matrix
     updateGeometry();
@@ -145,6 +172,12 @@ void LEDLight::setScaling(float3 scale)
 
 void LEDLight::setTransformMatrix(const float4x4& mtx)
 {
+    float3 oldPos = mTransformMatrix[3].xyz();
+    float3 newPos = mtx[3].xyz();
+
+    logError("### LEDLight::setTransformMatrix CALLED - Light '{}': Transform matrix position changed from ({:.3f}, {:.3f}, {:.3f}) to ({:.3f}, {:.3f}, {:.3f})",
+            getName(), oldPos.x, oldPos.y, oldPos.z, newPos.x, newPos.y, newPos.z);
+
     mTransformMatrix = mtx;
     // Use update() like AnalyticAreaLight to ensure proper position synchronization
     update();
@@ -152,7 +185,8 @@ void LEDLight::setTransformMatrix(const float4x4& mtx)
 
 void LEDLight::setOpeningAngle(float openingAngle)
 {
-    openingAngle = std::clamp(openingAngle, 0.0f, (float)M_PI);
+    if (openingAngle < 0.0f) openingAngle = 0.0f;
+    if (openingAngle > (float)M_PI) openingAngle = (float)M_PI;
     if (mData.openingAngle != openingAngle)
     {
         mData.openingAngle = openingAngle;
@@ -195,13 +229,19 @@ void LEDLight::setWorldDirection(const float3& dir)
 
 void LEDLight::setWorldPosition(const float3& pos)
 {
-    if (any(mData.posW != pos))
+    float3 oldPos = mTransformMatrix[3].xyz();
+    if (any(oldPos != pos))
     {
-        mData.posW = pos;
-        // Correct way to update transform matrix translation component
+        logError("### LEDLight::setWorldPosition CALLED - Light '{}': Position changed from ({:.3f}, {:.3f}, {:.3f}) to ({:.3f}, {:.3f}, {:.3f})",
+                getName(), oldPos.x, oldPos.y, oldPos.z, pos.x, pos.y, pos.z);
+
         mTransformMatrix[3] = float4(pos, 1.0f);
-        // Re-calculate the final transformation matrix like AnalyticAreaLight::update()
         update();
+    }
+    else
+    {
+        logError("### LEDLight::setWorldPosition CALLED (NO CHANGE) - Light '{}': Position unchanged ({:.3f}, {:.3f}, {:.3f})",
+                 getName(), pos.x, pos.y, pos.z);
     }
 }
 
@@ -332,6 +372,31 @@ void LEDLight::setIntensity(const float3& intensity)
         Light::setIntensity(intensity);
         mData.totalPower = 0.0f; // Reset total power when intensity is set manually
     }
+}
+
+const LightData& LEDLight::getData() const
+{
+    logError("### LEDLight::getData CALLED - Light '{}': Position ({:.3f}, {:.3f}, {:.3f}), Active: {}, Type: {}, Changes: {} - DATA BEING UPLOADED TO GPU",
+             getName(), mData.posW.x, mData.posW.y, mData.posW.z,
+             isActive() ? "YES" : "NO",
+             (uint32_t)mData.type,
+             (uint32_t)getChanges());
+    return mData;
+}
+
+Light::Changes LEDLight::beginFrame()
+{
+    logError("### LEDLight::beginFrame BEFORE - Light '{}': mData.posW ({:.3f}, {:.3f}, {:.3f}), mPrevData.posW ({:.3f}, {:.3f}, {:.3f})",
+             getName(), mData.posW.x, mData.posW.y, mData.posW.z,
+             mPrevData.posW.x, mPrevData.posW.y, mPrevData.posW.z);
+
+    auto changes = Light::beginFrame();
+
+    logError("### LEDLight::beginFrame AFTER - Light '{}': mData.posW ({:.3f}, {:.3f}, {:.3f}), mPrevData.posW ({:.3f}, {:.3f}, {:.3f}), Changes: {}",
+             getName(), mData.posW.x, mData.posW.y, mData.posW.z,
+             mPrevData.posW.x, mPrevData.posW.y, mPrevData.posW.z, (uint32_t)changes);
+
+    return changes;
 }
 
 void LEDLight::renderUI(Gui::Widgets& widget)

@@ -1592,6 +1592,8 @@ namespace Falcor
     {
         Light::Changes combinedChanges = Light::Changes::None;
 
+        logError("### Scene::updateLights START - Total lights: {}, forceUpdate: {}", mLights.size(), forceUpdate ? "YES" : "NO");
+
         // Animate lights and get list of changes.
         for (const auto& light : mLights)
         {
@@ -1604,21 +1606,34 @@ namespace Falcor
             combinedChanges |= changes;
         }
 
+        logError("### Scene::updateLights - Combined changes: {}", (uint32_t)combinedChanges);
+
         // Update changed lights.
         uint32_t activeLightIndex = 0;
         mActiveLights.clear();
 
         for (const auto& light : mLights)
         {
-            if (!light->isActive()) continue;
+            if (!light->isActive()) {
+                logError("### Scene::updateLights - Light '{}' is INACTIVE, skipping", light->getName());
+                continue;
+            }
 
             mActiveLights.push_back(light);
+            logError("### Scene::updateLights - Light '{}' added to active lights at index {}", light->getName(), activeLightIndex);
 
             auto changes = light->getChanges();
             if (changes != Light::Changes::None || is_set(combinedChanges, Light::Changes::Active) || forceUpdate)
             {
-                // TODO: This is slow since the buffer is not CPU writable. Copy into CPU buffer and upload once instead.
+                logError("### Scene::updateLights - UPLOADING Light '{}' to GPU buffer at index {}, changes: {}",
+                         light->getName(), activeLightIndex, (uint32_t)changes);
                 mpLightsBuffer->setElement(activeLightIndex, light->getData());
+                logError("### Scene::updateLights - GPU upload COMPLETED for Light '{}' at index {}",
+                         light->getName(), activeLightIndex);
+            }
+            else
+            {
+                logError("### Scene::updateLights - Light '{}' has NO CHANGES, skipping GPU upload", light->getName());
             }
 
             activeLightIndex++;
@@ -1626,6 +1641,7 @@ namespace Falcor
 
         if (combinedChanges != Light::Changes::None || forceUpdate)
         {
+            logError("### Scene::updateLights - Setting lightCount in shader to: {}", (uint32_t)mActiveLights.size());
             mpSceneBlock->getRootVar()["lightCount"] = (uint32_t)mActiveLights.size();
             updateLightStats();
         }
@@ -1639,6 +1655,7 @@ namespace Falcor
         const Light::Changes otherChanges = ~(Light::Changes::Intensity | Light::Changes::Position | Light::Changes::Direction | Light::Changes::Active);
         if ((combinedChanges & otherChanges) != Light::Changes::None) flags |= IScene::UpdateFlags::LightPropertiesChanged;
 
+        logError("### Scene::updateLights END - Return flags: {}", (uint32_t)flags);
         return flags;
     }
 

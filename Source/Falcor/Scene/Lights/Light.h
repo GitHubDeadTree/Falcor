@@ -66,7 +66,7 @@ namespace Falcor
 
         /** Get the light data
         */
-        inline const LightData& getData() const { return mData; }
+        virtual const LightData& getData() const { return mData; }
 
         /** Name the light
         */
@@ -108,7 +108,7 @@ namespace Falcor
 
         /** Begin a new frame. Returns the changes from the previous frame
         */
-        Changes beginFrame();
+        virtual Changes beginFrame();
 
         /** Returns the changes from the previous frame
         */
