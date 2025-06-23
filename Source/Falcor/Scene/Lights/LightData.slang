@@ -41,6 +41,7 @@ enum class LightType : uint32_t
     Rect,           ///< Quad shaped area light source
     Disc,           ///< Disc shaped area light source
     Sphere,         ///< Spherical area light source
+    LED,            ///< LED light source with customizable shape and spectrum
 };
 
 /** This is a host/device structure that describes analytic light sources.
@@ -64,6 +65,18 @@ struct LightData
     float    _pad1;
     float4x4 transMat           = {};               ///< Transformation matrix of the light shape, from local to world space.
     float4x4 transMatIT         = {};               ///< Inverse-transpose of transformation matrix of the light shape
+
+    // LED light specific parameters
+    float    lambertN           = 1.0f;             ///< Lambert exponent for angular attenuation
+    float    totalPower         = 0.0f;             ///< Total power of LED in watts
+    uint32_t shapeType          = 0;                ///< LED geometry shape (0=sphere, 1=ellipsoid, 2=rectangle)
+    uint32_t hasCustomLightField = 0;               ///< Flag indicating if custom light field data is loaded
+
+    // Spectrum and light field data pointers (for GPU access)
+    uint32_t spectrumDataOffset = 0;                ///< Offset to spectrum data in buffer
+    uint32_t lightFieldDataOffset = 0;              ///< Offset to light field data in buffer
+    uint32_t spectrumDataSize   = 0;                ///< Size of spectrum data
+    uint32_t lightFieldDataSize = 0;                ///< Size of light field data
 };
 
 END_NAMESPACE_FALCOR
