@@ -64,6 +64,7 @@ public:
     const std::vector<float2>& getLightFieldData() const { return mLightFieldData; }
 
 private:
+    void update();
     void updateGeometry();
     void updateIntensityFromPower();
     float calculateSurfaceArea() const;

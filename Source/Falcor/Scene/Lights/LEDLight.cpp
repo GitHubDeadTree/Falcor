@@ -27,21 +27,30 @@ LEDLight::LEDLight(const std::string& name) : Light(name, LightType::LED)
 
 void LEDLight::updateFromAnimation(const float4x4& transform)
 {
-    float3 position = transform[3].xyz();
     float3 direction = normalize(transformVector(transform, float3(0.0f, 0.0f, -1.0f)));
     float3 scaling = float3(math::length(transform[0].xyz()), math::length(transform[1].xyz()), math::length(transform[2].xyz()));
 
     mTransformMatrix = transform;
     mScaling = scaling;
-    setWorldDirection(direction);
-    setWorldPosition(position);
+    mData.dirW = direction;
+    // Use update() like AnalyticAreaLight to ensure proper position synchronization
+    update();
+}
+
+void LEDLight::update()
+{
+    // Like AnalyticAreaLight::update() - ensure position consistency
+    // Update mData.posW from transform matrix to maintain consistency
+    mData.posW = mTransformMatrix[3].xyz();
+
+    // Update the final transformation matrix
     updateGeometry();
 }
 
 void LEDLight::updateGeometry()
 {
     try {
-        // Update transformation matrix
+        // Update transformation matrix like AnalyticAreaLight
         float4x4 scaleMat = math::scale(float4x4::identity(), mScaling);
         mData.transMat = mul(mTransformMatrix, scaleMat);
         mData.transMatIT = inverse(transpose(mData.transMat));
@@ -80,6 +89,11 @@ void LEDLight::updateGeometry()
         mData.bitangent = float3(0, 1, 0);
         logError("LEDLight::updateGeometry - Failed to calculate geometry data");
     }
+
+    // Synchronize only tangent and bitangent to prevent assertion failures in Light::beginFrame()
+    // while preserving change detection for position, direction, and other properties
+    mPrevData.tangent = mData.tangent;
+    mPrevData.bitangent = mData.bitangent;
 }
 
 float LEDLight::calculateSurfaceArea() const
@@ -114,7 +128,7 @@ void LEDLight::setLEDShape(LEDShape shape)
     {
         mLEDShape = shape;
         mData.shapeType = (uint32_t)shape;
-        updateGeometry();
+        update();
         updateIntensityFromPower();
     }
 }
@@ -124,7 +138,7 @@ void LEDLight::setScaling(float3 scale)
     if (any(mScaling != scale))
     {
         mScaling = scale;
-        updateGeometry();
+        update();
         updateIntensityFromPower();
     }
 }
@@ -132,7 +146,8 @@ void LEDLight::setScaling(float3 scale)
 void LEDLight::setTransformMatrix(const float4x4& mtx)
 {
     mTransformMatrix = mtx;
-    updateGeometry();
+    // Use update() like AnalyticAreaLight to ensure proper position synchronization
+    update();
 }
 
 void LEDLight::setOpeningAngle(float openingAngle)
@@ -152,12 +167,42 @@ void LEDLight::setWorldDirection(const float3& dir)
     if (any(mData.dirW != normDir))
     {
         mData.dirW = normDir;
+
+        // Rebuild the rotation part of mTransformMatrix while preserving translation.
+        // Falcor's coordinate system uses -Z as the forward direction.
+        float3 forward = normDir;
+        float3 zAxis = -forward;
+        float3 up = float3(0.f, 1.f, 0.f);
+
+        // Handle the case where the direction is parallel to the up vector.
+        if (abs(dot(up, zAxis)) > 0.999f)
+        {
+            up = float3(1.f, 0.f, 0.f);
+        }
+
+        float3 xAxis = normalize(cross(up, zAxis));
+        float3 yAxis = cross(zAxis, xAxis);
+
+        // Update the rotation component of the transform matrix.
+        mTransformMatrix[0] = float4(xAxis, 0.f);
+        mTransformMatrix[1] = float4(yAxis, 0.f);
+        mTransformMatrix[2] = float4(zAxis, 0.f);
+        // The translation component in mTransformMatrix[3] is preserved.
+
+        update();
     }
 }
 
 void LEDLight::setWorldPosition(const float3& pos)
 {
-    mData.posW = pos;
+    if (any(mData.posW != pos))
+    {
+        mData.posW = pos;
+        // Correct way to update transform matrix translation component
+        mTransformMatrix[3] = float4(pos, 1.0f);
+        // Re-calculate the final transformation matrix like AnalyticAreaLight::update()
+        update();
+    }
 }
 
 void LEDLight::setLambertExponent(float n)
@@ -294,8 +339,17 @@ void LEDLight::renderUI(Gui::Widgets& widget)
     Light::renderUI(widget);
 
     // Basic properties
-    widget.var("World Position", mData.posW, -FLT_MAX, FLT_MAX);
-    widget.direction("Direction", mData.dirW);
+    float3 pos = mData.posW;
+    if (widget.var("World Position", pos, -FLT_MAX, FLT_MAX))
+    {
+        setWorldPosition(pos);
+    }
+
+    float3 dir = mData.dirW;
+    if (widget.direction("Direction", dir))
+    {
+        setWorldDirection(dir);
+    }
 
     // Geometry shape settings
     static const Gui::DropdownList kShapeTypeList = {
@@ -310,7 +364,11 @@ void LEDLight::renderUI(Gui::Widgets& widget)
         setLEDShape((LEDShape)shapeType);
     }
 
-    widget.var("Scale", mScaling, 0.1f, 10.0f);
+    float3 scaling = mScaling;
+    if (widget.var("Scale", scaling, 0.1f, 10.0f))
+    {
+        setScaling(scaling);
+    }
 
     // Lambert exponent control
     float lambertN = getLambertExponent();
