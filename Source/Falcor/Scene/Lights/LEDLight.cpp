@@ -2,6 +2,13 @@
 #include "Core/Program/ShaderVar.h"
 #include "Utils/UI/Gui.h"
 #include "Utils/Logger.h"
+#include "Utils/Color/ColorHelpers.slang"
+#include "Utils/Math/MathHelpers.h"
+#include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <sstream>
+#include <vector>
 
 namespace Falcor
 {
@@ -15,13 +22,14 @@ LEDLight::LEDLight(const std::string& name) : Light(name, LightType::LED)
     mData.shapeType = (uint32_t)LEDShape::Sphere;
 
     updateGeometry();
+    mPrevData = mData;
 }
 
 void LEDLight::updateFromAnimation(const float4x4& transform)
 {
-    float3 position = transform[3].xyz;
+    float3 position = transform[3].xyz();
     float3 direction = normalize(transformVector(transform, float3(0.0f, 0.0f, -1.0f)));
-    float3 scaling = float3(length(transform[0].xyz), length(transform[1].xyz), length(transform[2].xyz));
+    float3 scaling = float3(math::length(transform[0].xyz()), math::length(transform[1].xyz()), math::length(transform[2].xyz()));
 
     mTransformMatrix = transform;
     mScaling = scaling;
@@ -34,20 +42,42 @@ void LEDLight::updateGeometry()
 {
     try {
         // Update transformation matrix
-        float4x4 scaleMat = float4x4::scale(mScaling);
-        mData.transMat = mTransformMatrix * scaleMat;
+        float4x4 scaleMat = math::scale(float4x4::identity(), mScaling);
+        mData.transMat = mul(mTransformMatrix, scaleMat);
         mData.transMatIT = inverse(transpose(mData.transMat));
 
         // Update other geometric data
         mData.surfaceArea = calculateSurfaceArea();
 
-        // Update tangent and bitangent vectors
-        mData.tangent = normalize(transformVector(mData.transMat, float3(1, 0, 0)));
-        mData.bitangent = normalize(transformVector(mData.transMat, float3(0, 1, 0)));
+        // Update tangent and bitangent vectors safely
+        float3 baseTangent = float3(1, 0, 0);
+        float3 baseBitangent = float3(0, 1, 0);
+
+        float3 transformedTangent = transformVector(mData.transMat, baseTangent);
+        float3 transformedBitangent = transformVector(mData.transMat, baseBitangent);
+
+        // Only normalize if the transformed vectors are valid
+        float tangentLength = length(transformedTangent);
+        float bitangentLength = length(transformedBitangent);
+
+        if (tangentLength > 1e-6f) {
+            mData.tangent = transformedTangent / tangentLength;
+        } else {
+            mData.tangent = baseTangent; // Fallback to original vector
+        }
+
+        if (bitangentLength > 1e-6f) {
+            mData.bitangent = transformedBitangent / bitangentLength;
+        } else {
+            mData.bitangent = baseBitangent; // Fallback to original vector
+        }
 
         mCalculationError = false;
     } catch (const std::exception&) {
         mCalculationError = true;
+        // Set fallback values in case of error
+        mData.tangent = float3(1, 0, 0);
+        mData.bitangent = float3(0, 1, 0);
         logError("LEDLight::updateGeometry - Failed to calculate geometry data");
     }
 }
@@ -107,7 +137,7 @@ void LEDLight::setTransformMatrix(const float4x4& mtx)
 
 void LEDLight::setOpeningAngle(float openingAngle)
 {
-    openingAngle = clamp(openingAngle, 0.0f, (float)M_PI);
+    openingAngle = std::clamp(openingAngle, 0.0f, (float)M_PI);
     if (mData.openingAngle != openingAngle)
     {
         mData.openingAngle = openingAngle;
@@ -125,9 +155,14 @@ void LEDLight::setWorldDirection(const float3& dir)
     }
 }
 
+void LEDLight::setWorldPosition(const float3& pos)
+{
+    mData.posW = pos;
+}
+
 void LEDLight::setLambertExponent(float n)
 {
-    n = max(0.1f, n);
+    n = std::max(0.1f, n);
     if (mData.lambertN != n)
     {
         mData.lambertN = n;
@@ -137,7 +172,7 @@ void LEDLight::setLambertExponent(float n)
 
 void LEDLight::setTotalPower(float power)
 {
-    power = max(0.0f, power);
+    power = std::max(0.0f, power);
     if (mData.totalPower != power)
     {
         mData.totalPower = power;
@@ -147,24 +182,51 @@ void LEDLight::setTotalPower(float power)
 
 float LEDLight::getPower() const
 {
+    // Return stored power if available
     if (mData.totalPower > 0.0f)
     {
         return mData.totalPower;
     }
 
     try {
-        // Calculate power based on intensity, surface area and angle distribution
+        // Calculate power from intensity using reverse Lambert formula
         float surfaceArea = calculateSurfaceArea();
-        if (surfaceArea <= 0.0f) return 0.666f; // Error value
+        if (surfaceArea <= 0.0f || surfaceArea == 0.666f) {
+            logWarning("LEDLight::getPower - Invalid surface area for power calculation");
+            return 0.666f; // Error indicator
+        }
 
+        // Calculate solid angle
         float solidAngle = 2.0f * (float)M_PI * (1.0f - mData.cosOpeningAngle);
-        if (solidAngle <= 0.0f) return 0.666f; // Error value
+        if (solidAngle <= 0.0f) {
+            logWarning("LEDLight::getPower - Invalid solid angle for power calculation");
+            return 0.666f; // Error indicator
+        }
 
-        return luminance(mData.intensity) * surfaceArea * solidAngle / (mData.lambertN + 1.0f);
+        // Lambert correction factor
+        float lambertFactor = mData.lambertN + 1.0f;
+        if (lambertFactor <= 0.0f) {
+            logWarning("LEDLight::getPower - Invalid Lambert factor for power calculation");
+            return 0.666f; // Error indicator
+        }
+
+        // Calculate power: P = I_unit * Area * SolidAngle / LambertFactor
+        // Using luminance to convert RGB intensity to scalar
+        float intensityLuminance = luminance(mData.intensity);
+        float calculatedPower = intensityLuminance * surfaceArea * solidAngle / lambertFactor;
+
+        // Validate result
+        if (!std::isfinite(calculatedPower) || calculatedPower < 0.0f) {
+            logError("LEDLight::getPower - Invalid power calculation result");
+            return 0.666f; // Error indicator
+        }
+
+        return calculatedPower;
+
     }
-    catch (const std::exception&) {
-        logError("LEDLight::getPower - Failed to calculate power");
-        return 0.666f;
+    catch (const std::exception& e) {
+        logError("LEDLight::getPower - Exception in power calculation: " + std::string(e.what()));
+        return 0.666f; // Error indicator
     }
 }
 
@@ -173,29 +235,48 @@ void LEDLight::updateIntensityFromPower()
     if (mData.totalPower <= 0.0f) return;
 
     try {
-        // Calculate intensity per unit solid angle
+        // Calculate intensity per unit solid angle based on Lambert model
         float surfaceArea = calculateSurfaceArea();
-        if (surfaceArea <= 0.0f) {
+        if (surfaceArea <= 0.0f || surfaceArea == 0.666f) {
             logWarning("LEDLight::updateIntensityFromPower - Invalid surface area");
+            mCalculationError = true;
             return;
         }
 
-        // Calculate angle modulation factor
-        float angleFactor = mData.lambertN + 1.0f;
+        // Calculate solid angle based on opening angle
         float solidAngle = 2.0f * (float)M_PI * (1.0f - mData.cosOpeningAngle);
         if (solidAngle <= 0.0f) {
             logWarning("LEDLight::updateIntensityFromPower - Invalid solid angle");
+            mCalculationError = true;
             return;
         }
 
-        // Calculate intensity from power
-        float unitIntensity = mData.totalPower / (surfaceArea * solidAngle * angleFactor);
-        mData.intensity = float3(unitIntensity);
+        // Lambert correction factor: (N + 1) where N is Lambert exponent
+        // This ensures proper normalization for angular distribution
+        float lambertFactor = mData.lambertN + 1.0f;
+        if (lambertFactor <= 0.0f) {
+            logWarning("LEDLight::updateIntensityFromPower - Invalid Lambert factor");
+            mCalculationError = true;
+            return;
+        }
 
+        // Calculate unit intensity: I_unit = Power / (Area * SolidAngle * LambertFactor)
+        // This follows the formula: I(θ) = I_unit * cos(θ)^N / (N + 1)
+        float unitIntensity = mData.totalPower / (surfaceArea * solidAngle / lambertFactor);
+
+        // Validate result
+        if (!std::isfinite(unitIntensity) || unitIntensity < 0.0f) {
+            logError("LEDLight::updateIntensityFromPower - Invalid intensity calculation result");
+            mCalculationError = true;
+            return;
+        }
+
+        mData.intensity = float3(unitIntensity);
         mCalculationError = false;
-    } catch (const std::exception&) {
+
+    } catch (const std::exception& e) {
         mCalculationError = true;
-        logError("LEDLight::updateIntensityFromPower - Failed to calculate intensity");
+        logError("LEDLight::updateIntensityFromPower - Exception in intensity calculation: " + std::string(e.what()));
     }
 }
 
@@ -246,8 +327,181 @@ void LEDLight::renderUI(Gui::Widgets& widget)
         setTotalPower(power);
     }
 
+    // Spectrum and light field data status
+    widget.separator();
+    widget.text("Custom Data Status:");
+    if (mHasCustomSpectrum)
+    {
+        widget.text("Spectrum: " + std::to_string(mSpectrumData.size()) + " data points loaded");
+    }
+    else
+    {
+        widget.text("Spectrum: Using default spectrum");
+    }
+
+    if (mHasCustomLightField)
+    {
+        widget.text("Light Field: " + std::to_string(mLightFieldData.size()) + " data points loaded");
+    }
+    else
+    {
+        widget.text("Light Field: Using Lambert distribution");
+    }
+
+    if (widget.button("Clear Custom Data"))
+    {
+        clearCustomData();
+    }
+
     if (mCalculationError)
     {
-        widget.textLine("WARNING: Calculation errors detected!");
+        widget.text("WARNING: Calculation errors detected!");
     }
+}
+
+void LEDLight::loadSpectrumData(const std::vector<float2>& spectrumData)
+{
+    if (spectrumData.empty())
+    {
+        logWarning("LEDLight::loadSpectrumData - Empty spectrum data provided");
+        return;
+    }
+
+    try {
+        mSpectrumData = spectrumData;
+        mHasCustomSpectrum = true;
+
+        // Update LightData sizes
+        mData.spectrumDataSize = (uint32_t)mSpectrumData.size();
+
+        // Note: GPU buffer creation is deferred to scene renderer
+        // This allows the scene to manage all GPU resources centrally
+        mData.spectrumDataOffset = 0; // Will be set by scene renderer
+    }
+    catch (const std::exception& e) {
+        mHasCustomSpectrum = false;
+        logError("LEDLight::loadSpectrumData - Failed to load spectrum data: " + std::string(e.what()));
+    }
+}
+
+void LEDLight::loadLightFieldData(const std::vector<float2>& lightFieldData)
+{
+    if (lightFieldData.empty())
+    {
+        logWarning("LEDLight::loadLightFieldData - Empty light field data provided");
+        return;
+    }
+
+    try {
+        mLightFieldData = lightFieldData;
+        mHasCustomLightField = true;
+        mData.hasCustomLightField = 1;
+
+        // Update LightData sizes
+        mData.lightFieldDataSize = (uint32_t)mLightFieldData.size();
+
+        // Note: GPU buffer creation is deferred to scene renderer
+        // This allows the scene to manage all GPU resources centrally
+        mData.lightFieldDataOffset = 0; // Will be set by scene renderer
+    }
+    catch (const std::exception& e) {
+        mHasCustomLightField = false;
+        mData.hasCustomLightField = 0;
+        logError("LEDLight::loadLightFieldData - Failed to load light field data: " + std::string(e.what()));
+    }
+}
+
+void LEDLight::clearCustomData()
+{
+    mSpectrumData.clear();
+    mLightFieldData.clear();
+    mHasCustomSpectrum = false;
+    mHasCustomLightField = false;
+    mData.hasCustomLightField = 0;
+    mData.spectrumDataSize = 0;
+    mData.lightFieldDataSize = 0;
+}
+
+void LEDLight::loadSpectrumFromFile(const std::string& filePath)
+{
+    try {
+        // Read spectrum data from CSV file
+        std::vector<float2> spectrumData;
+        std::ifstream file(filePath);
+        if (!file.is_open()) {
+            logError("LEDLight::loadSpectrumFromFile - Failed to open file: " + filePath);
+            return;
+        }
+
+        std::string line;
+        while (std::getline(file, line)) {
+            float wavelength, intensity;
+            std::istringstream ss(line);
+            std::string wavelengthStr, intensityStr;
+
+            if (std::getline(ss, wavelengthStr, ',') && std::getline(ss, intensityStr, ',')) {
+                try {
+                    wavelength = std::stof(wavelengthStr);
+                    intensity = std::stof(intensityStr);
+                    spectrumData.push_back({wavelength, intensity});
+                } catch(...) {
+                    // Skip invalid lines
+                    continue;
+                }
+            }
+        }
+
+        if (spectrumData.empty()) {
+            logWarning("LEDLight::loadSpectrumFromFile - No valid data in file: " + filePath);
+            return;
+        }
+
+        loadSpectrumData(spectrumData);
+    }
+    catch (const std::exception& e) {
+        logError("LEDLight::loadSpectrumFromFile - Exception: " + std::string(e.what()));
+    }
+}
+
+void LEDLight::loadLightFieldFromFile(const std::string& filePath)
+{
+    try {
+        // Read light field data from CSV file
+        std::vector<float2> lightFieldData;
+        std::ifstream file(filePath);
+        if (!file.is_open()) {
+            logError("LEDLight::loadLightFieldFromFile - Failed to open file: " + filePath);
+            return;
+        }
+
+        std::string line;
+        while (std::getline(file, line)) {
+            float angle, intensity;
+            std::istringstream ss(line);
+            std::string angleStr, intensityStr;
+
+            if (std::getline(ss, angleStr, ',') && std::getline(ss, intensityStr, ',')) {
+                try {
+                    angle = std::stof(angleStr);
+                    intensity = std::stof(intensityStr);
+                    lightFieldData.push_back({angle, intensity});
+                } catch(...) {
+                    // Skip invalid lines
+                    continue;
+                }
+            }
+        }
+
+        if (lightFieldData.empty()) {
+            logWarning("LEDLight::loadLightFieldFromFile - No valid data in file: " + filePath);
+            return;
+        }
+
+        loadLightFieldData(lightFieldData);
+    }
+    catch (const std::exception& e) {
+        logError("LEDLight::loadLightFieldFromFile - Exception: " + std::string(e.what()));
+    }
+}
+
 }

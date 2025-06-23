@@ -45,6 +45,23 @@ public:
     float getOpeningAngle() const { return mData.openingAngle; }
     void setWorldDirection(const float3& dir);
     const float3& getWorldDirection() const { return mData.dirW; }
+    void setWorldPosition(const float3& pos);
+    const float3& getWorldPosition() const { return mData.posW; }
+
+    // Spectrum and light field distribution
+    void loadSpectrumData(const std::vector<float2>& spectrumData);
+    void loadLightFieldData(const std::vector<float2>& lightFieldData);
+    bool hasCustomSpectrum() const { return mHasCustomSpectrum; }
+    bool hasCustomLightField() const { return mHasCustomLightField; }
+    void clearCustomData();
+
+    // File loading helper methods
+    void loadSpectrumFromFile(const std::string& filePath);
+    void loadLightFieldFromFile(const std::string& filePath);
+
+    // Data access methods (for scene renderer)
+    const std::vector<float2>& getSpectrumData() const { return mSpectrumData; }
+    const std::vector<float2>& getLightFieldData() const { return mLightFieldData; }
 
 private:
     void updateGeometry();
@@ -58,6 +75,12 @@ private:
     // GPU data buffers
     ref<Buffer> mSpectrumBuffer;
     ref<Buffer> mLightFieldBuffer;
+
+    // Spectrum and light field data
+    std::vector<float2> mSpectrumData;      // wavelength, intensity pairs
+    std::vector<float2> mLightFieldData;    // angle, intensity pairs
+    bool mHasCustomSpectrum = false;
+    bool mHasCustomLightField = false;
 
     // Error flag
     bool mCalculationError = false;

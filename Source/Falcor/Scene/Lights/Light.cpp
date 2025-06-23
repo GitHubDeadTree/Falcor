@@ -26,6 +26,7 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #include "Light.h"
+#include "LEDLight.h"
 #include "Core/Program/ShaderVar.h"
 #include "Utils/Logger.h"
 #include "Utils/UI/Gui.h"
@@ -743,5 +744,39 @@ namespace Falcor
 
         pybind11::class_<SphereLight, AnalyticAreaLight, ref<SphereLight>> sphereLight(m, "SphereLight");
         sphereLight.def(pybind11::init(&SphereLight::create), "name"_a = "");
+
+        // LEDLight bindings
+        pybind11::enum_<LEDLight::LEDShape>(m, "LEDShape")
+            .value("Sphere", LEDLight::LEDShape::Sphere)
+            .value("Ellipsoid", LEDLight::LEDShape::Ellipsoid)
+            .value("Rectangle", LEDLight::LEDShape::Rectangle);
+
+        pybind11::class_<LEDLight, Light, ref<LEDLight>> ledLight(m, "LEDLight");
+        ledLight.def_static("create", &LEDLight::create, "name"_a = "");
+
+        // Basic properties
+        ledLight.def_property("position", &LEDLight::getWorldPosition, &LEDLight::setWorldPosition);
+        ledLight.def_property("direction", &LEDLight::getWorldDirection, &LEDLight::setWorldDirection);
+        ledLight.def_property("openingAngle", &LEDLight::getOpeningAngle, &LEDLight::setOpeningAngle);
+
+        // LED specific properties
+        ledLight.def_property("shape", &LEDLight::getLEDShape, &LEDLight::setLEDShape);
+        ledLight.def_property("lambertExponent", &LEDLight::getLambertExponent, &LEDLight::setLambertExponent);
+        ledLight.def_property("totalPower", &LEDLight::getTotalPower, &LEDLight::setTotalPower);
+        ledLight.def_property("scaling", &LEDLight::getScaling, &LEDLight::setScaling);
+        ledLight.def_property("transform", &LEDLight::getTransformMatrix, &LEDLight::setTransformMatrix);
+
+        // Status query properties (read-only)
+        ledLight.def_property_readonly("hasCustomSpectrum", &LEDLight::hasCustomSpectrum);
+        ledLight.def_property_readonly("hasCustomLightField", &LEDLight::hasCustomLightField);
+
+        // Data loading methods
+        ledLight.def("loadSpectrumFromFile", &LEDLight::loadSpectrumFromFile, "filePath"_a);
+        ledLight.def("loadLightFieldFromFile", &LEDLight::loadLightFieldFromFile, "filePath"_a);
+        ledLight.def("clearCustomData", &LEDLight::clearCustomData);
+
+        // Advanced data loading methods with vector input
+        ledLight.def("loadSpectrumData", &LEDLight::loadSpectrumData, "spectrumData"_a);
+        ledLight.def("loadLightFieldData", &LEDLight::loadLightFieldData, "lightFieldData"_a);
    }
 }

@@ -249,6 +249,99 @@ bool samplePointLight(const float3 shadingPosW, const LightData light, out Analy
     return true;
 }
 
+/** Samples an LED light source.
+    \param[in] shadingPosW Shading point in world space.
+    \param[in] light Light data.
+    \param[in] u Uniform random numbers.
+    \param[out] ls Light sample struct.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleLEDLight(const float3 shadingPosW, const LightData light, const float2 u, out AnalyticLightSample ls)
+{
+    // Sample local position based on LED shape type
+    float3 localPos = float3(0.0f);
+
+    // Safety check for shape type to avoid invalid values
+    uint32_t shapeType = clamp(light.shapeType, 0u, 2u);
+
+    switch (shapeType)
+    {
+    case 0: // Sphere
+        // Uniform sphere sampling
+        localPos = sample_sphere(u);
+        break;
+
+    case 1: // Ellipsoid
+        // Sample unit sphere then transform via scaling matrix
+        localPos = sample_sphere(u);
+        break;
+
+    case 2: // Rectangle
+        // Sample rectangle surface in [-1,1] range
+        localPos = float3(u.x * 2.0f - 1.0f, u.y * 2.0f - 1.0f, 0.0f);
+        break;
+
+    default:
+        // Fallback to sphere for unknown shape types
+        localPos = sample_sphere(u);
+        break;
+    }
+
+    // Transform to world space
+    ls.posW = mul(light.transMat, float4(localPos, 1.0f)).xyz;
+
+    // Calculate world space normal based on shape
+    float3 localNormal = localPos;
+    if (shapeType == 2) // Rectangle
+    {
+        localNormal = float3(0.0f, 0.0f, 1.0f);
+    }
+    ls.normalW = normalize(mul(light.transMatIT, float4(localNormal, 0.0f)).xyz);
+
+    // Compute direction and distance to light
+    float3 toLight = ls.posW - shadingPosW;
+    float distSqr = max(dot(toLight, toLight), kMinLightDistSqr);
+    ls.distance = sqrt(distSqr);
+    ls.dir = toLight / ls.distance;
+
+    // Check if point is within light cone
+    float cosTheta = dot(-ls.dir, light.dirW);
+    if (cosTheta < light.cosOpeningAngle) return false;
+
+    // Calculate angular attenuation
+    float angleFalloff = 1.0f;
+
+    if (light.hasCustomLightField > 0)
+    {
+        // Custom light field distribution
+        // For now, use simple cosine falloff as placeholder
+        // TODO: Implement actual light field interpolation
+        angleFalloff = cosTheta;
+    }
+    else
+    {
+        // Lambert model with safety checks
+        float lambertN = max(light.lambertN, 0.1f); // Prevent negative/zero exponents
+        float normalizationFactor = max(lambertN + 1.0f, 0.1f); // Prevent division by zero
+        angleFalloff = pow(max(cosTheta, 0.0f), lambertN) / normalizationFactor;
+    }
+
+    // Surface area check to prevent division by zero
+    float surfaceArea = max(light.surfaceArea, 1e-9f);
+
+    // Calculate surface normal dot product for area lights
+    float cosNormalTheta = dot(ls.normalW, -ls.dir);
+    if (cosNormalTheta <= 0.0f) return false;
+
+    // Compute incident radiance
+    ls.Li = light.intensity * angleFalloff * (surfaceArea * cosNormalTheta / distSqr);
+
+    // Compute PDF with safety check
+    ls.pdf = distSqr / (cosNormalTheta * surfaceArea);
+
+    return true;
+}
+
 /** Samples an analytic light source.
     This function calls the correct sampling function depending on the type of light.
     \param[in] shadingPosW Shading point in world space.
@@ -274,6 +367,8 @@ bool sampleLight<S : ISampleGenerator>(const float3 shadingPosW, const LightData
         return sampleDiscAreaLight(shadingPosW, light, sampleNext2D(sg), ls);
     case LightType::Distant:
         return sampleDistantLight(shadingPosW, light, sampleNext2D(sg), ls);
+    case LightType::LED:
+        return sampleLEDLight(shadingPosW, light, sampleNext2D(sg), ls);
     default:
         ls = {};
         return false; // Should not happen
@@ -297,6 +392,9 @@ bool evalLightApproximate(const float3 shadingPosW, const LightData light, out A
         return samplePointLight(shadingPosW, light, ls);
     case LightType::Directional:
         return sampleDirectionalLight(shadingPosW, light, ls);
+    case LightType::LED:
+        // For approximate evaluation, use center sampling
+        return sampleLEDLight(shadingPosW, light, float2(0.5f, 0.5f), ls);
     }
 
     // All other light types are not supported.

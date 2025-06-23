@@ -397,6 +397,8 @@ target_sources(Falcor PRIVATE
     Scene/Lights/EnvMapData.slang
     Scene/Lights/FinalizeIntegration.cs.slang
     Scene/Lights/ILightCollection.h
+    Scene/Lights/LEDLight.cpp
+    Scene/Lights/LEDLight.h
     Scene/Lights/Light.cpp
     Scene/Lights/Light.h
     Scene/Lights/LightCollection.cpp
