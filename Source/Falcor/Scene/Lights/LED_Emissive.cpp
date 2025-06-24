@@ -199,6 +199,9 @@ void LED_Emissive::addToSceneBuilder(SceneBuilder& sceneBuilder) {
 
         mpDevice = sceneBuilder.getDevice();
 
+        // Reset error state for fresh start
+        mCalculationError = false;
+
         // 1. Update LightProfile
         updateLightProfile();
 
@@ -208,11 +211,22 @@ void LED_Emissive::addToSceneBuilder(SceneBuilder& sceneBuilder) {
         generateGeometry(vertices, indices);
 
         if (mCalculationError) {
-            logError("LED_Emissive::addToSceneBuilder - Geometry generation failed");
+            logError("LED_Emissive::addToSceneBuilder - Geometry generation failed due to calculation error");
             return;
         }
 
+        if (vertices.empty() || indices.empty()) {
+            logError("LED_Emissive::addToSceneBuilder - Geometry generation produced empty data");
+            mCalculationError = true;
+            return;
+        }
+
+        logInfo("LED_Emissive::addToSceneBuilder - Geometry generated successfully: " +
+                std::to_string(vertices.size()) + " vertices, " +
+                std::to_string(indices.size() / 3) + " triangles");
+
         // 3. Create emissive material
+        logInfo("LED_Emissive::addToSceneBuilder - Creating emissive material");
         auto pMaterial = createEmissiveMaterial();
         if (!pMaterial) {
             logError("LED_Emissive::addToSceneBuilder - Failed to create material");
@@ -220,22 +234,42 @@ void LED_Emissive::addToSceneBuilder(SceneBuilder& sceneBuilder) {
             return;
         }
         mMaterialID = sceneBuilder.addMaterial(pMaterial);
+        logInfo("LED_Emissive::addToSceneBuilder - Material created and added to scene");
 
         // 4. Create triangle mesh
+        logInfo("LED_Emissive::addToSceneBuilder - Creating triangle mesh");
         auto pTriangleMesh = createTriangleMesh(vertices, indices);
         if (!pTriangleMesh) {
             logError("LED_Emissive::addToSceneBuilder - Failed to create triangle mesh");
             mCalculationError = true;
             return;
         }
+        logInfo("LED_Emissive::addToSceneBuilder - Triangle mesh created successfully");
 
-        // 5. Apply transform
-        float4x4 transform = createTransformMatrix();
-        pTriangleMesh->applyTransform(transform);
+        // 5. Triangle mesh ready (transform will be applied via scene graph node)
+        logInfo("LED_Emissive::addToSceneBuilder - Triangle mesh ready for scene integration");
 
         // 6. Add triangle mesh to scene using SceneBuilder
+        logInfo("LED_Emissive::addToSceneBuilder - Adding triangle mesh to scene");
         MeshID meshIndex = sceneBuilder.addTriangleMesh(pTriangleMesh, pMaterial);
         mMeshIndices.push_back(meshIndex);
+        logInfo("LED_Emissive::addToSceneBuilder - Triangle mesh added to scene with ID: " + std::to_string(meshIndex.get()));
+
+        // 7. Create scene graph node and add mesh instance
+        logInfo("LED_Emissive::addToSceneBuilder - Creating scene graph node");
+        SceneBuilder::Node node;
+        node.name = mName + "_Node";
+        node.transform = createTransformMatrix();
+        node.parent = NodeID::Invalid();
+
+        NodeID nodeIndex = sceneBuilder.addNode(node);
+        mNodeIndices.push_back(nodeIndex);
+        logInfo("LED_Emissive::addToSceneBuilder - Scene graph node created with ID: " + std::to_string(nodeIndex.get()));
+
+        // 8. Add mesh instance to the node
+        logInfo("LED_Emissive::addToSceneBuilder - Adding mesh instance to node");
+        sceneBuilder.addMeshInstance(nodeIndex, meshIndex);
+        logInfo("LED_Emissive::addToSceneBuilder - Mesh instance added successfully");
 
         mIsAddedToScene = true;
         logInfo("LED_Emissive::addToSceneBuilder - Successfully added '" + mName + "' to scene");
@@ -261,6 +295,7 @@ void LED_Emissive::removeFromScene() {
 
         // Clear internal references
         mMeshIndices.clear();
+        mNodeIndices.clear();
         mpScene = nullptr;
         mpDevice = nullptr;
         mIsAddedToScene = false;
@@ -513,11 +548,15 @@ void LED_Emissive::updateLightProfile() {
         }
 
         if (!mpLightProfile) {
-            logError("LED_Emissive::updateLightProfile - Failed to create light profile");
-            mCalculationError = true;
+            logWarning("LED_Emissive::updateLightProfile - Failed to create light profile, continuing without LightProfile");
+            // Do NOT set mCalculationError = true for LightProfile failure
+            // LED_Emissive can work without LightProfile using basic emissive material
 
-            // Create default Lambert distribution as fallback
+            // Try default fallback
             mpLightProfile = createDefaultLightProfile();
+            if (!mpLightProfile) {
+                logInfo("LED_Emissive::updateLightProfile - Proceeding with basic emissive material only");
+            }
             return;
         }
 
@@ -525,11 +564,14 @@ void LED_Emissive::updateLightProfile() {
         logInfo("LED_Emissive::updateLightProfile - Light profile updated successfully");
 
     } catch (const std::exception& e) {
-        logError("LED_Emissive::updateLightProfile - Exception: " + std::string(e.what()));
-        mCalculationError = true;
+        logWarning("LED_Emissive::updateLightProfile - Exception: " + std::string(e.what()) + ", continuing without LightProfile");
+        // Do NOT set mCalculationError = true for LightProfile failure
 
-        // Create default Lambert distribution as fallback
+        // Try default fallback
         mpLightProfile = createDefaultLightProfile();
+        if (!mpLightProfile) {
+            logInfo("LED_Emissive::updateLightProfile - Proceeding with basic emissive material only");
+        }
     }
 }
 
@@ -663,6 +705,8 @@ ref<Material> LED_Emissive::createEmissiveMaterial() {
         if (mpLightProfile) {
             pMaterial->setLightProfileEnabled(true);
             logInfo("LED_Emissive::createEmissiveMaterial - LightProfile integration enabled");
+        } else {
+            logInfo("LED_Emissive::createEmissiveMaterial - Using basic emissive material without LightProfile");
         }
 
         // Validate emissive intensity

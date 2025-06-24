@@ -87,6 +87,7 @@ private:
     Scene* mpScene = nullptr;
     ref<Device> mpDevice = nullptr;
     std::vector<MeshID> mMeshIndices;
+    std::vector<NodeID> mNodeIndices;
     MaterialID mMaterialID;
     bool mIsAddedToScene = false;
     bool mCalculationError = false;

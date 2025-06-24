@@ -787,7 +787,7 @@ namespace Falcor
             .value("Ellipsoid", LED_EmissiveShape::Ellipsoid);
 
         // LED_Emissive class binding
-        pybind11::class_<LED_Emissive, Object, ref<LED_Emissive>>(m, "LED_Emissive")
+        pybind11::class_<LED_Emissive, ref<LED_Emissive>>(m, "LED_Emissive")
             .def_static("create", &LED_Emissive::create, "name"_a = "LED_Emissive")
 
             // Basic properties
