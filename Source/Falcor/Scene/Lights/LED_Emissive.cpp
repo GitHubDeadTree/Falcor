@@ -275,12 +275,180 @@ void LED_Emissive::removeFromScene() {
 }
 
 void LED_Emissive::renderUI(Gui::Widgets& widget) {
-    // Placeholder implementation - UI will be implemented in later tasks
+    // Basic properties
     widget.text("LED_Emissive: " + mName);
-    widget.text("Status: Basic framework implemented");
 
+    float3 pos = mPosition;
+    if (widget.var("Position", pos, -100.0f, 100.0f, 0.01f)) {
+        try {
+            setPosition(pos);
+        } catch (const std::exception& e) {
+            logWarning("LED_Emissive::renderUI - Position update failed: " + std::string(e.what()));
+        }
+    }
+
+    float3 dir = mDirection;
+    if (widget.direction("Direction", dir)) {
+        try {
+            setDirection(dir);
+        } catch (const std::exception& e) {
+            logWarning("LED_Emissive::renderUI - Direction update failed: " + std::string(e.what()));
+        }
+    }
+
+    // Shape settings
+    static const Gui::DropdownList kShapeList = {
+        { (uint32_t)LED_EmissiveShape::Sphere, "Sphere" },
+        { (uint32_t)LED_EmissiveShape::Rectangle, "Rectangle" },
+        { (uint32_t)LED_EmissiveShape::Ellipsoid, "Ellipsoid" }
+    };
+
+    uint32_t shape = (uint32_t)mShape;
+    if (widget.dropdown("Shape", kShapeList, shape)) {
+        try {
+            setShape((LED_EmissiveShape)shape);
+        } catch (const std::exception& e) {
+            logWarning("LED_Emissive::renderUI - Shape update failed: " + std::string(e.what()));
+        }
+    }
+
+    float3 scale = mScaling;
+    if (widget.var("Scale", scale, 0.001f, 10.0f, 0.001f)) {
+        try {
+            // Validate scale values
+            if (scale.x <= 0.0f || scale.y <= 0.0f || scale.z <= 0.0f) {
+                logWarning("LED_Emissive::renderUI - Invalid scale values, must be positive");
+                scale = float3(std::max(0.001f, scale.x), std::max(0.001f, scale.y), std::max(0.001f, scale.z));
+            }
+            setScaling(scale);
+        } catch (const std::exception& e) {
+            logWarning("LED_Emissive::renderUI - Scale update failed: " + std::string(e.what()));
+        }
+    }
+
+    // Light properties
+    widget.separator();
+    widget.text("Light Properties");
+
+    float power = mTotalPower;
+    if (widget.var("Total Power (W)", power, 0.0f, 1000.0f)) {
+        try {
+            // Validate power value
+            if (power < 0.0f) {
+                logWarning("LED_Emissive::renderUI - Power cannot be negative");
+                power = 0.0f;
+            }
+            setTotalPower(power);
+        } catch (const std::exception& e) {
+            logWarning("LED_Emissive::renderUI - Power update failed: " + std::string(e.what()));
+        }
+    }
+
+    float3 color = mColor;
+    if (widget.rgbColor("Color", color)) {
+        try {
+            // Validate color values (should be non-negative)
+            if (color.x < 0.0f || color.y < 0.0f || color.z < 0.0f) {
+                logWarning("LED_Emissive::renderUI - Color values cannot be negative");
+                color = float3(std::max(0.0f, color.x), std::max(0.0f, color.y), std::max(0.0f, color.z));
+            }
+            setColor(color);
+        } catch (const std::exception& e) {
+            logWarning("LED_Emissive::renderUI - Color update failed: " + std::string(e.what()));
+        }
+    }
+
+    // Light field distribution control
+    widget.separator();
+    widget.text("Light Field Distribution");
+
+    float openingAngle = mOpeningAngle;
+    if (widget.var("Opening Angle", openingAngle, 0.0f, (float)M_PI)) {
+        try {
+            // Validate opening angle range
+            if (openingAngle < 0.0f || openingAngle > (float)M_PI) {
+                logWarning("LED_Emissive::renderUI - Opening angle must be between 0 and PI");
+                openingAngle = std::clamp(openingAngle, 0.0f, (float)M_PI);
+            }
+            setOpeningAngle(openingAngle);
+        } catch (const std::exception& e) {
+            logWarning("LED_Emissive::renderUI - Opening angle update failed: " + std::string(e.what()));
+        }
+    }
+
+    if (!mHasCustomLightField) {
+        float lambertN = mLambertN;
+        if (widget.var("Lambert Exponent", lambertN, 0.1f, 100.0f)) {
+            try {
+                // Validate Lambert exponent range
+                if (lambertN < 0.1f || lambertN > 100.0f) {
+                    logWarning("LED_Emissive::renderUI - Lambert exponent must be between 0.1 and 100.0");
+                    lambertN = std::clamp(lambertN, 0.1f, 100.0f);
+                }
+                setLambertExponent(lambertN);
+            } catch (const std::exception& e) {
+                logWarning("LED_Emissive::renderUI - Lambert exponent update failed: " + std::string(e.what()));
+            }
+        }
+    }
+
+    // Custom light field status
+    widget.separator();
+    if (mHasCustomLightField) {
+        widget.text("Custom Light Field: " + std::to_string(mLightFieldData.size()) + " points");
+        if (widget.button("Clear Custom Data")) {
+            try {
+                clearLightFieldData();
+                logInfo("LED_Emissive::renderUI - Custom light field data cleared");
+            } catch (const std::exception& e) {
+                logError("LED_Emissive::renderUI - Failed to clear custom data: " + std::string(e.what()));
+            }
+        }
+    } else {
+        widget.text("Using Lambert Distribution (N=" + std::to_string(mLambertN) + ")");
+        if (widget.button("Load Light Field File")) {
+            // File loading would be implemented with system file dialog
+            widget.text("File dialog not yet implemented");
+        }
+    }
+
+        // Status information
+    widget.separator();
+    widget.text("Status Information");
+
+    try {
+        float surfaceArea = calculateSurfaceArea();
+        widget.text("Surface Area: " + std::to_string(surfaceArea));
+
+        float emissiveIntensity = calculateEmissiveIntensity();
+        widget.text("Emissive Intensity: " + std::to_string(emissiveIntensity));
+    } catch (const std::exception& e) {
+        widget.text("Surface Area: Calculation error - " + std::string(e.what()));
+        widget.text("Emissive Intensity: Calculation error");
+    }
+
+    widget.text("Scene Integration: " + (mIsAddedToScene ? std::string("Yes") : std::string("No")));
+
+    // Light profile status
+    if (mpLightProfile) {
+        widget.text("Light Profile: Created successfully");
+    } else {
+        widget.text("Light Profile: Not created");
+    }
+
+    // Device status
+    if (mpDevice) {
+        widget.text("Device: Available");
+    } else {
+        widget.text("Device: Not available");
+    }
+
+    // Error status with detailed information
     if (mCalculationError) {
         widget.text("⚠️ Calculation errors detected!");
+        widget.text("Check log for detailed error information");
+    } else {
+        widget.text("✓ All calculations successful");
     }
 }
 
