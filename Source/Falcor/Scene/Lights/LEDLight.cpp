@@ -33,21 +33,11 @@ LEDLight::LEDLight(const std::string& name) : Light(name, LightType::LED)
 
 void LEDLight::updateFromAnimation(const float4x4& transform)
 {
-    // Only extract position and direction, don't directly overwrite the entire transform matrix
-    float3 pos = transform.getCol(3).xyz();
-    float3 direction = normalize(transformVector(transform, float3(0.0f, 0.0f, -1.0f)));
-    float3 scaling = float3(math::length(transform[0].xyz()),
-                           math::length(transform[1].xyz()),
-                           math::length(transform[2].xyz()));
+    logError("### LEDLight::updateFromAnimation CALLED - Light '{}': Using complete transform matrix from animation",
+            getName());
 
-    logError("### LEDLight::updateFromAnimation CALLED - Light '{}': Animation position ({:.3f}, {:.3f}, {:.3f}), Current position ({:.3f}, {:.3f}, {:.3f})",
-            getName(), pos.x, pos.y, pos.z, mTransformMatrix[3].x, mTransformMatrix[3].y, mTransformMatrix[3].z);
-
-    // Maintain manual setting priority, only update when needed
-    setWorldPosition(pos);
-    setWorldDirection(direction);
-    mScaling = scaling;
-    update();
+    // Directly use the transform from the animation system
+    setTransformMatrix(transform);
 }
 
 void LEDLight::update()
@@ -76,11 +66,20 @@ void LEDLight::update()
 
 void LEDLight::updateGeometry()
 {
+    logError("### LEDLight::updateGeometry CALLED - Updating transMat (rotation/scale only) from mTransformMatrix");
     try {
-        // Update transformation matrix like AnalyticAreaLight
+        // Decompose the full transform matrix
+        // mData.posW is already synced from mTransformMatrix in the update() function
+        float4x4 rotationScaleMatrix = mTransformMatrix;
+        rotationScaleMatrix[3] = float4(0.f, 0.f, 0.f, 1.f); // Remove the translation component
+
+        // Update transformation matrix like AnalyticAreaLight, but now without translation
         float4x4 scaleMat = math::scale(float4x4::identity(), mScaling);
-        mData.transMat = mul(mTransformMatrix, scaleMat);
+        mData.transMat = mul(rotationScaleMatrix, scaleMat); // transMat now only contains rotation and scale
         mData.transMatIT = inverse(transpose(mData.transMat));
+
+        logError("### LEDLight::updateGeometry - transMat updated (no translation), position handled by posW: ({:.3f}, {:.3f}, {:.3f})",
+                 mData.posW.x, mData.posW.y, mData.posW.z);
 
         // Update other geometric data
         mData.surfaceArea = calculateSurfaceArea();

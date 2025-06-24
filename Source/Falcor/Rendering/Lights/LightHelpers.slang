@@ -288,7 +288,9 @@ bool sampleLEDLight(const float3 shadingPosW, const LightData light, const float
     }
 
     // Transform to world space
-    ls.posW = mul(light.transMat, float4(localPos, 1.0f)).xyz;
+    // light.posW is the center position, light.transMat only contains rotation and scale
+    float3 transformedLocalPos = mul(light.transMat, float4(localPos, 1.0f)).xyz;
+    ls.posW = light.posW + transformedLocalPos;
 
     // Calculate world space normal based on shape
     float3 localNormal = localPos;
