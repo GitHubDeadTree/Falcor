@@ -27,6 +27,7 @@
  **************************************************************************/
 #include "Light.h"
 #include "LEDLight.h"
+#include "LED_Emissive.h"
 #include "Core/Program/ShaderVar.h"
 #include "Utils/Logger.h"
 #include "Utils/UI/Gui.h"
@@ -778,5 +779,37 @@ namespace Falcor
         // Advanced data loading methods with vector input
         ledLight.def("loadSpectrumData", &LEDLight::loadSpectrumData, "spectrumData"_a);
         ledLight.def("loadLightFieldData", &LEDLight::loadLightFieldData, "lightFieldData"_a);
+
+        // LED_EmissiveShape enum binding
+        pybind11::enum_<LED_EmissiveShape>(m, "LED_EmissiveShape")
+            .value("Sphere", LED_EmissiveShape::Sphere)
+            .value("Rectangle", LED_EmissiveShape::Rectangle)
+            .value("Ellipsoid", LED_EmissiveShape::Ellipsoid);
+
+        // LED_Emissive class binding
+        pybind11::class_<LED_Emissive, Object, ref<LED_Emissive>>(m, "LED_Emissive")
+            .def_static("create", &LED_Emissive::create, "name"_a = "LED_Emissive")
+
+            // Basic properties
+            .def_property("shape", &LED_Emissive::getShape, &LED_Emissive::setShape)
+            .def_property("position", &LED_Emissive::getPosition, &LED_Emissive::setPosition)
+            .def_property("scaling", [](const LED_Emissive& led) -> float3 { return float3(1.0f); }, &LED_Emissive::setScaling)
+            .def_property("direction", [](const LED_Emissive& led) -> float3 { return float3(0, 0, -1); }, &LED_Emissive::setDirection)
+            .def_property("totalPower", &LED_Emissive::getTotalPower, &LED_Emissive::setTotalPower)
+            .def_property("color", [](const LED_Emissive& led) -> float3 { return float3(1.0f); }, &LED_Emissive::setColor)
+
+            // Light field distribution control
+            .def_property("lambertExponent", &LED_Emissive::getLambertExponent, &LED_Emissive::setLambertExponent)
+            .def_property("openingAngle", &LED_Emissive::getOpeningAngle, &LED_Emissive::setOpeningAngle)
+            .def("loadLightFieldData", &LED_Emissive::loadLightFieldData, "data"_a)
+            .def("loadLightFieldFromFile", &LED_Emissive::loadLightFieldFromFile, "filePath"_a)
+            .def("clearLightFieldData", &LED_Emissive::clearLightFieldData)
+
+            // Scene integration
+            .def("addToSceneBuilder", &LED_Emissive::addToSceneBuilder, "sceneBuilder"_a)
+            .def("removeFromScene", &LED_Emissive::removeFromScene)
+
+            // Status query properties (read-only)
+            .def_property_readonly("hasCustomLightField", &LED_Emissive::hasCustomLightField);
    }
 }
