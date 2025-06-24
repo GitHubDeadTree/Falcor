@@ -352,7 +352,7 @@ void LEDLight::renderUI(Gui::Widgets& widget)
 
     // Basic properties
     float3 pos = mData.posW;
-    if (widget.var("World Position", pos, -FLT_MAX, FLT_MAX))
+    if (widget.var("World Position", pos, -FLT_MAX, FLT_MAX, 0.001f, false, "%.8f"))
     {
         setWorldPosition(pos);
     }
@@ -377,14 +377,21 @@ void LEDLight::renderUI(Gui::Widgets& widget)
     }
 
     float3 scaling = mScaling;
-    if (widget.var("Scale", scaling, 0.1f, 10.0f))
+    if (widget.var("Scale", scaling, 0.00001f, 10.0f, 0.001f, false, "%.8f"))
     {
         setScaling(scaling);
     }
 
+    // Opening angle control
+    float openingAngle = getOpeningAngle();
+    if (widget.var("Opening Angle", openingAngle, 0.0f, (float)M_PI))
+    {
+        setOpeningAngle(openingAngle);
+    }
+
     // Lambert exponent control
     float lambertN = getLambertExponent();
-    if (widget.var("Lambert Exponent", lambertN, 0.1f, 10.0f))
+    if (widget.var("Lambert Exponent", lambertN, 0.1f, 100.0f))
     {
         setLambertExponent(lambertN);
     }
