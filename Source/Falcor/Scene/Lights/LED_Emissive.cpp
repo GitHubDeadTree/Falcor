@@ -178,23 +178,100 @@ void LED_Emissive::clearLightFieldData() {
 }
 
 void LED_Emissive::addToScene(Scene* pScene) {
-    // Placeholder implementation - scene integration will be implemented in later tasks
-    if (!pScene) {
-        logError("LED_Emissive::addToScene - Invalid scene pointer");
+    try {
+        logError("LED_Emissive::addToScene - Scene integration requires SceneBuilder during scene construction");
+        logError("LED_Emissive::addToScene - Call addToSceneBuilder() during scene building phase instead");
         mCalculationError = true;
-        return;
-    }
 
-    mpScene = pScene;
-    mpDevice = pScene->getDevice();
-    logInfo("LED_Emissive::addToScene - Scene integration not yet implemented");
+    } catch (const std::exception& e) {
+        logError("LED_Emissive::addToScene - Exception: " + std::string(e.what()));
+        mCalculationError = true;
+        cleanup();
+    }
+}
+
+void LED_Emissive::addToSceneBuilder(SceneBuilder& sceneBuilder) {
+    try {
+        if (mIsAddedToScene) {
+            logError("LED_Emissive::addToSceneBuilder - Already added to scene");
+            return;
+        }
+
+        mpDevice = sceneBuilder.getDevice();
+
+        // 1. Update LightProfile
+        updateLightProfile();
+
+        // 2. Generate geometry
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+        generateGeometry(vertices, indices);
+
+        if (mCalculationError) {
+            logError("LED_Emissive::addToSceneBuilder - Geometry generation failed");
+            return;
+        }
+
+        // 3. Create emissive material
+        auto pMaterial = createEmissiveMaterial();
+        if (!pMaterial) {
+            logError("LED_Emissive::addToSceneBuilder - Failed to create material");
+            mCalculationError = true;
+            return;
+        }
+        mMaterialID = sceneBuilder.addMaterial(pMaterial);
+
+        // 4. Create triangle mesh
+        auto pTriangleMesh = createTriangleMesh(vertices, indices);
+        if (!pTriangleMesh) {
+            logError("LED_Emissive::addToSceneBuilder - Failed to create triangle mesh");
+            mCalculationError = true;
+            return;
+        }
+
+        // 5. Apply transform
+        float4x4 transform = createTransformMatrix();
+        pTriangleMesh->applyTransform(transform);
+
+        // 6. Add triangle mesh to scene using SceneBuilder
+        MeshID meshIndex = sceneBuilder.addTriangleMesh(pTriangleMesh, pMaterial);
+        mMeshIndices.push_back(meshIndex);
+
+        mIsAddedToScene = true;
+        logInfo("LED_Emissive::addToSceneBuilder - Successfully added '" + mName + "' to scene");
+
+    } catch (const std::exception& e) {
+        logError("LED_Emissive::addToSceneBuilder - Exception: " + std::string(e.what()));
+        mCalculationError = true;
+        cleanup();
+    }
 }
 
 void LED_Emissive::removeFromScene() {
-    // Placeholder implementation - scene integration will be implemented in later tasks
-    mpScene = nullptr;
-    mIsAddedToScene = false;
-    logInfo("LED_Emissive::removeFromScene - Scene removal not yet implemented");
+    try {
+        if (!mIsAddedToScene) {
+            logWarning("LED_Emissive::removeFromScene - Not added to scene");
+            return;
+        }
+
+        // Scene removal not supported after construction
+        // Meshes are immutable once scene is built
+        logWarning("LED_Emissive::removeFromScene - Scene removal not supported after construction");
+        logWarning("LED_Emissive::removeFromScene - Rebuild scene without this LED_Emissive instance");
+
+        // Clear internal references
+        mMeshIndices.clear();
+        mpScene = nullptr;
+        mpDevice = nullptr;
+        mIsAddedToScene = false;
+        mMaterialID = MaterialID();
+
+        logInfo("LED_Emissive::removeFromScene - Cleared internal references for '" + mName + "'");
+
+    } catch (const std::exception& e) {
+        logError("LED_Emissive::removeFromScene - Exception: " + std::string(e.what()));
+        mCalculationError = true;
+    }
 }
 
 void LED_Emissive::renderUI(Gui::Widgets& widget) {
@@ -209,7 +286,52 @@ void LED_Emissive::renderUI(Gui::Widgets& widget) {
 
 // Private methods (placeholder implementations)
 void LED_Emissive::generateGeometry(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
-    // Placeholder - geometry generation will be implemented in later tasks
+    try {
+        vertices.clear();
+        indices.clear();
+
+        switch (mShape) {
+            case LED_EmissiveShape::Sphere:
+                generateSphereGeometry(vertices, indices);
+                break;
+
+            case LED_EmissiveShape::Rectangle:
+                generateRectangleGeometry(vertices, indices);
+                break;
+
+            case LED_EmissiveShape::Ellipsoid:
+                generateEllipsoidGeometry(vertices, indices);
+                break;
+
+            default:
+                logError("LED_Emissive::generateGeometry - Unknown shape");
+                mCalculationError = true;
+                return;
+        }
+
+        // Validate generated geometry
+        if (vertices.empty() || indices.empty()) {
+            logError("LED_Emissive::generateGeometry - No geometry generated");
+            mCalculationError = true;
+            return;
+        }
+
+        // Check for valid triangle count (indices should be multiple of 3)
+        if (indices.size() % 3 != 0) {
+            logError("LED_Emissive::generateGeometry - Invalid index count");
+            mCalculationError = true;
+            return;
+        }
+
+        logInfo("LED_Emissive::generateGeometry - Generated " + std::to_string(vertices.size()) +
+                " vertices, " + std::to_string(indices.size() / 3) + " triangles");
+
+    } catch (const std::exception& e) {
+        logError("LED_Emissive::generateGeometry - Exception: " + std::string(e.what()));
+        mCalculationError = true;
+        vertices.clear();
+        indices.clear();
+    }
 }
 
 void LED_Emissive::updateLightProfile() {
@@ -618,6 +740,326 @@ ref<Material> LED_Emissive::createErrorMaterial() {
     } catch (const std::exception& e) {
         logError("LED_Emissive::createErrorMaterial - Exception: " + std::string(e.what()));
         return nullptr;
+    }
+}
+
+void LED_Emissive::generateSphereGeometry(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
+    try {
+        const uint32_t latSegments = 16; // latitude segments
+        const uint32_t lonSegments = 32; // longitude segments
+        const float radius = 1.0f; // unit sphere, scaling applied via transform
+
+        vertices.clear();
+        indices.clear();
+
+        // Generate vertices
+        for (uint32_t lat = 0; lat <= latSegments; ++lat) {
+            float theta = (float)lat / latSegments * (float)M_PI; // 0 to π
+            float cosTheta = std::cos(theta);
+            float sinTheta = std::sin(theta);
+
+            for (uint32_t lon = 0; lon <= lonSegments; ++lon) {
+                float phi = (float)lon / lonSegments * 2.0f * (float)M_PI; // 0 to 2π
+                float cosPhi = std::cos(phi);
+                float sinPhi = std::sin(phi);
+
+                // Spherical coordinates to Cartesian
+                float3 position = float3(
+                    radius * sinTheta * cosPhi,
+                    radius * cosTheta,
+                    radius * sinTheta * sinPhi
+                );
+
+                // Normal vector for sphere is same as normalized position
+                float3 normal = normalize(position);
+
+                // Texture coordinates
+                float2 texCoord = float2(
+                    (float)lon / lonSegments,
+                    (float)lat / latSegments
+                );
+
+                Vertex vertex;
+                vertex.position = position;
+                vertex.normal = normal;
+                vertex.texCoord = texCoord;
+                vertices.push_back(vertex);
+            }
+        }
+
+        // Generate indices for triangles
+        for (uint32_t lat = 0; lat < latSegments; ++lat) {
+            for (uint32_t lon = 0; lon < lonSegments; ++lon) {
+                uint32_t current = lat * (lonSegments + 1) + lon;
+                uint32_t next = current + lonSegments + 1;
+
+                // Two triangles per quad
+                // Triangle 1: current, next, current+1
+                indices.push_back(current);
+                indices.push_back(next);
+                indices.push_back(current + 1);
+
+                // Triangle 2: current+1, next, next+1
+                indices.push_back(current + 1);
+                indices.push_back(next);
+                indices.push_back(next + 1);
+            }
+        }
+
+        logInfo("LED_Emissive::generateSphereGeometry - Generated sphere with " +
+                std::to_string(vertices.size()) + " vertices");
+
+    } catch (const std::exception& e) {
+        logError("LED_Emissive::generateSphereGeometry - Exception: " + std::string(e.what()));
+        mCalculationError = true;
+        vertices.clear();
+        indices.clear();
+    }
+}
+
+void LED_Emissive::generateRectangleGeometry(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
+    try {
+        vertices.clear();
+        indices.clear();
+
+        // Create a unit cube (box) with 6 faces
+        // Front face (z = +0.5)
+        vertices.push_back({{-0.5f, -0.5f, 0.5f}, {0, 0, 1}, {0, 0}});
+        vertices.push_back({{0.5f, -0.5f, 0.5f}, {0, 0, 1}, {1, 0}});
+        vertices.push_back({{0.5f, 0.5f, 0.5f}, {0, 0, 1}, {1, 1}});
+        vertices.push_back({{-0.5f, 0.5f, 0.5f}, {0, 0, 1}, {0, 1}});
+
+        // Back face (z = -0.5)
+        vertices.push_back({{0.5f, -0.5f, -0.5f}, {0, 0, -1}, {0, 0}});
+        vertices.push_back({{-0.5f, -0.5f, -0.5f}, {0, 0, -1}, {1, 0}});
+        vertices.push_back({{-0.5f, 0.5f, -0.5f}, {0, 0, -1}, {1, 1}});
+        vertices.push_back({{0.5f, 0.5f, -0.5f}, {0, 0, -1}, {0, 1}});
+
+        // Right face (x = +0.5)
+        vertices.push_back({{0.5f, -0.5f, 0.5f}, {1, 0, 0}, {0, 0}});
+        vertices.push_back({{0.5f, -0.5f, -0.5f}, {1, 0, 0}, {1, 0}});
+        vertices.push_back({{0.5f, 0.5f, -0.5f}, {1, 0, 0}, {1, 1}});
+        vertices.push_back({{0.5f, 0.5f, 0.5f}, {1, 0, 0}, {0, 1}});
+
+        // Left face (x = -0.5)
+        vertices.push_back({{-0.5f, -0.5f, -0.5f}, {-1, 0, 0}, {0, 0}});
+        vertices.push_back({{-0.5f, -0.5f, 0.5f}, {-1, 0, 0}, {1, 0}});
+        vertices.push_back({{-0.5f, 0.5f, 0.5f}, {-1, 0, 0}, {1, 1}});
+        vertices.push_back({{-0.5f, 0.5f, -0.5f}, {-1, 0, 0}, {0, 1}});
+
+        // Top face (y = +0.5)
+        vertices.push_back({{-0.5f, 0.5f, 0.5f}, {0, 1, 0}, {0, 0}});
+        vertices.push_back({{0.5f, 0.5f, 0.5f}, {0, 1, 0}, {1, 0}});
+        vertices.push_back({{0.5f, 0.5f, -0.5f}, {0, 1, 0}, {1, 1}});
+        vertices.push_back({{-0.5f, 0.5f, -0.5f}, {0, 1, 0}, {0, 1}});
+
+        // Bottom face (y = -0.5)
+        vertices.push_back({{-0.5f, -0.5f, -0.5f}, {0, -1, 0}, {0, 0}});
+        vertices.push_back({{0.5f, -0.5f, -0.5f}, {0, -1, 0}, {1, 0}});
+        vertices.push_back({{0.5f, -0.5f, 0.5f}, {0, -1, 0}, {1, 1}});
+        vertices.push_back({{-0.5f, -0.5f, 0.5f}, {0, -1, 0}, {0, 1}});
+
+        // Generate indices for 12 triangles (2 per face, 6 faces)
+        uint32_t faceIndices[] = {
+            // Front face
+            0, 1, 2,    0, 2, 3,
+            // Back face
+            4, 5, 6,    4, 6, 7,
+            // Right face
+            8, 9, 10,   8, 10, 11,
+            // Left face
+            12, 13, 14, 12, 14, 15,
+            // Top face
+            16, 17, 18, 16, 18, 19,
+            // Bottom face
+            20, 21, 22, 20, 22, 23
+        };
+
+        indices.assign(std::begin(faceIndices), std::end(faceIndices));
+
+        logInfo("LED_Emissive::generateRectangleGeometry - Generated cube with " +
+                std::to_string(vertices.size()) + " vertices");
+
+    } catch (const std::exception& e) {
+        logError("LED_Emissive::generateRectangleGeometry - Exception: " + std::string(e.what()));
+        mCalculationError = true;
+        vertices.clear();
+        indices.clear();
+    }
+}
+
+void LED_Emissive::generateEllipsoidGeometry(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
+    try {
+        const uint32_t latSegments = 16;
+        const uint32_t lonSegments = 32;
+
+        vertices.clear();
+        indices.clear();
+
+        // Generate vertices for ellipsoid (similar to sphere but with different radii)
+        for (uint32_t lat = 0; lat <= latSegments; ++lat) {
+            float theta = (float)lat / latSegments * (float)M_PI; // 0 to π
+            float cosTheta = std::cos(theta);
+            float sinTheta = std::sin(theta);
+
+            for (uint32_t lon = 0; lon <= lonSegments; ++lon) {
+                float phi = (float)lon / lonSegments * 2.0f * (float)M_PI; // 0 to 2π
+                float cosPhi = std::cos(phi);
+                float sinPhi = std::sin(phi);
+
+                // Ellipsoid coordinates (will be scaled by transform matrix)
+                // Using unit ellipsoid (rx=ry=rz=1), scaling applied via mScaling
+                float3 position = float3(
+                    sinTheta * cosPhi,
+                    cosTheta,
+                    sinTheta * sinPhi
+                );
+
+                // Normal calculation for ellipsoid is more complex
+                // For unit ellipsoid, normal is same as position
+                float3 normal = normalize(position);
+
+                // Texture coordinates
+                float2 texCoord = float2(
+                    (float)lon / lonSegments,
+                    (float)lat / latSegments
+                );
+
+                Vertex vertex;
+                vertex.position = position;
+                vertex.normal = normal;
+                vertex.texCoord = texCoord;
+                vertices.push_back(vertex);
+            }
+        }
+
+        // Generate indices (same as sphere)
+        for (uint32_t lat = 0; lat < latSegments; ++lat) {
+            for (uint32_t lon = 0; lon < lonSegments; ++lon) {
+                uint32_t current = lat * (lonSegments + 1) + lon;
+                uint32_t next = current + lonSegments + 1;
+
+                // Two triangles per quad
+                indices.push_back(current);
+                indices.push_back(next);
+                indices.push_back(current + 1);
+
+                indices.push_back(current + 1);
+                indices.push_back(next);
+                indices.push_back(next + 1);
+            }
+        }
+
+        logInfo("LED_Emissive::generateEllipsoidGeometry - Generated ellipsoid with " +
+                std::to_string(vertices.size()) + " vertices");
+
+    } catch (const std::exception& e) {
+        logError("LED_Emissive::generateEllipsoidGeometry - Exception: " + std::string(e.what()));
+        mCalculationError = true;
+        vertices.clear();
+        indices.clear();
+    }
+}
+
+float4x4 LED_Emissive::createTransformMatrix() {
+    try {
+        // Create scaling matrix
+        float4x4 scale = float4x4::identity();
+        scale[0][0] = mScaling.x;
+        scale[1][1] = mScaling.y;
+        scale[2][2] = mScaling.z;
+
+        // Create rotation matrix (align -Z axis to direction vector)
+        float3 forward = normalize(mDirection);
+        float3 up = float3(0, 1, 0);
+
+        // Handle case where direction is parallel to up vector
+        if (abs(dot(up, forward)) > 0.999f) {
+            up = float3(1, 0, 0);
+        }
+
+        float3 right = normalize(cross(up, forward));
+        up = cross(forward, right);
+
+        float4x4 rotation = float4x4::identity();
+        rotation[0] = float4(right, 0);
+        rotation[1] = float4(up, 0);
+        rotation[2] = float4(-forward, 0); // Falcor uses -Z as forward
+        rotation[3] = float4(0, 0, 0, 1);
+
+        // Create translation matrix
+        float4x4 translation = float4x4::identity();
+        translation[3] = float4(mPosition, 1);
+
+        // Combine transformations: T * R * S
+        return mul(translation, mul(rotation, scale));
+
+    } catch (const std::exception& e) {
+        logError("LED_Emissive::createTransformMatrix - Exception: " + std::string(e.what()));
+        return float4x4::identity();
+    }
+}
+
+ref<TriangleMesh> LED_Emissive::createTriangleMesh(const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
+    try {
+        if (vertices.empty() || indices.empty()) {
+            logError("LED_Emissive::createTriangleMesh - Empty vertex or index data");
+            return nullptr;
+        }
+
+        // Convert our Vertex structure to TriangleMesh vertex format
+        TriangleMesh::VertexList triangleVertices;
+        triangleVertices.reserve(vertices.size());
+
+        for (const auto& vertex : vertices) {
+            TriangleMesh::Vertex triangleVertex;
+            triangleVertex.position = vertex.position;
+            triangleVertex.normal = vertex.normal;
+            triangleVertex.texCoord = vertex.texCoord;
+            triangleVertices.push_back(triangleVertex);
+        }
+
+        // Create TriangleMesh object
+        auto pTriangleMesh = TriangleMesh::create(triangleVertices, indices);
+        if (!pTriangleMesh) {
+            logError("LED_Emissive::createTriangleMesh - Failed to create triangle mesh");
+            return nullptr;
+        }
+
+        // Set mesh name
+        pTriangleMesh->setName(mName + "_Mesh");
+
+        logInfo("LED_Emissive::createTriangleMesh - Created triangle mesh with " +
+                std::to_string(vertices.size()) + " vertices and " +
+                std::to_string(indices.size() / 3) + " triangles");
+
+        return pTriangleMesh;
+
+    } catch (const std::exception& e) {
+        logError("LED_Emissive::createTriangleMesh - Exception: " + std::string(e.what()));
+        return nullptr;
+    }
+}
+
+void LED_Emissive::cleanup() {
+    try {
+        if (mpScene && mIsAddedToScene) {
+            // Remove from scene if still added
+            removeFromScene();
+        }
+
+        // Clear all data
+        mMeshIndices.clear();
+        mpLightProfile = nullptr;
+        mpScene = nullptr;
+        mpDevice = nullptr;
+        mIsAddedToScene = false;
+        mMaterialID = MaterialID();
+
+        logInfo("LED_Emissive::cleanup - Cleanup completed for '" + mName + "'");
+
+    } catch (const std::exception& e) {
+        logError("LED_Emissive::cleanup - Exception: " + std::string(e.what()));
     }
 }
 

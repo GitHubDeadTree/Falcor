@@ -2,13 +2,18 @@
 #include "Scene/Scene.h"
 #include "Scene/Material/Material.h"
 #include "Scene/Lights/LightProfile.h"
+#include "Scene/SceneIDs.h"
 #include "Core/Macros.h"
 #include "Core/Object.h"
 #include "Utils/Math/Vector.h"
 #include "Utils/Math/Matrix.h"
 #include "Utils/UI/Gui.h"
+#include "Scene/SceneBuilder.h"
+#include "Scene/TriangleMesh.h"
 
 namespace Falcor {
+
+class SceneBuilder;
 
 enum class LED_EmissiveShape {
     Sphere = 0,
@@ -40,6 +45,7 @@ public:
 
     // Scene integration
     void addToScene(Scene* pScene);
+    void addToSceneBuilder(SceneBuilder& sceneBuilder);
     void removeFromScene();
     void renderUI(Gui::Widgets& widget);
 
@@ -80,8 +86,8 @@ private:
     // Scene integration
     Scene* mpScene = nullptr;
     ref<Device> mpDevice = nullptr;
-    std::vector<uint32_t> mMeshIndices;
-    uint32_t mMaterialID = 0;
+    std::vector<MeshID> mMeshIndices;
+    MaterialID mMaterialID;
     bool mIsAddedToScene = false;
     bool mCalculationError = false;
 
@@ -100,6 +106,16 @@ private:
     // Material creation methods
     float calculateEmissiveIntensity();
     ref<Material> createErrorMaterial();
+
+    // Geometry generation methods
+    void generateSphereGeometry(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices);
+    void generateRectangleGeometry(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices);
+    void generateEllipsoidGeometry(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices);
+
+    // Scene integration methods
+    float4x4 createTransformMatrix();
+    ref<TriangleMesh> createTriangleMesh(const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
+    void cleanup();
 };
 
 } // namespace Falcor
