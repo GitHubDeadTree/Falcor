@@ -52,6 +52,9 @@ public:
     // Property getters
     LED_EmissiveShape getShape() const { return mShape; }
     float3 getPosition() const { return mPosition; }
+    float3 getScaling() const { return mScaling; }
+    float3 getDirection() const { return mDirection; }
+    float3 getColor() const { return mColor; }
     float getTotalPower() const { return mTotalPower; }
     float getLambertExponent() const { return mLambertN; }
     float getOpeningAngle() const { return mOpeningAngle; }
@@ -106,6 +109,7 @@ private:
 
     // Material creation methods
     float calculateEmissiveIntensity();
+    float calculateDirectionalEmissiveIntensity();
     ref<Material> createErrorMaterial();
 
     // Geometry generation methods

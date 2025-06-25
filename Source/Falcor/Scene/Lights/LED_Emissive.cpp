@@ -582,9 +582,8 @@ void LED_Emissive::updateEmissiveIntensity() {
             return;
         }
 
-        // Recalculate emissive intensity and update material if it exists
-        // This will be used when materials are created in scene integration
-        float newIntensity = calculateEmissiveIntensity();
+        // Recalculate directional emissive intensity with current parameters
+        float newIntensity = calculateDirectionalEmissiveIntensity();
 
         if (!std::isfinite(newIntensity) || newIntensity < 0.0f) {
             logWarning("LED_Emissive::updateEmissiveIntensity - Invalid intensity calculated");
@@ -592,7 +591,11 @@ void LED_Emissive::updateEmissiveIntensity() {
             return;
         }
 
-        logInfo("LED_Emissive::updateEmissiveIntensity - Updated intensity: " + std::to_string(newIntensity));
+        logInfo("LED_Emissive::updateEmissiveIntensity - Updated directional intensity: " + std::to_string(newIntensity));
+
+        // Note: Material update would happen during scene rebuild
+        // For real-time updates, the scene would need to be reconstructed
+        // This method prepares the new values for the next scene build
 
     } catch (const std::exception& e) {
         logError("LED_Emissive::updateEmissiveIntensity - Exception: " + std::string(e.what()));
@@ -652,6 +655,69 @@ float LED_Emissive::calculateEmissiveIntensity() {
     }
 }
 
+float LED_Emissive::calculateDirectionalEmissiveIntensity() {
+    try {
+        // Calculate surface area of the LED geometry
+        float surfaceArea = calculateSurfaceArea();
+        if (surfaceArea <= 0.0f) {
+            logWarning("LED_Emissive::calculateDirectionalEmissiveIntensity - Invalid surface area");
+            return 0.666f;
+        }
+
+        // Calculate light cone solid angle based on opening angle
+        float solidAngle = 2.0f * (float)M_PI * (1.0f - mCosOpeningAngle);
+        if (solidAngle <= 0.0f) {
+            logWarning("LED_Emissive::calculateDirectionalEmissiveIntensity - Invalid solid angle");
+            return 0.666f;
+        }
+
+        // Apply Lambert distribution normalization
+        // For directional light distribution: I(θ) = I₀ * cos(θ)^n
+        // Normalization factor ensures energy conservation: (n+1)/(2π)
+        float lambertNormalization = (mLambertN + 1.0f) / (2.0f * (float)M_PI);
+
+        // Calculate directional concentration factor based on opening angle
+        // Smaller opening angles should concentrate more light in the forward direction
+        float angleFactor = 1.0f;
+        if (mOpeningAngle < (float)M_PI) {
+            // Concentration factor increases as opening angle decreases
+            // Using inverse relationship: narrower beam = higher intensity
+            angleFactor = (float)M_PI / std::max(mOpeningAngle, 0.1f);
+
+            // Apply Lambert distribution concentration
+            // Higher Lambert exponent = more concentrated beam
+            float lambertConcentration = std::pow(2.0f, mLambertN - 1.0f);
+            angleFactor *= lambertConcentration;
+        }
+
+        // Calculate base intensity per unit area
+        float baseIntensity = mTotalPower / surfaceArea;
+
+        // Apply directional factors
+        float directionalIntensity = baseIntensity * lambertNormalization * angleFactor;
+
+        // Validate result
+        if (!std::isfinite(directionalIntensity) || directionalIntensity < 0.0f) {
+            logError("LED_Emissive::calculateDirectionalEmissiveIntensity - Invalid calculation result");
+            return 0.666f;
+        }
+
+        // Reasonable intensity range check (enhanced for directional effects)
+        if (directionalIntensity < 0.001f || directionalIntensity > 50000.0f) {
+            logWarning("LED_Emissive::calculateDirectionalEmissiveIntensity - Intensity outside practical range: " + std::to_string(directionalIntensity));
+        }
+
+        logInfo("LED_Emissive::calculateDirectionalEmissiveIntensity - Calculated intensity: " + std::to_string(directionalIntensity) +
+                " (Lambert N=" + std::to_string(mLambertN) + ", Opening angle=" + std::to_string(mOpeningAngle * 180.0f / M_PI) + "°)");
+
+        return directionalIntensity;
+
+    } catch (const std::exception& e) {
+        logError("LED_Emissive::calculateDirectionalEmissiveIntensity - Exception: " + std::string(e.what()));
+        return 0.666f;
+    }
+}
+
 float LED_Emissive::calculateSurfaceArea() const {
     try {
         switch (mShape) {
@@ -697,8 +763,8 @@ ref<Material> LED_Emissive::createEmissiveMaterial() {
         // Set emissive properties
         pMaterial->setEmissiveColor(mColor);
 
-        // Calculate emissive intensity based on power and geometry
-        float emissiveIntensity = calculateEmissiveIntensity();
+        // Calculate directional emissive intensity based on opening angle and Lambert exponent
+        float emissiveIntensity = calculateDirectionalEmissiveIntensity();
         pMaterial->setEmissiveFactor(emissiveIntensity);
 
         // Enable LightProfile integration if available
@@ -706,7 +772,7 @@ ref<Material> LED_Emissive::createEmissiveMaterial() {
             pMaterial->setLightProfileEnabled(true);
             logInfo("LED_Emissive::createEmissiveMaterial - LightProfile integration enabled");
         } else {
-            logInfo("LED_Emissive::createEmissiveMaterial - Using basic emissive material without LightProfile");
+            logInfo("LED_Emissive::createEmissiveMaterial - Using directional intensity calculation for light distribution");
         }
 
         // Validate emissive intensity
@@ -716,7 +782,7 @@ ref<Material> LED_Emissive::createEmissiveMaterial() {
             mCalculationError = true;
         }
 
-        logInfo("LED_Emissive::createEmissiveMaterial - Material created successfully");
+        logInfo("LED_Emissive::createEmissiveMaterial - Material created successfully with directional intensity: " + std::to_string(emissiveIntensity));
         return pMaterial;
 
     } catch (const std::exception& e) {
@@ -999,22 +1065,22 @@ void LED_Emissive::generateSphereGeometry(std::vector<Vertex>& vertices, std::ve
             }
         }
 
-        // Generate indices for triangles
+        // Generate indices for triangles (counter-clockwise winding for outward normals)
         for (uint32_t lat = 0; lat < latSegments; ++lat) {
             for (uint32_t lon = 0; lon < lonSegments; ++lon) {
                 uint32_t current = lat * (lonSegments + 1) + lon;
                 uint32_t next = current + lonSegments + 1;
 
-                // Two triangles per quad
-                // Triangle 1: current, next, current+1
+                // Two triangles per quad with counter-clockwise winding for outward normals
+                // Triangle 1: current, current+1, next
                 indices.push_back(current);
-                indices.push_back(next);
                 indices.push_back(current + 1);
+                indices.push_back(next);
 
-                // Triangle 2: current+1, next, next+1
+                // Triangle 2: current+1, next+1, next
                 indices.push_back(current + 1);
-                indices.push_back(next);
                 indices.push_back(next + 1);
+                indices.push_back(next);
             }
         }
 
@@ -1180,6 +1246,7 @@ float4x4 LED_Emissive::createTransformMatrix() {
         scale[0][0] = mScaling.x;
         scale[1][1] = mScaling.y;
         scale[2][2] = mScaling.z;
+        scale[3][3] = 1.0f;
 
         // Create rotation matrix (align -Z axis to direction vector)
         float3 forward = normalize(mDirection);
@@ -1191,20 +1258,28 @@ float4x4 LED_Emissive::createTransformMatrix() {
         }
 
         float3 right = normalize(cross(up, forward));
-        up = cross(forward, right);
+        up = normalize(cross(forward, right));
 
         float4x4 rotation = float4x4::identity();
-        rotation[0] = float4(right, 0);
-        rotation[1] = float4(up, 0);
-        rotation[2] = float4(-forward, 0); // Falcor uses -Z as forward
-        rotation[3] = float4(0, 0, 0, 1);
+        rotation[0][0] = right.x;   rotation[0][1] = right.y;   rotation[0][2] = right.z;   rotation[0][3] = 0.0f;
+        rotation[1][0] = up.x;      rotation[1][1] = up.y;      rotation[1][2] = up.z;      rotation[1][3] = 0.0f;
+        rotation[2][0] = -forward.x; rotation[2][1] = -forward.y; rotation[2][2] = -forward.z; rotation[2][3] = 0.0f;
+        rotation[3][0] = 0.0f;      rotation[3][1] = 0.0f;      rotation[3][2] = 0.0f;      rotation[3][3] = 1.0f;
 
         // Create translation matrix
         float4x4 translation = float4x4::identity();
-        translation[3] = float4(mPosition, 1);
+        translation[0][3] = mPosition.x;
+        translation[1][3] = mPosition.y;
+        translation[2][3] = mPosition.z;
+        translation[3][3] = 1.0f;
 
         // Combine transformations: T * R * S
-        return mul(translation, mul(rotation, scale));
+        float4x4 result = mul(translation, mul(rotation, scale));
+
+        logInfo("LED_Emissive::createTransformMatrix - Created transform matrix for position (" +
+                std::to_string(mPosition.x) + ", " + std::to_string(mPosition.y) + ", " + std::to_string(mPosition.z) + ")");
+
+        return result;
 
     } catch (const std::exception& e) {
         logError("LED_Emissive::createTransformMatrix - Exception: " + std::string(e.what()));

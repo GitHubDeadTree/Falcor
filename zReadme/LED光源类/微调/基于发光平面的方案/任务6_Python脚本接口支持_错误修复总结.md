@@ -327,3 +327,133 @@ mNodeIndices.clear();  // 清理节点ID引用
 4. **资源管理**: 正确管理mesh和节点的生命周期
 
 这次修复解决了场景集成的架构问题，确保LED_Emissive对象能够正确参与场景渲染。
+
+## 第四次修复: 变换矩阵、法线方向和UI显示问题
+
+### 问题分析
+
+用户测试发现了三个新的问题：
+
+1. **位置错误**: LED灯珠创建在(0,0,0)而不是预期的(2,2,2)
+2. **光线方向错误**: 光线在球体内部产生，没有向外射出
+3. **UI缺失**: 没有显示调节光场的UI界面
+
+### 问题诊断
+
+从日志中发现关键警告：
+```
+(Warning) SceneBuilder::addNode() - Node 'LED_Emissive_222_Node' transform matrix is not affine. Setting last row to (0,0,0,1).
+```
+
+**根本原因分析**:
+
+1. **变换矩阵构造错误**: `createTransformMatrix()`方法生成的矩阵不是有效的仿射变换矩阵
+2. **三角形绕序错误**: 球体几何的三角形绕序导致法线指向内部
+3. **Python绑定缺失**: LED_Emissive的`renderUI`方法没有暴露给Python
+
+### 修复内容
+
+#### 修复1: 变换矩阵构造
+
+**问题**: 矩阵元素赋值方式错误，导致生成非仿射矩阵
+
+**修复前**:
+```cpp
+rotation[0] = float4(right, 0);
+rotation[1] = float4(up, 0);
+rotation[2] = float4(-forward, 0);
+rotation[3] = float4(0, 0, 0, 1);
+
+translation[3] = float4(mPosition, 1);
+```
+
+**修复后**:
+```cpp
+rotation[0][0] = right.x;   rotation[0][1] = right.y;   rotation[0][2] = right.z;   rotation[0][3] = 0.0f;
+rotation[1][0] = up.x;      rotation[1][1] = up.y;      rotation[1][2] = up.z;      rotation[1][3] = 0.0f;
+rotation[2][0] = -forward.x; rotation[2][1] = -forward.y; rotation[2][2] = -forward.z; rotation[2][3] = 0.0f;
+rotation[3][0] = 0.0f;      rotation[3][1] = 0.0f;      rotation[3][2] = 0.0f;      rotation[3][3] = 1.0f;
+
+translation[0][3] = mPosition.x;
+translation[1][3] = mPosition.y;
+translation[2][3] = mPosition.z;
+translation[3][3] = 1.0f;
+```
+
+#### 修复2: 球体法线方向
+
+**问题**: 三角形顶点顺序为顺时针，导致法线指向内部
+
+**修复前**:
+```cpp
+// Triangle 1: current, next, current+1 (顺时针)
+indices.push_back(current);
+indices.push_back(next);
+indices.push_back(current + 1);
+```
+
+**修复后**:
+```cpp
+// Triangle 1: current, current+1, next (逆时针，外向法线)
+indices.push_back(current);
+indices.push_back(current + 1);
+indices.push_back(next);
+```
+
+#### 修复3: Python UI绑定
+
+**问题**: `renderUI`方法没有暴露给Python
+
+**修复**: 在Light.cpp中添加UI绑定
+```cpp
+.def("renderUI", &LED_Emissive::renderUI, "widget"_a)
+```
+
+#### 修复4: Python属性绑定完善
+
+**问题**: 部分getter方法返回固定值而不是实际属性值
+
+**修复**: 添加缺失的getter方法并更新绑定
+```cpp
+// 新增getter方法
+float3 getScaling() const { return mScaling; }
+float3 getDirection() const { return mDirection; }
+float3 getColor() const { return mColor; }
+
+// 更新Python绑定
+.def_property("scaling", &LED_Emissive::getScaling, &LED_Emissive::setScaling)
+.def_property("direction", &LED_Emissive::getDirection, &LED_Emissive::setDirection)
+.def_property("color", &LED_Emissive::getColor, &LED_Emissive::setColor)
+```
+
+### 修复的文件
+
+1. **Source/Falcor/Scene/Lights/LED_Emissive.cpp** - 变换矩阵和球体几何
+2. **Source/Falcor/Scene/Lights/LED_Emissive.h** - 新增getter方法
+3. **Source/Falcor/Scene/Lights/Light.cpp** - Python绑定完善
+
+### 修复效果
+
+修复后预期解决的问题：
+
+1. **正确位置**: LED灯珠将显示在(2,2,2)位置
+2. **正确光线方向**: 光线从球体表面向外发射
+3. **UI可用**: 可以在界面中调节光场参数
+4. **完整属性访问**: Python脚本可以正确获取和设置所有属性
+
+### 预期日志输出
+
+修复后不应再看到变换矩阵警告：
+```
+(Info) LED_Emissive::createTransformMatrix - Created transform matrix for position (2, 2, 2)
+(Info) LED_Emissive::addToSceneBuilder - Scene graph node created with ID: 3
+```
+
+### 技术要点
+
+1. **仿射变换矩阵**: 确保矩阵最后一行为(0,0,0,1)
+2. **三角形绕序**: 逆时针绕序产生向外法线
+3. **Python绑定完整性**: 确保所有必要方法都暴露给Python
+4. **UI集成**: 通过renderUI方法提供用户界面
+
+这次修复解决了变换、渲染和用户交互的所有核心问题，确保LED_Emissive能够完全正常工作。

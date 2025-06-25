@@ -793,10 +793,10 @@ namespace Falcor
             // Basic properties
             .def_property("shape", &LED_Emissive::getShape, &LED_Emissive::setShape)
             .def_property("position", &LED_Emissive::getPosition, &LED_Emissive::setPosition)
-            .def_property("scaling", [](const LED_Emissive& led) -> float3 { return float3(1.0f); }, &LED_Emissive::setScaling)
-            .def_property("direction", [](const LED_Emissive& led) -> float3 { return float3(0, 0, -1); }, &LED_Emissive::setDirection)
+                        .def_property("scaling", &LED_Emissive::getScaling, &LED_Emissive::setScaling)
+            .def_property("direction", &LED_Emissive::getDirection, &LED_Emissive::setDirection)
             .def_property("totalPower", &LED_Emissive::getTotalPower, &LED_Emissive::setTotalPower)
-            .def_property("color", [](const LED_Emissive& led) -> float3 { return float3(1.0f); }, &LED_Emissive::setColor)
+            .def_property("color", &LED_Emissive::getColor, &LED_Emissive::setColor)
 
             // Light field distribution control
             .def_property("lambertExponent", &LED_Emissive::getLambertExponent, &LED_Emissive::setLambertExponent)
@@ -808,6 +808,9 @@ namespace Falcor
             // Scene integration
             .def("addToSceneBuilder", &LED_Emissive::addToSceneBuilder, "sceneBuilder"_a)
             .def("removeFromScene", &LED_Emissive::removeFromScene)
+
+            // UI rendering
+            .def("renderUI", &LED_Emissive::renderUI, "widget"_a)
 
             // Status query properties (read-only)
             .def_property_readonly("hasCustomLightField", &LED_Emissive::hasCustomLightField);
