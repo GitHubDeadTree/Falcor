@@ -412,6 +412,7 @@ target_sources(Falcor PRIVATE
     Scene/Lights/LightProfile.h
     Scene/Lights/LightProfile.slang
     Scene/Lights/MeshLightData.slang
+    Scene/Lights/SpectrumSampling.slang
     Scene/Lights/UpdateTriangleVertices.cs.slang
 
     Scene/Material/AlphaTest.slang

@@ -41,7 +41,7 @@ import Scene.Scene;
 import Scene.Lights.LightData;
 import Utils.Math.MathHelpers;
 import Utils.Sampling.SampleGeneratorInterface;
-#include "SpectrumSampling.slang"
+#include "../../Scene/Lights/SpectrumSampling.slang"
 
 static const float kMinLightDistSqr = 1e-9f;
 static const float kMaxLightDistance = FLT_MAX;

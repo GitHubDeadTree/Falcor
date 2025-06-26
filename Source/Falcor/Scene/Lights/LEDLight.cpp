@@ -64,6 +64,11 @@ void LEDLight::updateGeometry()
     // Transform to world space
     mData.tangent = transformVector(mData.transMat, localTangent);
     mData.bitangent = transformVector(mData.transMat, localBitangent);
+
+    // Synchronize only tangent and bitangent to prevent assertion failures in Light::beginFrame()
+    // while preserving change detection for position, direction, and other properties
+    mPrevData.tangent = mData.tangent;
+    mPrevData.bitangent = mData.bitangent;
 }
 
 float LEDLight::calculateSurfaceArea() const
@@ -99,8 +104,12 @@ void LEDLight::setLEDShape(LEDShape shape)
 
 void LEDLight::setScaling(float3 scale)
 {
-    mScaling = math::max(scale, float3(0.01f));
-    updateGeometry();
+    if (any(mScaling != scale))
+    {
+        mScaling = scale;
+        updateGeometry();
+        updateIntensityFromPower();
+    }
 }
 
 void LEDLight::setTransformMatrix(const float4x4& mtx)
@@ -113,33 +122,88 @@ void LEDLight::setTransformMatrix(const float4x4& mtx)
 
 void LEDLight::setOpeningAngle(float openingAngle)
 {
-    mData.openingAngle = math::clamp(openingAngle, 0.01f, (float)M_PI);
-    mData.cosOpeningAngle = std::cos(mData.openingAngle);
+    if (openingAngle < 0.0f) openingAngle = 0.0f;
+    if (openingAngle > (float)M_PI) openingAngle = (float)M_PI;
+    if (mData.openingAngle != openingAngle)
+    {
+        mData.openingAngle = openingAngle;
+        mData.cosOpeningAngle = std::cos(openingAngle);
+        updateIntensityFromPower();
+    }
 }
 
 void LEDLight::setWorldDirection(const float3& dir)
 {
-    mData.dirW = normalize(dir);
+    float3 normDir = normalize(dir);
+    if (any(mData.dirW != normDir))
+    {
+        mData.dirW = normDir;
+
+        // Rebuild the rotation part of mTransformMatrix while preserving translation.
+        // Falcor's coordinate system uses -Z as the forward direction.
+        float3 forward = normDir;
+        float3 zAxis = -forward;
+        float3 up = float3(0.f, 1.f, 0.f);
+
+        // Handle the case where the direction is parallel to the up vector.
+        if (abs(dot(up, zAxis)) > 0.999f)
+        {
+            up = float3(1.f, 0.f, 0.f);
+        }
+
+        float3 xAxis = normalize(cross(up, zAxis));
+        float3 yAxis = cross(zAxis, xAxis);
+
+        // Update the rotation component of the transform matrix.
+        mTransformMatrix[0] = float4(xAxis, 0.f);
+        mTransformMatrix[1] = float4(yAxis, 0.f);
+        mTransformMatrix[2] = float4(zAxis, 0.f);
+        // The translation component in mTransformMatrix[3] is preserved.
+
+        updateGeometry();
+    }
 }
 
 void LEDLight::setWorldPosition(const float3& pos)
 {
-    mData.posW = pos;
+    float3 oldPos = mTransformMatrix[3].xyz();
+    if (any(oldPos != pos))
+    {
+        mTransformMatrix[3] = float4(pos, 1.0f);
+        mData.posW = pos;
+        updateGeometry();
+    }
 }
 
 void LEDLight::setLambertExponent(float n)
 {
-    mData.lambertN = math::max(0.1f, n);
+    n = std::max(0.1f, n);
+    if (mData.lambertN != n)
+    {
+        mData.lambertN = n;
+        updateIntensityFromPower();
+    }
 }
 
 void LEDLight::setTotalPower(float power)
 {
-    mData.totalPower = math::max(0.0f, power);
-    updateIntensityFromPower();
+    power = std::max(0.0f, power);
+    if (mData.totalPower != power)
+    {
+        mData.totalPower = power;
+        updateIntensityFromPower();
+    }
 }
 
 float LEDLight::getPower() const
 {
+    // Return stored power if available
+    if (mData.totalPower > 0.0f)
+    {
+        return mData.totalPower;
+    }
+
+    // If no power is set, return the total power value as-is
     return mData.totalPower;
 }
 
