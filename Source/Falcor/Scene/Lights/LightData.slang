@@ -77,6 +77,16 @@ struct LightData
     uint32_t lightFieldDataOffset = 0;              ///< Offset to light field data in buffer
     uint32_t spectrumDataSize   = 0;                ///< Size of spectrum data
     uint32_t lightFieldDataSize = 0;                ///< Size of light field data
+
+    // Task 2: Spectrum sampling support (GPU) - aligned for 16B boundary
+    uint32_t spectrumCDFOffset = 0;                 ///< CDF data offset in spectrum buffer
+    uint32_t spectrumCDFSize = 0;                   ///< CDF data size
+    uint32_t hasCustomSpectrum = 0;                 ///< Flag indicating if custom spectrum is loaded
+    uint32_t _spectrumPad0 = 0;                     ///< Alignment padding (16 bytes total)
+
+    float spectrumMinWavelength = 380.0f;           ///< Minimum wavelength in nm
+    float spectrumMaxWavelength = 780.0f;           ///< Maximum wavelength in nm
+    float2 _spectrumPad1 = float2(0);               ///< Alignment padding (16 bytes total)
 };
 
 END_NAMESPACE_FALCOR

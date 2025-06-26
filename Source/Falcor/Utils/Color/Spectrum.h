@@ -141,7 +141,7 @@ public:
         mMinWavelength = range.x;
         mMaxWavelength = range.y;
         // max(1, count - 1) handles edge case where wavelengthStep > wavelength range.
-        mWavelengthStep = (mMaxWavelength - mMinWavelength) / std::max(1ul, count - 1);
+        mWavelengthStep = (mMaxWavelength - mMinWavelength) / std::max(size_t(1), count - 1);
         mValues.resize(count);
         for (size_t i = 0; i < count; ++i)
         {

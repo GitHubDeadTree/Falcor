@@ -1613,6 +1613,10 @@ namespace Falcor
         std::vector<float2> allLightFieldData;
         uint32_t lightFieldDataOffset = 0;
 
+        // Task 2: Collect LED spectrum CDF data for GPU buffer
+        std::vector<float> allSpectrumCDFData;
+        uint32_t spectrumCDFDataOffset = 0;
+
         logError("Scene::updateLights - Starting LED light field data collection...");
 
         for (const auto& light : mLights)
@@ -1649,8 +1653,33 @@ namespace Falcor
 
                         logError("  - Data copied to global buffer, new offset: " + std::to_string(lightFieldDataOffset));
 
-                        // Update the light buffer with updated data
-                        mpLightsBuffer->setElement(activeLightIndex, ledLightPtr->getData());
+                        // Task 2: Handle spectrum CDF data collection
+                        const std::vector<float>& spectrumCDF = ledLightPtr->getSpectrumCDF();
+                        if (!spectrumCDF.empty()) {
+                            logError("  - Spectrum CDF data size: " + std::to_string(spectrumCDF.size()));
+                            logError("  - Current spectrum CDF offset: " + std::to_string(spectrumCDFDataOffset));
+
+                            auto lightData = ledLightPtr->getData();
+                            const_cast<LightData&>(lightData).spectrumCDFOffset = spectrumCDFDataOffset;
+                            const_cast<LightData&>(lightData).spectrumCDFSize = static_cast<uint32_t>(spectrumCDF.size());
+
+                            auto spectrumRange = ledLightPtr->getSpectrumRange();
+                            const_cast<LightData&>(lightData).spectrumMinWavelength = spectrumRange.x;
+                            const_cast<LightData&>(lightData).spectrumMaxWavelength = spectrumRange.y;
+                            const_cast<LightData&>(lightData).hasCustomSpectrum = ledLightPtr->getSpectrumSampleCount() > 0 ? 1 : 0;
+
+                            // Copy CDF data to global buffer
+                            allSpectrumCDFData.insert(allSpectrumCDFData.end(), spectrumCDF.begin(), spectrumCDF.end());
+                            spectrumCDFDataOffset += static_cast<uint32_t>(spectrumCDF.size());
+
+                            logError("  - Spectrum data copied to global buffer, new offset: " + std::to_string(spectrumCDFDataOffset));
+
+                            // Update the light buffer with updated data
+                            mpLightsBuffer->setElement(activeLightIndex, lightData);
+                        } else {
+                            // Update the light buffer with updated data
+                            mpLightsBuffer->setElement(activeLightIndex, ledLightPtr->getData());
+                        }
                         logError("  - Light buffer updated for active index: " + std::to_string(activeLightIndex));
                     }
                     else
@@ -1724,6 +1753,44 @@ namespace Falcor
             logError("  - No light field data to process");
         }
 
+        // Task 2: Create or update spectrum CDF data buffer
+        logError("Scene::updateLights - Creating/updating spectrum CDF buffer...");
+        logError("  - Total spectrum CDF data points: " + std::to_string(allSpectrumCDFData.size()));
+
+        if (!allSpectrumCDFData.empty())
+        {
+            if (!mpSpectrumCDFBuffer || mpSpectrumCDFBuffer->getElementCount() < allSpectrumCDFData.size())
+            {
+                logError("  - Creating new spectrum CDF buffer with " + std::to_string(allSpectrumCDFData.size()) + " elements");
+                mpSpectrumCDFBuffer = mpDevice->createStructuredBuffer(
+                    sizeof(float),
+                    (uint32_t)allSpectrumCDFData.size(),
+                    ResourceBindFlags::ShaderResource,
+                    MemoryType::DeviceLocal,
+                    allSpectrumCDFData.data(),
+                    false
+                );
+                mpSpectrumCDFBuffer->setName("Scene::mpSpectrumCDFBuffer");
+                logError("  - Spectrum CDF buffer created successfully");
+            }
+            else
+            {
+                logError("  - Updating existing spectrum CDF buffer");
+                mpSpectrumCDFBuffer->setBlob(allSpectrumCDFData.data(), 0, allSpectrumCDFData.size() * sizeof(float));
+                logError("  - Spectrum CDF buffer updated successfully");
+            }
+
+            // Print first few CDF data points for verification
+            for (size_t i = 0; i < std::min((size_t)5, allSpectrumCDFData.size()); ++i)
+            {
+                logError("  - CDF data[" + std::to_string(i) + "]: " + std::to_string(allSpectrumCDFData[i]));
+            }
+        }
+        else
+        {
+            logError("  - No spectrum CDF data to process");
+        }
+
         if (combinedChanges != Light::Changes::None || forceUpdate)
         {
             mpSceneBlock->getRootVar()["lightCount"] = (uint32_t)mActiveLights.size();
@@ -1759,6 +1826,18 @@ namespace Falcor
         else
         {
             logError("  - No light field buffer to bind");
+        }
+
+        // Task 2: Bind LED spectrum CDF data buffer
+        logError("Scene::bindLights - Binding spectrum CDF data buffer...");
+        if (mpSpectrumCDFBuffer)
+        {
+            var["gSpectrumCDFData"] = mpSpectrumCDFBuffer;
+            logError("  - Spectrum CDF buffer bound successfully, element count: " + std::to_string(mpSpectrumCDFBuffer->getElementCount()));
+        }
+        else
+        {
+            logError("  - No spectrum CDF buffer to bind");
         }
 
         if (mpLightCollection)

@@ -1,5 +1,6 @@
 #pragma once
 #include "Light.h"
+#include "Utils/Color/Spectrum.h"
 
 namespace Falcor
 {
@@ -64,15 +65,20 @@ public:
     const std::vector<float2>& getSpectrumData() const { return mSpectrumData; }
     const std::vector<float2>& getLightFieldData() const { return mLightFieldData; }
 
+    // Spectrum sampling interface (Task 1)
+    void setSpectrum(const std::vector<float2>& spectrumData);
+    size_t getSpectrumSampleCount() const;
+    float2 getSpectrumRange() const;
+    const std::vector<float>& getSpectrumCDF() const { return mSpectrumCDF; }
+
     // Internal methods for scene renderer
-        void setLightFieldDataOffset(uint32_t offset)
+    void setLightFieldDataOffset(uint32_t offset)
     {
         mData.lightFieldDataOffset = offset;
-        logError("LEDLight::setLightFieldDataOffset - Light: " + getName() + ", Offset: " + std::to_string(offset));
     }
 
-    // Override getData() for debugging Scene data access
-    const LightData& getData() const;
+    // Override getData() for consistency
+    const LightData& getData() const override;
 
 private:
     void update();
@@ -81,13 +87,13 @@ private:
     float calculateSurfaceArea() const;
     std::vector<float2> normalizeLightFieldData(const std::vector<float2>& rawData) const;
 
+    // Spectrum processing functions (Task 1)
+    void buildSpectrumCDF();
+    float sampleWavelengthFromSpectrum(float u) const;
+
     LEDShape mLEDShape = LEDShape::Sphere;
     float3 mScaling = float3(1.0f);
     float4x4 mTransformMatrix = float4x4::identity();
-
-    // GPU data buffers
-    ref<Buffer> mSpectrumBuffer;
-    ref<Buffer> mLightFieldBuffer;
 
     // Spectrum and light field data
     std::vector<float2> mSpectrumData;      // wavelength, intensity pairs
@@ -95,7 +101,7 @@ private:
     bool mHasCustomSpectrum = false;
     bool mHasCustomLightField = false;
 
-    // Error flag
-    bool mCalculationError = false;
+    // Spectrum sampling support (Task 1)
+    std::vector<float> mSpectrumCDF;
 };
 }
