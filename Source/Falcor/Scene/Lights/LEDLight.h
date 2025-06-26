@@ -84,6 +84,7 @@ private:
     void update();
     void updateGeometry();
     void updateIntensityFromPower();
+    void updateTransformData();
     float calculateSurfaceArea() const;
     std::vector<float2> normalizeLightFieldData(const std::vector<float2>& rawData) const;
 
@@ -94,6 +95,12 @@ private:
     LEDShape mLEDShape = LEDShape::Sphere;
     float3 mScaling = float3(1.0f);
     float4x4 mTransformMatrix = float4x4::identity();
+
+    // Geometry cache to avoid unnecessary recalculation
+    bool mGeometryDirty = true;
+    float4x4 mPrevTransformMatrix = float4x4::identity();
+    float3 mPrevScaling = float3(1.0f);
+    LEDShape mPrevLEDShape = LEDShape::Sphere;
 
     // Spectrum and light field data
     std::vector<float2> mSpectrumData;      // wavelength, intensity pairs

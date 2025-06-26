@@ -41,6 +41,7 @@ import Scene.Scene;
 import Scene.Lights.LightData;
 import Utils.Math.MathHelpers;
 import Utils.Sampling.SampleGeneratorInterface;
+#include "SpectrumSampling.slang"
 
 static const float kMinLightDistSqr = 1e-9f;
 static const float kMaxLightDistance = FLT_MAX;
@@ -303,50 +304,47 @@ bool samplePointLight(const float3 shadingPosW, const LightData light, out Analy
     return true;
 }
 
-/** Samples an LED light source.
+/** Samples an LED light source with spectral sampling.
     \param[in] shadingPosW Shading point in world space.
     \param[in] light Light data.
-    \param[in] u Uniform random numbers.
+    \param[in] u Uniform random numbers (3D for geometric and spectral sampling).
     \param[out] ls Light sample struct.
+    \param[out] sampledWavelength Sampled wavelength from the LED spectrum.
     \return True if a sample was generated, false otherwise.
 */
-bool sampleLEDLight(const float3 shadingPosW, const LightData light, const float2 u, out AnalyticLightSample ls)
+bool sampleLEDLightWithSpectrum(
+    const float3 shadingPosW,
+    const LightData light,
+    const float3 u,
+    out AnalyticLightSample ls,
+    out float sampledWavelength
+)
 {
-    // Sample local position based on LED shape type
+    // 1. Geometric sampling logic
     float3 localPos = float3(0.0f);
-
-    // Safety check for shape type to avoid invalid values
     uint32_t shapeType = clamp(light.shapeType, 0u, 2u);
 
     switch (shapeType)
     {
     case 0: // Sphere
-        // Uniform sphere sampling
-        localPos = sample_sphere(u);
+        localPos = sample_sphere(u.xy);
         break;
-
     case 1: // Ellipsoid
-        // Sample unit sphere then transform via scaling matrix
-        localPos = sample_sphere(u);
+        localPos = sample_sphere(u.xy);
         break;
-
     case 2: // Rectangle
-        // Sample rectangle surface in [-1,1] range
         localPos = float3(u.x * 2.0f - 1.0f, u.y * 2.0f - 1.0f, 0.0f);
         break;
-
     default:
-        // Fallback to sphere for unknown shape types
-        localPos = sample_sphere(u);
+        localPos = sample_sphere(u.xy);
         break;
     }
 
     // Transform to world space
-    // light.posW is the center position, light.transMat only contains rotation and scale
     float3 transformedLocalPos = mul(light.transMat, float4(localPos, 1.0f)).xyz;
     ls.posW = light.posW + transformedLocalPos;
 
-    // Calculate world space normal based on shape
+    // Calculate world space normal
     float3 localNormal = localPos;
     if (shapeType == 2) // Rectangle
     {
@@ -362,47 +360,71 @@ bool sampleLEDLight(const float3 shadingPosW, const LightData light, const float
 
     // Check if point is within light cone
     float cosTheta = dot(-ls.dir, light.dirW);
-    if (cosTheta < light.cosOpeningAngle) return false;
+    if (cosTheta < light.cosOpeningAngle)
+    {
+        sampledWavelength = 0.666f; // Error indicator
+        return false;
+    }
 
-    // Calculate angular attenuation
+    // 2. Spectral sampling
+    sampledWavelength = sampleLEDWavelength(light, u.z);
+
+    // Validate wavelength range with fallback
+    if (sampledWavelength < 300.0f || sampledWavelength > 1000.0f)
+    {
+        sampledWavelength = 550.0f; // Default green light
+    }
+
+    // 3. Light intensity calculation
     float angleFalloff = 1.0f;
 
     if (light.hasCustomLightField > 0 && light.lightFieldDataSize > 0)
     {
-        // Custom light field distribution with proper interpolation
-        float angle = acos(clamp(cosTheta, 0.0f, 1.0f)); // Convert cosine to angle
-        // Get normalized distribution value (0-1 range representing relative intensity)
+        // Custom light field distribution
+        float angle = acos(clamp(cosTheta, 0.0f, 1.0f));
         float normalizedDistribution = interpolateLightField(light.lightFieldDataOffset, light.lightFieldDataSize, angle);
-
-        // Apply additional safety checks for interpolated values
-        normalizedDistribution = max(normalizedDistribution, 0.0f); // Ensure non-negative intensity
-
-        // The normalized distribution is multiplied by the total power scaling factor
-        // This ensures totalPower controls the absolute intensity
-        angleFalloff = normalizedDistribution;
+        angleFalloff = max(normalizedDistribution, 0.0f);
     }
     else
     {
         // Lambert model with safety checks
-        float lambertN = max(light.lambertN, 0.1f); // Prevent negative/zero exponents
-        float normalizationFactor = max(lambertN + 1.0f, 0.1f); // Prevent division by zero
+        float lambertN = max(light.lambertN, 0.1f);
+        float normalizationFactor = max(lambertN + 1.0f, 0.1f);
         angleFalloff = pow(max(cosTheta, 0.0f), lambertN) / normalizationFactor;
     }
 
-    // Surface area check to prevent division by zero
+    // Surface area and normal validation
     float surfaceArea = max(light.surfaceArea, 1e-9f);
-
-    // Calculate surface normal dot product for area lights
     float cosNormalTheta = dot(ls.normalW, -ls.dir);
-    if (cosNormalTheta <= 0.0f) return false;
+    if (cosNormalTheta <= 0.0f)
+    {
+        sampledWavelength = 0.666f; // Error indicator
+        return false;
+    }
 
     // Compute incident radiance
     ls.Li = light.intensity * angleFalloff * (surfaceArea * cosNormalTheta / distSqr);
 
-    // Compute PDF with safety check
-    ls.pdf = distSqr / (cosNormalTheta * surfaceArea);
+    // 4. PDF calculation (geometric * spectral)
+    float geometricPDF = distSqr / (cosNormalTheta * surfaceArea);
+    float spectralPDF = evaluateSpectrumPDF(light, sampledWavelength);
+    ls.pdf = geometricPDF * spectralPDF;
 
     return true;
+}
+
+/** Samples an LED light source (compatibility function).
+    \param[in] shadingPosW Shading point in world space.
+    \param[in] light Light data.
+    \param[in] u Uniform random numbers.
+    \param[out] ls Light sample struct.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleLEDLight(const float3 shadingPosW, const LightData light, const float2 u, out AnalyticLightSample ls)
+{
+    // Call the spectral version with a dummy wavelength output
+    float dummyWavelength;
+    return sampleLEDLightWithSpectrum(shadingPosW, light, float3(u, 0.5f), ls, dummyWavelength);
 }
 
 /** Samples an analytic light source.

@@ -1750,7 +1750,22 @@ namespace Falcor
         }
         else
         {
-            logError("  - No light field data to process");
+            logError("  - No light field data to process, creating empty buffer");
+            if (!mpLightFieldDataBuffer)
+            {
+                // Create minimal buffer to avoid binding errors
+                float2 dummyData = float2(0.0f, 0.0f);
+                mpLightFieldDataBuffer = mpDevice->createStructuredBuffer(
+                    sizeof(float2),
+                    1,
+                    ResourceBindFlags::ShaderResource,
+                    MemoryType::DeviceLocal,
+                    &dummyData,
+                    false
+                );
+                mpLightFieldDataBuffer->setName("Scene::mpLightFieldDataBuffer");
+                logError("  - Empty light field buffer created successfully");
+            }
         }
 
         // Task 2: Create or update spectrum CDF data buffer
@@ -1788,7 +1803,22 @@ namespace Falcor
         }
         else
         {
-            logError("  - No spectrum CDF data to process");
+            logError("  - No spectrum CDF data to process, creating empty buffer");
+            if (!mpSpectrumCDFBuffer)
+            {
+                // Create minimal buffer to avoid binding errors
+                float dummyData = 1.0f;
+                mpSpectrumCDFBuffer = mpDevice->createStructuredBuffer(
+                    sizeof(float),
+                    1,
+                    ResourceBindFlags::ShaderResource,
+                    MemoryType::DeviceLocal,
+                    &dummyData,
+                    false
+                );
+                mpSpectrumCDFBuffer->setName("Scene::mpSpectrumCDFBuffer");
+                logError("  - Empty spectrum CDF buffer created successfully");
+            }
         }
 
         if (combinedChanges != Light::Changes::None || forceUpdate)
@@ -1816,8 +1846,16 @@ namespace Falcor
         var["lightCount"] = (uint32_t)mActiveLights.size();
         var[kLightsBufferName] = mpLightsBuffer;
 
-                // Bind LED light field data buffer
-        logError("Scene::bindLights - Binding light field data buffer...");
+        // Standard light bindings
+        if (mpLightCollection)
+            mpLightCollection->bindShaderData(var["lightCollection"]);
+        if (mpEnvMap)
+            mpEnvMap->bindShaderData(var[kEnvMap]);
+
+        // Bind LED-specific buffers
+        logError("Scene::bindLights - Binding LED-specific buffers...");
+
+        // Bind LED light field data buffer
         if (mpLightFieldDataBuffer)
         {
             var["gLightFieldData"] = mpLightFieldDataBuffer;
@@ -1825,11 +1863,10 @@ namespace Falcor
         }
         else
         {
-            logError("  - No light field buffer to bind");
+            logError("  - No light field buffer available");
         }
 
-        // Task 2: Bind LED spectrum CDF data buffer
-        logError("Scene::bindLights - Binding spectrum CDF data buffer...");
+        // Bind LED spectrum CDF data buffer
         if (mpSpectrumCDFBuffer)
         {
             var["gSpectrumCDFData"] = mpSpectrumCDFBuffer;
@@ -1837,13 +1874,8 @@ namespace Falcor
         }
         else
         {
-            logError("  - No spectrum CDF buffer to bind");
+            logError("  - No spectrum CDF buffer available");
         }
-
-        if (mpLightCollection)
-            mpLightCollection->bindShaderData(var["lightCollection"]);
-        if (mpEnvMap)
-            mpEnvMap->bindShaderData(var[kEnvMap]);
 
         logError("Scene::bindLights - Complete");
     }
