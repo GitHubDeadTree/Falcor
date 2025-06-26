@@ -37,12 +37,66 @@
 
 #include "Utils/Math/MathConstants.slangh"
 
+import Scene.Scene;
 import Scene.Lights.LightData;
 import Utils.Math.MathHelpers;
 import Utils.Sampling.SampleGeneratorInterface;
 
 static const float kMinLightDistSqr = 1e-9f;
 static const float kMaxLightDistance = FLT_MAX;
+
+/** Interpolates intensity from custom light field data based on angle.
+    \param[in] dataOffset Offset to the start of light field data for this LED.
+    \param[in] dataSize Number of data points in the light field.
+    \param[in] angle The angle in radians (0 to π).
+    \return Interpolated intensity value.
+*/
+float interpolateLightField(uint32_t dataOffset, uint32_t dataSize, float angle)
+{
+    // Safety checks
+    if (dataSize == 0) return 0.0f;
+    if (dataSize == 1) return gScene.gLightFieldData[dataOffset].y;
+
+    // Clamp angle to valid range [0, π]
+    angle = clamp(angle, 0.0f, M_PI);
+
+    // Handle edge cases
+    float2 firstPoint = gScene.gLightFieldData[dataOffset];
+    float2 lastPoint = gScene.gLightFieldData[dataOffset + dataSize - 1];
+
+    // If angle is before first data point
+    if (angle <= firstPoint.x) return firstPoint.y;
+
+    // If angle is after last data point
+    if (angle >= lastPoint.x) return lastPoint.y;
+
+    // Binary search for the correct interval
+    uint32_t left = 0;
+    uint32_t right = dataSize - 1;
+
+    while (right - left > 1)
+    {
+        uint32_t mid = (left + right) / 2;
+        float midAngle = gScene.gLightFieldData[dataOffset + mid].x;
+
+        if (angle <= midAngle)
+            right = mid;
+        else
+            left = mid;
+    }
+
+    // Linear interpolation between left and right points
+    float2 leftPoint = gScene.gLightFieldData[dataOffset + left];
+    float2 rightPoint = gScene.gLightFieldData[dataOffset + right];
+
+    float deltaAngle = rightPoint.x - leftPoint.x;
+
+    // Handle degenerate case
+    if (deltaAngle < 1e-6f) return leftPoint.y;
+
+    float t = (angle - leftPoint.x) / deltaAngle;
+    return lerp(leftPoint.y, rightPoint.y, t);
+}
 
 /** Describes a light sample for Falcor's analytic light sources.
 
@@ -313,12 +367,14 @@ bool sampleLEDLight(const float3 shadingPosW, const LightData light, const float
     // Calculate angular attenuation
     float angleFalloff = 1.0f;
 
-    if (light.hasCustomLightField > 0)
+    if (light.hasCustomLightField > 0 && light.lightFieldDataSize > 0)
     {
-        // Custom light field distribution
-        // For now, use simple cosine falloff as placeholder
-        // TODO: Implement actual light field interpolation
-        angleFalloff = cosTheta;
+        // Custom light field distribution with proper interpolation
+        float angle = acos(clamp(cosTheta, 0.0f, 1.0f)); // Convert cosine to angle
+        angleFalloff = interpolateLightField(light.lightFieldDataOffset, light.lightFieldDataSize, angle);
+
+        // Apply additional safety checks for interpolated values
+        angleFalloff = max(angleFalloff, 0.0f); // Ensure non-negative intensity
     }
     else
     {

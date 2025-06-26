@@ -337,6 +337,21 @@ void LEDLight::setIntensity(const float3& intensity)
 
 const LightData& LEDLight::getData() const
 {
+    // Debug output when light field data is present
+    if (mHasCustomLightField)
+    {
+        static bool firstCall = true;
+        if (firstCall)
+        {
+            logError("LEDLight::getData - DEBUG INFO for light: " + getName());
+            logError("  - mHasCustomLightField: " + std::to_string(mHasCustomLightField));
+            logError("  - mData.hasCustomLightField: " + std::to_string(mData.hasCustomLightField));
+            logError("  - mData.lightFieldDataSize: " + std::to_string(mData.lightFieldDataSize));
+            logError("  - mData.lightFieldDataOffset: " + std::to_string(mData.lightFieldDataOffset));
+            logError("  - mLightFieldData.size(): " + std::to_string(mLightFieldData.size()));
+            firstCall = false;
+        }
+    }
     return mData;
 }
 
@@ -389,11 +404,23 @@ void LEDLight::renderUI(Gui::Widgets& widget)
         setOpeningAngle(openingAngle);
     }
 
-    // Lambert exponent control
+    // Lambert exponent control (disabled when using custom light field)
     float lambertN = getLambertExponent();
-    if (widget.var("Lambert Exponent", lambertN, 0.1f, 100.0f))
+    if (mHasCustomLightField)
     {
-        setLambertExponent(lambertN);
+        // Show read-only value when custom light field is loaded
+        widget.text("Lambert Exponent: " + std::to_string(lambertN) + " (Disabled - Using Custom Light Field)");
+        widget.text("DEBUG - mHasCustomLightField: " + std::to_string(mHasCustomLightField));
+        widget.text("DEBUG - mData.hasCustomLightField: " + std::to_string(mData.hasCustomLightField));
+    }
+    else
+    {
+        // Allow adjustment only when using Lambert distribution
+        if (widget.var("Lambert Exponent", lambertN, 0.1f, 100.0f))
+        {
+            setLambertExponent(lambertN);
+        }
+        widget.text("DEBUG - Using Lambert distribution");
     }
 
     // Power control
@@ -406,7 +433,8 @@ void LEDLight::renderUI(Gui::Widgets& widget)
 
     // Spectrum and light field data status
     widget.separator();
-    widget.text("Custom Data Status:");
+    widget.text("Light Distribution Mode:");
+
     if (mHasCustomSpectrum)
     {
         widget.text("Spectrum: " + std::to_string(mSpectrumData.size()) + " data points loaded");
@@ -419,10 +447,11 @@ void LEDLight::renderUI(Gui::Widgets& widget)
     if (mHasCustomLightField)
     {
         widget.text("Light Field: " + std::to_string(mLightFieldData.size()) + " data points loaded");
+        widget.text("Note: Custom light field overrides Lambert distribution");
     }
     else
     {
-        widget.text("Light Field: Using Lambert distribution");
+        widget.text("Light Field: Using Lambert distribution (Exponent: " + std::to_string(lambertN) + ")");
     }
 
     if (widget.button("Clear Custom Data"))
@@ -480,6 +509,21 @@ void LEDLight::loadLightFieldData(const std::vector<float2>& lightFieldData)
         // Note: GPU buffer creation is deferred to scene renderer
         // This allows the scene to manage all GPU resources centrally
         mData.lightFieldDataOffset = 0; // Will be set by scene renderer
+
+                // Debug output
+        logError("LEDLight::loadLightFieldData - SUCCESS!");
+        logError("  - Light name: " + getName());
+        logError("  - Data points loaded: " + std::to_string(mLightFieldData.size()));
+        logError("  - mHasCustomLightField: " + std::to_string(mHasCustomLightField));
+        logError("  - mData.hasCustomLightField: " + std::to_string(mData.hasCustomLightField));
+        logError("  - mData.lightFieldDataSize: " + std::to_string(mData.lightFieldDataSize));
+
+        // Print first few data points
+        for (size_t i = 0; i < std::min((size_t)5, mLightFieldData.size()); ++i)
+        {
+            logError("  - Data[" + std::to_string(i) + "]: angle=" + std::to_string(mLightFieldData[i].x) +
+                   ", intensity=" + std::to_string(mLightFieldData[i].y));
+        }
     }
     catch (const std::exception& e) {
         mHasCustomLightField = false;

@@ -64,6 +64,13 @@ public:
     const std::vector<float2>& getSpectrumData() const { return mSpectrumData; }
     const std::vector<float2>& getLightFieldData() const { return mLightFieldData; }
 
+    // Internal methods for scene renderer
+        void setLightFieldDataOffset(uint32_t offset)
+    {
+        mData.lightFieldDataOffset = offset;
+        logError("LEDLight::setLightFieldDataOffset - Light: " + getName() + ", Offset: " + std::to_string(offset));
+    }
+
     // Override getData() for debugging Scene data access
     const LightData& getData() const;
 

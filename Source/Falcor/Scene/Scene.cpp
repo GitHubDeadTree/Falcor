@@ -36,6 +36,7 @@
 #include "SDFs/SparseBrickSet/SDFSBS.h"
 #include "SDFs/SparseVoxelOctree/SDFSVO.h"
 #include "SDFs/SparseVoxelSet/SDFSVS.h"
+#include "Lights/LEDLight.h"
 #include "Core/API/Device.h"
 #include "Core/API/RenderContext.h"
 #include "Core/API/IndirectCommands.h"
@@ -1608,20 +1609,119 @@ namespace Falcor
         uint32_t activeLightIndex = 0;
         mActiveLights.clear();
 
+        // Collect LED light field data for GPU buffer
+        std::vector<float2> allLightFieldData;
+        uint32_t lightFieldDataOffset = 0;
+
+        logError("Scene::updateLights - Starting LED light field data collection...");
+
         for (const auto& light : mLights)
         {
             if (!light->isActive()) continue;
 
             mActiveLights.push_back(light);
 
-            auto changes = light->getChanges();
-            if (changes != Light::Changes::None || is_set(combinedChanges, Light::Changes::Active) || forceUpdate)
+            // Handle LED light field data collection
+            if (light->getType() == LightType::LED)
             {
-                // TODO: This is slow since the buffer is not CPU writable. Copy into CPU buffer and upload once instead.
-                mpLightsBuffer->setElement(activeLightIndex, light->getData());
+                // Use static_cast since we already verified the type
+                LEDLight* ledLightPtr = static_cast<LEDLight*>(light.get());
+                logError("Scene::updateLights - Found LED light: " + light->getName());
+
+                if (ledLightPtr)
+                {
+                    logError("  - ledLight cast success: true");
+                    bool hasCustomField = ledLightPtr->hasCustomLightField();
+                    logError("  - hasCustomLightField: " + std::to_string(hasCustomField));
+
+                    if (hasCustomField)
+                    {
+                        const std::vector<float2>& lightFieldData = ledLightPtr->getLightFieldData();
+                        logError("  - Light field data size: " + std::to_string(lightFieldData.size()));
+                        logError("  - Current global offset: " + std::to_string(lightFieldDataOffset));
+
+                        // Update LED light's internal data with buffer offset
+                        ledLightPtr->setLightFieldDataOffset(lightFieldDataOffset);
+
+                        // Copy data to global buffer
+                        allLightFieldData.insert(allLightFieldData.end(), lightFieldData.begin(), lightFieldData.end());
+                        lightFieldDataOffset += static_cast<uint32_t>(lightFieldData.size());
+
+                        logError("  - Data copied to global buffer, new offset: " + std::to_string(lightFieldDataOffset));
+
+                        // Update the light buffer with updated data
+                        mpLightsBuffer->setElement(activeLightIndex, ledLightPtr->getData());
+                        logError("  - Light buffer updated for active index: " + std::to_string(activeLightIndex));
+                    }
+                    else
+                    {
+                        auto changes = light->getChanges();
+                        if (changes != Light::Changes::None || is_set(combinedChanges, Light::Changes::Active) || forceUpdate)
+                        {
+                            mpLightsBuffer->setElement(activeLightIndex, light->getData());
+                        }
+                    }
+                }
+                else
+                {
+                    logError("  - ledLight cast failed");
+                    auto changes = light->getChanges();
+                    if (changes != Light::Changes::None || is_set(combinedChanges, Light::Changes::Active) || forceUpdate)
+                    {
+                        mpLightsBuffer->setElement(activeLightIndex, light->getData());
+                    }
+                }
+            }
+            else
+            {
+                auto changes = light->getChanges();
+                if (changes != Light::Changes::None || is_set(combinedChanges, Light::Changes::Active) || forceUpdate)
+                {
+                    // TODO: This is slow since the buffer is not CPU writable. Copy into CPU buffer and upload once instead.
+                    mpLightsBuffer->setElement(activeLightIndex, light->getData());
+                }
             }
 
             activeLightIndex++;
+        }
+
+                // Create or update light field data buffer
+        logError("Scene::updateLights - Creating/updating light field buffer...");
+        logError("  - Total light field data points: " + std::to_string(allLightFieldData.size()));
+
+        if (!allLightFieldData.empty())
+        {
+            if (!mpLightFieldDataBuffer || mpLightFieldDataBuffer->getElementCount() < allLightFieldData.size())
+            {
+                logError("  - Creating new light field buffer with " + std::to_string(allLightFieldData.size()) + " elements");
+                mpLightFieldDataBuffer = mpDevice->createStructuredBuffer(
+                    sizeof(float2),
+                    (uint32_t)allLightFieldData.size(),
+                    ResourceBindFlags::ShaderResource,
+                    MemoryType::DeviceLocal,
+                    allLightFieldData.data(),
+                    false
+                );
+                mpLightFieldDataBuffer->setName("Scene::mpLightFieldDataBuffer");
+                logError("  - Light field buffer created successfully");
+            }
+            else
+            {
+                logError("  - Updating existing light field buffer");
+                mpLightFieldDataBuffer->setBlob(allLightFieldData.data(), 0, allLightFieldData.size() * sizeof(float2));
+                logError("  - Light field buffer updated successfully");
+            }
+
+            // Print first few global data points for verification
+            for (size_t i = 0; i < std::min((size_t)5, allLightFieldData.size()); ++i)
+            {
+                logError("  - Global data[" + std::to_string(i) + "]: angle=" + std::to_string(allLightFieldData[i].x) +
+                       ", intensity=" + std::to_string(allLightFieldData[i].y));
+            }
+        }
+        else
+        {
+            logError("  - No light field data to process");
         }
 
         if (combinedChanges != Light::Changes::None || forceUpdate)
@@ -1649,10 +1749,24 @@ namespace Falcor
         var["lightCount"] = (uint32_t)mActiveLights.size();
         var[kLightsBufferName] = mpLightsBuffer;
 
+                // Bind LED light field data buffer
+        logError("Scene::bindLights - Binding light field data buffer...");
+        if (mpLightFieldDataBuffer)
+        {
+            var["gLightFieldData"] = mpLightFieldDataBuffer;
+            logError("  - Light field buffer bound successfully, element count: " + std::to_string(mpLightFieldDataBuffer->getElementCount()));
+        }
+        else
+        {
+            logError("  - No light field buffer to bind");
+        }
+
         if (mpLightCollection)
             mpLightCollection->bindShaderData(var["lightCollection"]);
         if (mpEnvMap)
             mpEnvMap->bindShaderData(var[kEnvMap]);
+
+        logError("Scene::bindLights - Complete");
     }
 
     IScene::UpdateFlags Scene::updateGridVolumes(bool forceUpdate)

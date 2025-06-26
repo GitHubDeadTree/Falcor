@@ -1340,6 +1340,7 @@ namespace Falcor
         ref<Buffer> mpCurvesBuffer;
         ref<Buffer> mpCustomPrimitivesBuffer;
         ref<Buffer> mpLightsBuffer;
+        ref<Buffer> mpLightFieldDataBuffer;     ///< Buffer containing LED light field data.
         ref<Buffer> mpGridVolumesBuffer;
         ref<ParameterBlock> mpSceneBlock;
 

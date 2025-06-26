@@ -106,6 +106,7 @@ struct Scene
     // Lights and camera
     uint lightCount;
     StructuredBuffer<LightData> lights;
+    StructuredBuffer<float2> gLightFieldData;  ///< LED light field data buffer
     LightCollection lightCollection;
     EnvMap envMap;
     Camera camera;
