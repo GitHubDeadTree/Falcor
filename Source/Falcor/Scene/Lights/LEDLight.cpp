@@ -18,38 +18,14 @@ namespace Falcor
 LEDLight::LEDLight(const std::string& name) : Light(name, LightType::LED)
 {
     mData.type = (uint32_t)LightType::LED;
-    mData.shapeType = (uint32_t)mLEDShape;
-
-    // Set default tangent and bitangent to avoid assertion errors
-    mData.tangent = float3(1, 0, 0);
-    mData.bitangent = float3(0, 1, 0);
-    mData.surfaceArea = 4.0f;
-
-    // Initialize transform and scaling
-    mTransformMatrix = float4x4::identity();
-    mScaling = float3(1.0f);
-
-    // Initialize cache state
-    mPrevTransformMatrix = mTransformMatrix;
-    mPrevScaling = mScaling;
-    mPrevLEDShape = mLEDShape;
-    mGeometryDirty = true;
-
-    // Execute initial calculation
-    updateGeometry();
-
-    // Critical: Set mPrevData to avoid first frame assertion failure
-    mPrevData = mData;
+    update();
 }
 
 void LEDLight::updateFromAnimation(const float4x4& transform)
 {
-    if (mTransformMatrix != transform)
-    {
-        mTransformMatrix = transform;
-        mGeometryDirty = true;
-        updateGeometry();
-    }
+    mData.transMat = transform;
+    mData.transMatIT = transpose(inverse(transform));
+    updateGeometry();
 }
 
 void LEDLight::update()
@@ -60,20 +36,6 @@ void LEDLight::update()
 
 void LEDLight::updateGeometry()
 {
-    // Only recalculate if something actually changed
-    if (!mGeometryDirty &&
-        mTransformMatrix == mPrevTransformMatrix &&
-        all(mScaling == mPrevScaling) &&
-        mLEDShape == mPrevLEDShape)
-    {
-        return; // No need to recalculate - geometry cache hit
-    }
-
-    // Debug: Log when recalculation happens
-    logInfo("LEDLight::updateGeometry - Recalculating geometry (dirty=" +
-            std::to_string(mGeometryDirty) + ")");
-
-    // Calculate surface area and transformation matrix
     mData.surfaceArea = calculateSurfaceArea();
 
     // Apply scaling to transformation matrix using Falcor's math API
@@ -81,7 +43,7 @@ void LEDLight::updateGeometry()
     mData.transMat = mul(mTransformMatrix, scaleMatrix);
     mData.transMatIT = transpose(inverse(mData.transMat));
 
-    // Calculate tangent and bitangent (only when necessary)
+    // Update tangent and bitangent vectors based on shape
     float3 localTangent, localBitangent;
     switch (mLEDShape)
     {
@@ -97,21 +59,11 @@ void LEDLight::updateGeometry()
         localTangent = float3(mScaling.x, 0, 0);
         localBitangent = float3(0, mScaling.y, 0);
         break;
-    default:
-        localTangent = float3(1, 0, 0);
-        localBitangent = float3(0, 1, 0);
-        break;
     }
 
-    // Transform to world space using math::transformVector
-    mData.tangent = math::transformVector(mData.transMat, localTangent);
-    mData.bitangent = math::transformVector(mData.transMat, localBitangent);
-
-    // Update cache state
-    mPrevTransformMatrix = mTransformMatrix;
-    mPrevScaling = mScaling;
-    mPrevLEDShape = mLEDShape;
-    mGeometryDirty = false;
+    // Transform to world space
+    mData.tangent = transformVector(mData.transMat, localTangent);
+    mData.bitangent = transformVector(mData.transMat, localBitangent);
 }
 
 float LEDLight::calculateSurfaceArea() const
@@ -141,30 +93,22 @@ void LEDLight::setLEDShape(LEDShape shape)
     {
         mLEDShape = shape;
         mData.shapeType = (uint32_t)shape;
-        mGeometryDirty = true;
         updateGeometry();
     }
 }
 
 void LEDLight::setScaling(float3 scale)
 {
-    float3 newScaling = math::max(scale, float3(0.01f));
-    if (!all(mScaling == newScaling))
-    {
-        mScaling = newScaling;
-        mGeometryDirty = true;
-        updateGeometry();
-    }
+    mScaling = math::max(scale, float3(0.01f));
+    updateGeometry();
 }
 
 void LEDLight::setTransformMatrix(const float4x4& mtx)
 {
-    if (mTransformMatrix != mtx)
-    {
-        mTransformMatrix = mtx;
-        mGeometryDirty = true;
-        updateGeometry();
-    }
+    mTransformMatrix = mtx;
+    mData.transMat = mtx;
+    mData.transMatIT = transpose(inverse(mtx));
+    updateGeometry();
 }
 
 void LEDLight::setOpeningAngle(float openingAngle)
@@ -222,9 +166,6 @@ const LightData& LEDLight::getData() const
 
 Light::Changes LEDLight::beginFrame()
 {
-    // Ensure geometry is up to date, but only if needed (cached)
-    updateGeometry();
-
     auto changes = Light::beginFrame();
     return changes;
 }
@@ -482,12 +423,6 @@ float LEDLight::sampleWavelengthFromSpectrum(float u) const
     // Linear interpolation between samples
     float t = (u - mSpectrumCDF[index-1]) / (mSpectrumCDF[index] - mSpectrumCDF[index-1]);
     return math::lerp(mSpectrumData[index-1].x, mSpectrumData[index].x, t);
-}
-
-void LEDLight::updateTransformData()
-{
-    // This function is kept for compatibility but now uses cached updateGeometry
-    updateGeometry();
 }
 
 }
