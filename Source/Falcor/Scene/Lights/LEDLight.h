@@ -79,6 +79,7 @@ private:
     void updateGeometry();
     void updateIntensityFromPower();
     float calculateSurfaceArea() const;
+    std::vector<float2> normalizeLightFieldData(const std::vector<float2>& rawData) const;
 
     LEDShape mLEDShape = LEDShape::Sphere;
     float3 mScaling = float3(1.0f);

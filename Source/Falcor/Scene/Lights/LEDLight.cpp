@@ -297,18 +297,28 @@ void LEDLight::updateIntensityFromPower()
             return;
         }
 
-        // Lambert correction factor: (N + 1) where N is Lambert exponent
-        // This ensures proper normalization for angular distribution
-        float lambertFactor = mData.lambertN + 1.0f;
-        if (lambertFactor <= 0.0f) {
-            logWarning("LEDLight::updateIntensityFromPower - Invalid Lambert factor");
-            mCalculationError = true;
-            return;
+        // Normalization factor depends on whether we're using custom light field or Lambert model
+        float normalizationFactor = 1.0f;
+
+        if (mHasCustomLightField) {
+            // For custom light field, the data is already normalized to represent relative distribution
+            // No additional normalization factor needed since the integral is already 1
+            normalizationFactor = 1.0f;
+        } else {
+            // Lambert correction factor: (N + 1) where N is Lambert exponent
+            // This ensures proper normalization for angular distribution
+            normalizationFactor = mData.lambertN + 1.0f;
+            if (normalizationFactor <= 0.0f) {
+                logWarning("LEDLight::updateIntensityFromPower - Invalid Lambert factor");
+                mCalculationError = true;
+                return;
+            }
         }
 
-        // Calculate unit intensity: I_unit = Power / (Area * SolidAngle * LambertFactor)
-        // This follows the formula: I(θ) = I_unit * cos(θ)^N / (N + 1)
-        float unitIntensity = mData.totalPower / (surfaceArea * solidAngle / lambertFactor);
+        // Calculate unit intensity: I_unit = Power / (Area * SolidAngle / NormalizationFactor)
+        // For custom light field: I_unit = Power / (Area * SolidAngle) since normalization = 1
+        // For Lambert model: I_unit = Power / (Area * SolidAngle / (N + 1))
+        float unitIntensity = mData.totalPower / (surfaceArea * solidAngle / normalizationFactor);
 
         // Validate result
         if (!std::isfinite(unitIntensity) || unitIntensity < 0.0f) {
@@ -499,7 +509,10 @@ void LEDLight::loadLightFieldData(const std::vector<float2>& lightFieldData)
     }
 
     try {
-        mLightFieldData = lightFieldData;
+        // Normalize the light field data to ensure it represents relative distribution only
+        std::vector<float2> normalizedData = normalizeLightFieldData(lightFieldData);
+
+        mLightFieldData = normalizedData;
         mHasCustomLightField = true;
         mData.hasCustomLightField = 1;
 
@@ -510,25 +523,90 @@ void LEDLight::loadLightFieldData(const std::vector<float2>& lightFieldData)
         // This allows the scene to manage all GPU resources centrally
         mData.lightFieldDataOffset = 0; // Will be set by scene renderer
 
-                // Debug output
+        // Debug output
         logError("LEDLight::loadLightFieldData - SUCCESS!");
         logError("  - Light name: " + getName());
         logError("  - Data points loaded: " + std::to_string(mLightFieldData.size()));
+        logError("  - Light field data normalized for relative distribution");
         logError("  - mHasCustomLightField: " + std::to_string(mHasCustomLightField));
         logError("  - mData.hasCustomLightField: " + std::to_string(mData.hasCustomLightField));
         logError("  - mData.lightFieldDataSize: " + std::to_string(mData.lightFieldDataSize));
 
-        // Print first few data points
+        // Print first few normalized data points
         for (size_t i = 0; i < std::min((size_t)5, mLightFieldData.size()); ++i)
         {
-            logError("  - Data[" + std::to_string(i) + "]: angle=" + std::to_string(mLightFieldData[i].x) +
-                   ", intensity=" + std::to_string(mLightFieldData[i].y));
+            logError("  - Normalized Data[" + std::to_string(i) + "]: angle=" + std::to_string(mLightFieldData[i].x) +
+                   ", normalized_intensity=" + std::to_string(mLightFieldData[i].y));
         }
     }
     catch (const std::exception& e) {
         mHasCustomLightField = false;
         mData.hasCustomLightField = 0;
         logError("LEDLight::loadLightFieldData - Failed to load light field data: " + std::string(e.what()));
+    }
+}
+
+std::vector<float2> LEDLight::normalizeLightFieldData(const std::vector<float2>& rawData) const
+{
+    if (rawData.empty()) {
+        logWarning("LEDLight::normalizeLightFieldData - Empty data provided");
+        return rawData;
+    }
+
+    try {
+        std::vector<float2> normalizedData = rawData;
+
+        // Calculate the integral of the distribution using trapezoidal rule
+        // This gives us the total "energy" in the distribution
+        float totalIntegral = 0.0f;
+
+        for (size_t i = 1; i < rawData.size(); ++i) {
+            float angle1 = rawData[i-1].x;
+            float intensity1 = rawData[i-1].y;
+            float angle2 = rawData[i].x;
+            float intensity2 = rawData[i].y;
+
+            // Trapezoidal integration: (b-a) * (f(a) + f(b)) / 2
+            float deltaAngle = angle2 - angle1;
+            float avgIntensity = (intensity1 + intensity2) * 0.5f;
+
+            // Weight by sin(theta) for spherical coordinates (solid angle element)
+            float sin1 = std::sin(angle1);
+            float sin2 = std::sin(angle2);
+            float avgSin = (sin1 + sin2) * 0.5f;
+
+            totalIntegral += deltaAngle * avgIntensity * avgSin;
+        }
+
+        // Check for zero or very small integral
+        if (totalIntegral <= 1e-9f) {
+            logWarning("LEDLight::normalizeLightFieldData - Near-zero integral, using uniform distribution");
+            // Set uniform distribution
+            for (auto& point : normalizedData) {
+                point.y = 1.0f;
+            }
+            return normalizedData;
+        }
+
+        // Normalize the intensities so the integral equals 1
+        // This ensures the distribution represents relative probabilities
+        float normalizationFactor = 1.0f / totalIntegral;
+
+        for (auto& point : normalizedData) {
+            point.y *= normalizationFactor;
+            // Ensure non-negative values
+            point.y = std::max(0.0f, point.y);
+        }
+
+        logError("LEDLight::normalizeLightFieldData - Normalization completed");
+        logError("  - Original integral: " + std::to_string(totalIntegral));
+        logError("  - Normalization factor: " + std::to_string(normalizationFactor));
+
+        return normalizedData;
+
+    } catch (const std::exception& e) {
+        logError("LEDLight::normalizeLightFieldData - Exception: " + std::string(e.what()));
+        return rawData; // Return original data on error
     }
 }
 

@@ -371,10 +371,15 @@ bool sampleLEDLight(const float3 shadingPosW, const LightData light, const float
     {
         // Custom light field distribution with proper interpolation
         float angle = acos(clamp(cosTheta, 0.0f, 1.0f)); // Convert cosine to angle
-        angleFalloff = interpolateLightField(light.lightFieldDataOffset, light.lightFieldDataSize, angle);
+        // Get normalized distribution value (0-1 range representing relative intensity)
+        float normalizedDistribution = interpolateLightField(light.lightFieldDataOffset, light.lightFieldDataSize, angle);
 
         // Apply additional safety checks for interpolated values
-        angleFalloff = max(angleFalloff, 0.0f); // Ensure non-negative intensity
+        normalizedDistribution = max(normalizedDistribution, 0.0f); // Ensure non-negative intensity
+
+        // The normalized distribution is multiplied by the total power scaling factor
+        // This ensures totalPower controls the absolute intensity
+        angleFalloff = normalizedDistribution;
     }
     else
     {
