@@ -1025,6 +1025,23 @@ struct PathTracer
 
             attenuatedEmission = path.thp * emission;
 
+            // Update path wavelength based on LED light emission
+            // Check if this is an LED light source
+            uint lightCount = gScene.getLightCount();
+            if (kUseAnalyticLights && lightCount > 0)
+            {
+                for (uint lightIndex = 0; lightIndex < lightCount; ++lightIndex)
+                {
+                    LightData light = gScene.getLight(lightIndex);
+                    if (light.type == uint(::LightType::LED))
+                    {
+                        // Update path wavelength from LED emission
+                        updatePathWavelengthFromLED(path, light, attenuatedEmission);
+                        break; // Assuming one LED per surface
+                    }
+                }
+            }
+
             // Update path wavelength based on emission color
             updatePathWavelength(path, attenuatedEmission);
         }
@@ -1088,6 +1105,13 @@ struct PathTracer
                 // Sample a light.
                 validSample = generateLightSample(pathVertex, sampleUpperHemisphere, sampleLowerHemisphere, path.sg, ls);
                 path.setLightSampled(sampleUpperHemisphere, sampleLowerHemisphere);
+
+                // Additional LED spectral sampling if needed
+                if (validSample && ls.lightType == (uint)LightType::Analytic)
+                {
+                    // Try to handle LED spectral sampling
+                    handleLEDLightSampling(path, path.sg);
+                }
             }
 
             if (validSample)
@@ -1413,5 +1437,119 @@ struct PathTracer
         // UNIFIED VALIDATION: Use single validation point for both statistics and raw data
         // This ensures consistency between statistical aggregation and file output
         logCIRPathComplete(cirData);
+    }
+
+    /** Handle LED light sampling with spectral sampling support.
+        This function performs spectral-aware sampling of LED lights, updating the path wavelength
+        based on the LED's spectral distribution.
+        \param[in,out] path Path state.
+        \param[in,out] sg Sample generator.
+        \return True if LED light was successfully sampled, false otherwise.
+    */
+    bool handleLEDLightSampling(inout PathState path, inout SampleGenerator sg)
+    {
+        // Check if we have a valid hit and can access light data
+        if (!path.isHit()) return false;
+
+        // Get light data from the hit instance
+        const uint materialID = gScene.getMaterialID(path.hit.getInstanceID());
+        const MaterialHeader materialHeader = gScene.materials.getMaterialHeader(materialID);
+        if (!materialHeader.isEmissive()) return false;
+
+        // Check for LED light type through analytic lights
+        uint lightCount = gScene.getLightCount();
+        if (!kUseAnalyticLights || lightCount == 0) return false;
+
+        // Find LED light matching this surface
+        for (uint lightIndex = 0; lightIndex < lightCount; ++lightIndex)
+        {
+            LightData light = gScene.getLight(lightIndex);
+            if (light.type == uint(::LightType::LED))
+            {
+                // Sample LED light with spectrum
+                AnalyticLightSample ls;
+                float sampledWavelength = 0.0f;
+
+                // Use LightHelpers function to sample LED with spectrum
+                bool validSample = sampleLEDLightWithSpectrum(
+                    path.origin,
+                    light,
+                    sampleNext3D(sg),
+                    ls,
+                    sampledWavelength
+                );
+
+                if (validSample)
+                {
+                    // Update path wavelength if not already set
+                    if (path.getWavelength() == 0.0f)
+                    {
+                        // Validate wavelength range
+                        if (sampledWavelength >= 350.0f && sampledWavelength <= 800.0f)
+                        {
+                            path.setWavelength(sampledWavelength);
+                        }
+                        else
+                        {
+                            path.setWavelength(550.0f); // Default green wavelength
+                        }
+                    }
+
+                    // Add light contribution to path
+                    // Note: BSDF evaluation would be handled by the calling code
+                    return true;
+                }
+                else
+                {
+                    // Set default wavelength if sampling failed
+                    if (path.getWavelength() == 0.0f)
+                    {
+                        path.setWavelength(550.0f);
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /** Update path wavelength from LED light emission.
+        This function is called when a path hits an LED light source to update
+        the wavelength based on the LED's spectral distribution.
+        \param[in,out] path Path state.
+        \param[in] lightData LED light data structure.
+        \param[in] Le Emitted radiance.
+    */
+    static void updatePathWavelengthFromLED(inout PathState path, const LightData lightData, const float3 Le)
+    {
+        // Skip if path already has wavelength or no emission
+        if (path.getWavelength() != 0.0f || all(Le <= 0.0f))
+            return;
+
+        // Only process LED lights
+        if (lightData.type != uint(::LightType::LED))
+            return;
+
+        // Sample wavelength from LED spectrum if available
+        if (lightData.hasCustomSpectrum != 0)
+        {
+            float u = sampleNext1D(path.sg);
+            float wavelength = sampleLEDWavelength(lightData, u);
+
+            // Validate wavelength range
+            if (wavelength >= 350.0f && wavelength <= 800.0f)
+            {
+                path.setWavelength(wavelength);
+            }
+            else
+            {
+                path.setWavelength(550.0f); // Default fallback
+            }
+        }
+        else
+        {
+            // Use default wavelength for LED without custom spectrum
+            path.setWavelength(550.0f);
+        }
     }
 };
