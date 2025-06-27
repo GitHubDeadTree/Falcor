@@ -240,51 +240,99 @@ void LEDLight::renderUI(Gui::Widgets& widget)
 
     widget.text("LED Light Settings:");
 
-    // Shape selection - use proper DropdownList construction
-    static const Gui::DropdownList kShapeList = {
-        {(uint32_t)LEDShape::Sphere, "Sphere"},
-        {(uint32_t)LEDShape::Ellipsoid, "Ellipsoid"},
-        {(uint32_t)LEDShape::Rectangle, "Rectangle"}
+    // Basic properties
+    float3 pos = mData.posW;
+    if (widget.var("World Position", pos, -FLT_MAX, FLT_MAX, 0.001f, false, "%.8f"))
+    {
+        setWorldPosition(pos);
+    }
+
+    float3 dir = mData.dirW;
+    if (widget.direction("Direction", dir))
+    {
+        setWorldDirection(dir);
+    }
+
+    // Geometry shape settings
+    static const Gui::DropdownList kShapeTypeList = {
+        { (uint32_t)LEDShape::Sphere, "Sphere" },
+        { (uint32_t)LEDShape::Ellipsoid, "Ellipsoid" },
+        { (uint32_t)LEDShape::Rectangle, "Rectangle" }
     };
 
-    uint32_t shape = (uint32_t)mLEDShape;
-    if (widget.dropdown("Shape", kShapeList, shape))
+    uint32_t shapeType = (uint32_t)mLEDShape;
+    if (widget.dropdown("Shape Type", kShapeTypeList, shapeType))
     {
-        setLEDShape((LEDShape)shape);
+        setLEDShape((LEDShape)shapeType);
     }
 
-    // Lambert exponent
-    float lambertN = getLambertExponent();
-    if (widget.var("Lambert Exponent", lambertN, 0.1f, 10.0f))
-    {
-        setLambertExponent(lambertN);
-    }
-
-    // Total power
-    float totalPower = getTotalPower();
-    if (widget.var("Total Power (W)", totalPower, 0.0f, 1000.0f))
-    {
-        setTotalPower(totalPower);
-    }
-
-    // Scaling
     float3 scaling = getScaling();
-    if (widget.var("Scaling", scaling, 0.01f, 10.0f))
+    if (widget.var("Scale", scaling, 0.00001f, 10.0f, 0.001f, false, "%.8f"))
     {
         setScaling(scaling);
     }
 
-    // Opening angle
+    // Opening angle control
     float openingAngle = getOpeningAngle();
-    float openingAngleDeg = math::degrees(openingAngle);
-    if (widget.var("Opening Angle (deg)", openingAngleDeg, 1.0f, 180.0f))
+    if (widget.var("Opening Angle", openingAngle, 0.0f, (float)M_PI))
     {
-        setOpeningAngle(math::radians(openingAngleDeg));
+        setOpeningAngle(openingAngle);
     }
 
-    // Spectrum info
-    widget.text("Spectrum: " + std::string(hasCustomSpectrum() ? "Custom" : "Default"));
-    widget.text("Light Field: " + std::string(hasCustomLightField() ? "Custom" : "Default"));
+    // Lambert exponent control (disabled when using custom light field)
+    float lambertN = getLambertExponent();
+    if (mHasCustomLightField)
+    {
+        // Show read-only value when custom light field is loaded
+        widget.text("Lambert Exponent: " + std::to_string(lambertN) + " (Disabled - Using Custom Light Field)");
+        widget.text("DEBUG - mHasCustomLightField: " + std::to_string(mHasCustomLightField));
+        widget.text("DEBUG - mData.hasCustomLightField: " + std::to_string(mData.hasCustomLightField));
+    }
+    else
+    {
+        // Allow adjustment only when using Lambert distribution
+        if (widget.var("Lambert Exponent", lambertN, 0.1f, 100.0f))
+        {
+            setLambertExponent(lambertN);
+        }
+        widget.text("DEBUG - Using Lambert distribution");
+    }
+
+    // Power control
+    widget.separator();
+    float power = mData.totalPower;
+    if (widget.var("Power (Watts)", power, 0.0f, 1000.0f))
+    {
+        setTotalPower(power);
+    }
+
+    // Spectrum and light field data status
+    widget.separator();
+    widget.text("Light Distribution Mode:");
+
+    if (mHasCustomSpectrum)
+    {
+        widget.text("Spectrum: " + std::to_string(mSpectrumData.size()) + " data points loaded");
+    }
+    else
+    {
+        widget.text("Spectrum: Using default spectrum");
+    }
+
+    if (mHasCustomLightField)
+    {
+        widget.text("Light Field: " + std::to_string(mLightFieldData.size()) + " data points loaded");
+        widget.text("Note: Custom light field overrides Lambert distribution");
+    }
+    else
+    {
+        widget.text("Light Field: Using Lambert distribution (Exponent: " + std::to_string(lambertN) + ")");
+    }
+
+    if (widget.button("Clear Custom Data"))
+    {
+        clearCustomData();
+    }
 
     if (hasCustomSpectrum())
     {
@@ -296,19 +344,74 @@ void LEDLight::renderUI(Gui::Widgets& widget)
 
 void LEDLight::loadSpectrumData(const std::vector<float2>& spectrumData)
 {
-    mSpectrumData = spectrumData;
-    mHasCustomSpectrum = !spectrumData.empty();
-    if (mHasCustomSpectrum)
+    if (spectrumData.empty())
     {
-        setSpectrum(spectrumData);
+        logWarning("LEDLight::loadSpectrumData - Empty spectrum data provided");
+        return;
+    }
+
+    try {
+        mSpectrumData = spectrumData;
+        mHasCustomSpectrum = true;
+
+        // Update LightData sizes
+        mData.spectrumDataSize = (uint32_t)mSpectrumData.size();
+
+        // Note: GPU buffer creation is deferred to scene renderer
+        // This allows the scene to manage all GPU resources centrally
+        mData.spectrumDataOffset = 0; // Will be set by scene renderer
+
+        if (mHasCustomSpectrum)
+        {
+            setSpectrum(spectrumData);
+        }
+    }
+    catch (const std::exception& e) {
+        mHasCustomSpectrum = false;
+        logError("LEDLight::loadSpectrumData - Failed to load spectrum data: " + std::string(e.what()));
     }
 }
 
 void LEDLight::loadLightFieldData(const std::vector<float2>& lightFieldData)
 {
-    mLightFieldData = normalizeLightFieldData(lightFieldData);
-    mHasCustomLightField = !lightFieldData.empty();
-    mData.hasCustomLightField = mHasCustomLightField ? 1 : 0;
+    if (lightFieldData.empty())
+    {
+        logWarning("LEDLight::loadLightFieldData - Empty light field data provided");
+        return;
+    }
+
+    try {
+        mLightFieldData = normalizeLightFieldData(lightFieldData);
+        mHasCustomLightField = true;
+        mData.hasCustomLightField = 1;
+
+        // Update LightData sizes
+        mData.lightFieldDataSize = (uint32_t)mLightFieldData.size();
+
+        // Note: GPU buffer creation is deferred to scene renderer
+        // This allows the scene to manage all GPU resources centrally
+        mData.lightFieldDataOffset = 0; // Will be set by scene renderer
+
+        // Debug output
+        logError("LEDLight::loadLightFieldData - SUCCESS!");
+        logError("  - Light name: " + getName());
+        logError("  - Data points loaded: " + std::to_string(mLightFieldData.size()));
+        logError("  - mHasCustomLightField: " + std::to_string(mHasCustomLightField));
+        logError("  - mData.hasCustomLightField: " + std::to_string(mData.hasCustomLightField));
+        logError("  - mData.lightFieldDataSize: " + std::to_string(mData.lightFieldDataSize));
+
+        // Print first few data points
+        for (size_t i = 0; i < std::min((size_t)5, mLightFieldData.size()); ++i)
+        {
+            logError("  - Data[" + std::to_string(i) + "]: angle=" + std::to_string(mLightFieldData[i].x) +
+                   ", intensity=" + std::to_string(mLightFieldData[i].y));
+        }
+    }
+    catch (const std::exception& e) {
+        mHasCustomLightField = false;
+        mData.hasCustomLightField = 0;
+        logError("LEDLight::loadLightFieldData - Failed to load light field data: " + std::string(e.what()));
+    }
 }
 
 void LEDLight::clearCustomData()
@@ -320,6 +423,8 @@ void LEDLight::clearCustomData()
     mHasCustomLightField = false;
     mData.hasCustomLightField = 0;
     mData.hasCustomSpectrum = 0;
+    mData.spectrumDataSize = 0;
+    mData.lightFieldDataSize = 0;
 }
 
 void LEDLight::loadSpectrumFromFile(const std::string& filePath)
