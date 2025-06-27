@@ -26,10 +26,10 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
-#include "LightData.slang"
 
 /** Task 2: GPU-side spectrum sampling for LED lights.
  * This module provides efficient spectrum sampling functions for use in shaders.
+ * Note: LightData should be imported by the including file.
  */
 
 // Global spectrum CDF buffer (to be bound externally)
@@ -52,8 +52,11 @@ float sampleLEDWavelength(LightData light, float u)
 
     // Linear search through CDF (efficient for small arrays)
     uint sampleIndex = 0;
-    [unroll(128)] // Assume max 128 samples for performance
-    for (uint i = 0; i < cdfSize; ++i) {
+    uint maxSamples = min(cdfSize, 128u); // Limit to 128 for unrolling
+
+    [unroll(128)]
+    for (uint i = 0; i < 128u; ++i) {
+        if (i >= maxSamples) break;
         float cdfValue = gSpectrumCDFData[cdfOffset + i];
         if (u <= cdfValue) {
             sampleIndex = i;
