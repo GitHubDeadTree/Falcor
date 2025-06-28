@@ -1449,6 +1449,9 @@ namespace Falcor
         std::vector<std::filesystem::path> mImportPaths;    ///< Vector of paths to assets loaded to create scene.
         std::vector<SceneData::ImportDict> mImportDicts;    ///< Vector of dictionaries associated with each asset loaded to create scene.
         bool mFinalized = false;                            ///< True if scene is ready to be bound to the GPU.
+        
+        // Debug options
+        bool mEnableDebugLogs = false;                      ///< Enable debug logging for LED light updates and other operations.
 
         /// Used for very large scenes
         SplitIndexBuffer mMeshIndexData;
