@@ -142,6 +142,13 @@ void logCIRReflectionCount(uint count)
 #endif
 }
 
+void logRayWavelength(float wavelength)
+{
+#ifdef _PIXEL_STATS_ENABLED
+    gStatsCIRData[(uint)PixelStatsCIRType::Wavelength][gPixelStatsPixel] = wavelength;
+#endif
+}
+
 // Internal function for raw CIR data collection - MODIFIED: No validation, direct storage
 void logCIRRawPathInternal(CIRPathData pathData)
 {

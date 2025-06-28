@@ -159,6 +159,7 @@ namespace Falcor
             float    avgCIRReflectanceProduct = 0.f;
             float    avgCIREmittedPower = 0.f;
             float    avgCIRReflectionCount = 0.f;
+            float    avgRayWavelength = 0.f;
         };
 
         PixelStats(ref<Device> pDevice);

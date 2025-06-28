@@ -1307,6 +1307,13 @@ struct PathTracer
         // Log path length.
         logPathLength(getTerminatedPathLength(path));
 
+        // Log ray wavelength for statistics
+        float wavelength = path.getWavelength();
+        if (wavelength > 0.0f)
+        {
+            logRayWavelength(wavelength);
+        }
+
         const uint2 pixel = path.getPixel();
         const uint outIdx = params.getSampleOffset(pixel, sampleOffset) + path.getSampleIdx();
 
