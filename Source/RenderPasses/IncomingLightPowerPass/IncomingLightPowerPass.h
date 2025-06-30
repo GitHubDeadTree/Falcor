@@ -253,6 +253,7 @@ private:
 
     // Photodetector analysis buffers
     ref<Buffer> mpClassificationBuffer;        ///< GPU buffer for binning results
+    ref<Buffer> mpClassificationStagingBuffer; ///< ReadBack staging buffer for CPU access
 
     void prepareResources(RenderContext* pRenderContext, const RenderData& renderData);
     void prepareProgram();
@@ -296,4 +297,5 @@ private:
     void initializePowerMatrix();
     void resetPowerMatrix();
     bool exportPowerMatrix();
+    void accumulatePowerData(RenderContext* pRenderContext);
 };

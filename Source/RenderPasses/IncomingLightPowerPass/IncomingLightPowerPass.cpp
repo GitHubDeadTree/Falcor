@@ -764,6 +764,13 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
         calculateStatistics(pRenderContext, renderData);
     }
 
+    // Accumulate photodetector power data if enabled
+    if (mEnablePhotodetectorAnalysis)
+    {
+        pRenderContext->submit(true); // Ensure GPU work is complete before reading back
+        accumulatePowerData(pRenderContext);
+    }
+
     processBatchExport();
 }
 
@@ -946,6 +953,95 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
 
     // Statistics UI
     renderStatisticsUI(widget);
+
+    // Photodetector Analysis UI
+    auto pdGroup = widget.group("Photodetector Analysis", true);
+    if (pdGroup)
+    {
+        bool pdChanged = widget.checkbox("Enable Analysis", mEnablePhotodetectorAnalysis);
+        if (pdChanged)
+        {
+            changed = true;
+            if (mEnablePhotodetectorAnalysis)
+            {
+                initializePowerMatrix();
+            }
+        }
+
+        if (mEnablePhotodetectorAnalysis)
+        {
+            // Display matrix information
+            widget.text(fmt::format("Matrix Size: {}x{} ({:.1f}KB)",
+                                   mWavelengthBinCount, mAngleBinCount,
+                                   (mWavelengthBinCount * mAngleBinCount * sizeof(float)) / 1024.0f));
+
+            // Display current total power
+            if (mTotalAccumulatedPower == 0.666f)
+            {
+                widget.text("Status: ERROR - Check console for details", true);
+            }
+            else
+            {
+                widget.text(fmt::format("Total Power: {:.6f} W", mTotalAccumulatedPower));
+            }
+
+            // PD physical parameters
+            auto paramsGroup = widget.group("Physical Parameters", false);
+            if (paramsGroup)
+            {
+                changed |= widget.slider("Detector Area (m²)", mDetectorArea, 1e-9f, 1e-3f, true);
+                widget.tooltip("Physical effective area of the photodetector");
+
+                changed |= widget.slider("Source Solid Angle (sr)", mSourceSolidAngle, 1e-6f, 1e-1f, true);
+                widget.tooltip("Solid angle subtended by the light source as seen from the detector");
+
+                widget.text(fmt::format("Current Ray Count: {}", mCurrentNumRays));
+            }
+
+            // Binning parameters (read-only display)
+            auto binningGroup = widget.group("Binning Configuration", false);
+            if (binningGroup)
+            {
+                widget.text(fmt::format("Wavelength Bins: {} (380-780nm, 1nm precision)", mWavelengthBinCount));
+                widget.text(fmt::format("Angle Bins: {} (0-90°, 1° precision)", mAngleBinCount));
+            }
+
+            // Matrix operations
+            auto operationsGroup = widget.group("Matrix Operations", true);
+            if (operationsGroup)
+            {
+                if (widget.button("Reset Matrix"))
+                {
+                    resetPowerMatrix();
+                }
+                widget.tooltip("Clear all accumulated power data");
+
+                if (widget.button("Export Matrix"))
+                {
+                    if (exportPowerMatrix())
+                    {
+                        widget.text("Matrix exported successfully!");
+                    }
+                    else
+                    {
+                        widget.text("Export failed - check console for details", true);
+                    }
+                }
+                widget.tooltip("Export power matrix as CSV file");
+
+                // Export path setting
+                char pathBuffer[256];
+                strncpy_s(pathBuffer, mPowerMatrixExportPath.c_str(), sizeof(pathBuffer) - 1);
+                pathBuffer[sizeof(pathBuffer) - 1] = '\0';
+                
+                if (widget.textbox("Export Path", pathBuffer, sizeof(pathBuffer)))
+                {
+                    mPowerMatrixExportPath = std::string(pathBuffer);
+                }
+                widget.tooltip("Directory path for matrix export");
+            }
+        }
+    }
 
     // Export UI
     renderExportUI(widget);
@@ -2289,5 +2385,129 @@ bool IncomingLightPowerPass::exportPowerMatrix()
     {
         logError("CSV export failed: {}", e.what());
         return false;
+    }
+}
+
+void IncomingLightPowerPass::accumulatePowerData(RenderContext* pRenderContext)
+{
+    if (!mEnablePhotodetectorAnalysis || !mpClassificationBuffer)
+    {
+        return;
+    }
+
+    try
+    {
+        // Ensure matrix is initialized
+        if (mPowerMatrix.empty())
+        {
+            initializePowerMatrix();
+        }
+
+        // Validate matrix dimensions
+        if (mPowerMatrix.size() != mWavelengthBinCount ||
+            mPowerMatrix[0].size() != mAngleBinCount)
+        {
+            logError("Power matrix dimensions mismatch during accumulation");
+            mTotalAccumulatedPower = 0.666f; // Error marker
+            return;
+        }
+
+        // Read back classification data from GPU buffer
+        uint32_t bufferSize = mFrameDim.x * mFrameDim.y;
+        uint32_t totalBytes = bufferSize * sizeof(uint32_t) * 4; // 4 uint32s per entry
+
+        // Create ReadBack staging buffer if it doesn't exist or is too small
+        if (!mpClassificationStagingBuffer || mpClassificationStagingBuffer->getSize() < totalBytes)
+        {
+            mpClassificationStagingBuffer = mpDevice->createBuffer(
+                totalBytes,
+                ResourceBindFlags::None,
+                MemoryType::ReadBack
+            );
+            if (!mpClassificationStagingBuffer)
+            {
+                logError("Failed to create classification staging buffer");
+                mTotalAccumulatedPower = 0.666f; // Error marker
+                return;
+            }
+        }
+
+        // Copy data from GPU buffer to staging buffer
+        pRenderContext->copyResource(mpClassificationStagingBuffer.get(), mpClassificationBuffer.get());
+        
+        // Wait for copy to complete
+        pRenderContext->submit(true);
+
+        // Map staging buffer for reading
+        const uint32_t* pData = static_cast<const uint32_t*>(mpClassificationStagingBuffer->map());
+        if (!pData)
+        {
+            logError("Failed to map classification staging buffer for reading");
+            mTotalAccumulatedPower = 0.666f; // Error marker
+            return;
+        }
+
+        uint32_t validPixels = 0;
+        uint32_t invalidPixels = 0;
+
+        // Process each pixel's classification data
+        for (uint32_t i = 0; i < bufferSize; i++)
+        {
+            uint32_t dataOffset = i * 4; // 4 uint32s per entry
+            
+            uint32_t wavelengthBin = pData[dataOffset + 0];
+            uint32_t angleBin = pData[dataOffset + 1];
+            uint32_t powerBits = pData[dataOffset + 2];
+            uint32_t validFlag = pData[dataOffset + 3];
+
+            // Check if this pixel has valid data
+            if (validFlag != 0 && 
+                wavelengthBin != 0xFFFFFFFF && 
+                angleBin != 0xFFFFFFFF &&
+                wavelengthBin < mWavelengthBinCount &&
+                angleBin < mAngleBinCount)
+            {
+                // Convert power bits back to float
+                float power = *reinterpret_cast<const float*>(&powerBits);
+                
+                // Validate power value
+                if (power >= 0.0f && power < 1e6f) // Reasonable power range
+                {
+                    // Accumulate to matrix
+                    mPowerMatrix[wavelengthBin][angleBin] += power;
+                    mTotalAccumulatedPower += power;
+                    validPixels++;
+                }
+                else
+                {
+                    invalidPixels++;
+                }
+            }
+            else
+            {
+                invalidPixels++;
+            }
+        }
+
+        // Unmap staging buffer
+        mpClassificationStagingBuffer->unmap();
+
+        // Log accumulation results for debugging
+        if (mDebugMode && (mFrameCount % mDebugLogFrequency == 0))
+        {
+            logInfo("Power data accumulation: {} valid pixels, {} invalid pixels, total power: {:.6f} W",
+                    validPixels, invalidPixels, mTotalAccumulatedPower);
+        }
+
+        // Check for errors
+        if (validPixels == 0 && mFrameCount > 10) // Allow some startup frames
+        {
+            logWarning("No valid power data accumulated after frame {}", mFrameCount);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("Failed to accumulate power data: {}", e.what());
+        mTotalAccumulatedPower = 0.666f; // Error marker
     }
 }
