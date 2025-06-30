@@ -41,6 +41,7 @@ enum class LightType : uint32_t
     Rect,           ///< Quad shaped area light source
     Disc,           ///< Disc shaped area light source
     Sphere,         ///< Spherical area light source
+    LED,            ///< LED light source with customizable shape and spectrum
 };
 
 /** This is a host/device structure that describes analytic light sources.
@@ -64,6 +65,28 @@ struct LightData
     float    _pad1;
     float4x4 transMat           = {};               ///< Transformation matrix of the light shape, from local to world space.
     float4x4 transMatIT         = {};               ///< Inverse-transpose of transformation matrix of the light shape
+
+    // LED light specific parameters
+    float    lambertN           = 1.0f;             ///< Lambert exponent for angular attenuation
+    float    totalPower         = 0.0f;             ///< Total power of LED in watts
+    uint32_t shapeType          = 0;                ///< LED geometry shape (0=sphere, 1=ellipsoid, 2=rectangle)
+    uint32_t hasCustomLightField = 0;               ///< Flag indicating if custom light field data is loaded
+
+    // Spectrum and light field data pointers (for GPU access)
+    uint32_t spectrumDataOffset = 0;                ///< Offset to spectrum data in buffer
+    uint32_t lightFieldDataOffset = 0;              ///< Offset to light field data in buffer
+    uint32_t spectrumDataSize   = 0;                ///< Size of spectrum data
+    uint32_t lightFieldDataSize = 0;                ///< Size of light field data
+
+    // Task 2: Spectrum sampling support (GPU) - aligned for 16B boundary
+    uint32_t spectrumCDFOffset = 0;                 ///< CDF data offset in spectrum buffer
+    uint32_t spectrumCDFSize = 0;                   ///< CDF data size
+    uint32_t hasCustomSpectrum = 0;                 ///< Flag indicating if custom spectrum is loaded
+    uint32_t _spectrumPad0 = 0;                     ///< Alignment padding (16 bytes total)
+
+    float spectrumMinWavelength = 380.0f;           ///< Minimum wavelength in nm
+    float spectrumMaxWavelength = 780.0f;           ///< Maximum wavelength in nm
+    float2 _spectrumPad1 = float2(0);               ///< Alignment padding (16 bytes total)
 };
 
 END_NAMESPACE_FALCOR

@@ -37,12 +37,67 @@
 
 #include "Utils/Math/MathConstants.slangh"
 
+import Scene.Scene;
 import Scene.Lights.LightData;
 import Utils.Math.MathHelpers;
 import Utils.Sampling.SampleGeneratorInterface;
+#include "../../Scene/Lights/SpectrumSampling.slang"
 
 static const float kMinLightDistSqr = 1e-9f;
 static const float kMaxLightDistance = FLT_MAX;
+
+/** Interpolates intensity from custom light field data based on angle.
+    \param[in] dataOffset Offset to the start of light field data for this LED.
+    \param[in] dataSize Number of data points in the light field.
+    \param[in] angle The angle in radians (0 to π).
+    \return Interpolated intensity value.
+*/
+float interpolateLightField(uint32_t dataOffset, uint32_t dataSize, float angle)
+{
+    // Safety checks
+    if (dataSize == 0) return 0.0f;
+    if (dataSize == 1) return gScene.gLightFieldData[dataOffset].y;
+
+    // Clamp angle to valid range [0, π]
+    angle = clamp(angle, 0.0f, M_PI);
+
+    // Handle edge cases
+    float2 firstPoint = gScene.gLightFieldData[dataOffset];
+    float2 lastPoint = gScene.gLightFieldData[dataOffset + dataSize - 1];
+
+    // If angle is before first data point
+    if (angle <= firstPoint.x) return firstPoint.y;
+
+    // If angle is after last data point
+    if (angle >= lastPoint.x) return lastPoint.y;
+
+    // Binary search for the correct interval
+    uint32_t left = 0;
+    uint32_t right = dataSize - 1;
+
+    while (right - left > 1)
+    {
+        uint32_t mid = (left + right) / 2;
+        float midAngle = gScene.gLightFieldData[dataOffset + mid].x;
+
+        if (angle <= midAngle)
+            right = mid;
+        else
+            left = mid;
+    }
+
+    // Linear interpolation between left and right points
+    float2 leftPoint = gScene.gLightFieldData[dataOffset + left];
+    float2 rightPoint = gScene.gLightFieldData[dataOffset + right];
+
+    float deltaAngle = rightPoint.x - leftPoint.x;
+
+    // Handle degenerate case
+    if (deltaAngle < 1e-6f) return leftPoint.y;
+
+    float t = (angle - leftPoint.x) / deltaAngle;
+    return lerp(leftPoint.y, rightPoint.y, t);
+}
 
 /** Describes a light sample for Falcor's analytic light sources.
 
@@ -249,6 +304,129 @@ bool samplePointLight(const float3 shadingPosW, const LightData light, out Analy
     return true;
 }
 
+/** Samples an LED light source with spectral sampling.
+    \param[in] shadingPosW Shading point in world space.
+    \param[in] light Light data.
+    \param[in] u Uniform random numbers (3D for geometric and spectral sampling).
+    \param[out] ls Light sample struct.
+    \param[out] sampledWavelength Sampled wavelength from the LED spectrum.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleLEDLightWithSpectrum(
+    const float3 shadingPosW,
+    const LightData light,
+    const float3 u,
+    out AnalyticLightSample ls,
+    out float sampledWavelength
+)
+{
+    // 1. Geometric sampling logic
+    float3 localPos = float3(0.0f);
+    uint32_t shapeType = clamp(light.shapeType, 0u, 2u);
+
+    switch (shapeType)
+    {
+    case 0: // Sphere
+        localPos = sample_sphere(u.xy);
+        break;
+    case 1: // Ellipsoid
+        localPos = sample_sphere(u.xy);
+        break;
+    case 2: // Rectangle
+        localPos = float3(u.x * 2.0f - 1.0f, u.y * 2.0f - 1.0f, 0.0f);
+        break;
+    default:
+        localPos = sample_sphere(u.xy);
+        break;
+    }
+
+    // Transform to world space
+    float3 transformedLocalPos = mul(light.transMat, float4(localPos, 1.0f)).xyz;
+    ls.posW = light.posW + transformedLocalPos;
+
+    // Calculate world space normal
+    float3 localNormal = localPos;
+    if (shapeType == 2) // Rectangle
+    {
+        localNormal = float3(0.0f, 0.0f, 1.0f);
+    }
+    ls.normalW = normalize(mul(light.transMatIT, float4(localNormal, 0.0f)).xyz);
+
+    // Compute direction and distance to light
+    float3 toLight = ls.posW - shadingPosW;
+    float distSqr = max(dot(toLight, toLight), kMinLightDistSqr);
+    ls.distance = sqrt(distSqr);
+    ls.dir = toLight / ls.distance;
+
+    // Check if point is within light cone
+    float cosTheta = dot(-ls.dir, light.dirW);
+    if (cosTheta < light.cosOpeningAngle)
+    {
+        sampledWavelength = 0.666f; // Error indicator
+        return false;
+    }
+
+    // 2. Spectral sampling
+    sampledWavelength = sampleLEDWavelength(light, u.z);
+
+    // Validate wavelength range with fallback
+    if (sampledWavelength < 300.0f || sampledWavelength > 1000.0f)
+    {
+        sampledWavelength = 550.0f; // Default green light
+    }
+
+    // 3. Light intensity calculation
+    float angleFalloff = 1.0f;
+
+    if (light.hasCustomLightField > 0 && light.lightFieldDataSize > 0)
+    {
+        // Custom light field distribution
+        float angle = acos(clamp(cosTheta, 0.0f, 1.0f));
+        float normalizedDistribution = interpolateLightField(light.lightFieldDataOffset, light.lightFieldDataSize, angle);
+        angleFalloff = max(normalizedDistribution, 0.0f);
+    }
+    else
+    {
+        // Lambert model with safety checks
+        float lambertN = max(light.lambertN, 0.1f);
+        float normalizationFactor = max(lambertN + 1.0f, 0.1f);
+        angleFalloff = pow(max(cosTheta, 0.0f), lambertN) / normalizationFactor;
+    }
+
+    // Surface area and normal validation
+    float surfaceArea = max(light.surfaceArea, 1e-9f);
+    float cosNormalTheta = dot(ls.normalW, -ls.dir);
+    if (cosNormalTheta <= 0.0f)
+    {
+        sampledWavelength = 0.666f; // Error indicator
+        return false;
+    }
+
+    // Compute incident radiance
+    ls.Li = light.intensity * angleFalloff * (surfaceArea * cosNormalTheta / distSqr);
+
+    // 4. PDF calculation (geometric * spectral)
+    float geometricPDF = distSqr / (cosNormalTheta * surfaceArea);
+    float spectralPDF = evaluateSpectrumPDF(light, sampledWavelength);
+    ls.pdf = geometricPDF * spectralPDF;
+
+    return true;
+}
+
+/** Samples an LED light source (compatibility function).
+    \param[in] shadingPosW Shading point in world space.
+    \param[in] light Light data.
+    \param[in] u Uniform random numbers.
+    \param[out] ls Light sample struct.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleLEDLight(const float3 shadingPosW, const LightData light, const float2 u, out AnalyticLightSample ls)
+{
+    // Call the spectral version with a dummy wavelength output
+    float dummyWavelength;
+    return sampleLEDLightWithSpectrum(shadingPosW, light, float3(u, 0.5f), ls, dummyWavelength);
+}
+
 /** Samples an analytic light source.
     This function calls the correct sampling function depending on the type of light.
     \param[in] shadingPosW Shading point in world space.
@@ -274,6 +452,8 @@ bool sampleLight<S : ISampleGenerator>(const float3 shadingPosW, const LightData
         return sampleDiscAreaLight(shadingPosW, light, sampleNext2D(sg), ls);
     case LightType::Distant:
         return sampleDistantLight(shadingPosW, light, sampleNext2D(sg), ls);
+    case LightType::LED:
+        return sampleLEDLight(shadingPosW, light, sampleNext2D(sg), ls);
     default:
         ls = {};
         return false; // Should not happen
@@ -297,6 +477,9 @@ bool evalLightApproximate(const float3 shadingPosW, const LightData light, out A
         return samplePointLight(shadingPosW, light, ls);
     case LightType::Directional:
         return sampleDirectionalLight(shadingPosW, light, ls);
+    case LightType::LED:
+        // For approximate evaluation, use center sampling
+        return sampleLEDLight(shadingPosW, light, float2(0.5f, 0.5f), ls);
     }
 
     // All other light types are not supported.

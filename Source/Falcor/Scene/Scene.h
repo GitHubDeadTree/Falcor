@@ -1340,6 +1340,8 @@ namespace Falcor
         ref<Buffer> mpCurvesBuffer;
         ref<Buffer> mpCustomPrimitivesBuffer;
         ref<Buffer> mpLightsBuffer;
+        ref<Buffer> mpLightFieldDataBuffer;     ///< Buffer containing LED light field data.
+        ref<Buffer> mpSpectrumCDFBuffer;        ///< Buffer containing LED spectrum CDF data (Task 2).
         ref<Buffer> mpGridVolumesBuffer;
         ref<ParameterBlock> mpSceneBlock;
 
@@ -1447,6 +1449,9 @@ namespace Falcor
         std::vector<std::filesystem::path> mImportPaths;    ///< Vector of paths to assets loaded to create scene.
         std::vector<SceneData::ImportDict> mImportDicts;    ///< Vector of dictionaries associated with each asset loaded to create scene.
         bool mFinalized = false;                            ///< True if scene is ready to be bound to the GPU.
+        
+        // Debug options
+        bool mEnableDebugLogs = false;                      ///< Enable debug logging for LED light updates and other operations.
 
         /// Used for very large scenes
         SplitIndexBuffer mMeshIndexData;

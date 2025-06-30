@@ -397,6 +397,10 @@ target_sources(Falcor PRIVATE
     Scene/Lights/EnvMapData.slang
     Scene/Lights/FinalizeIntegration.cs.slang
     Scene/Lights/ILightCollection.h
+    Scene/Lights/LEDLight.cpp
+    Scene/Lights/LEDLight.h
+    Scene/Lights/LED_Emissive.cpp
+    Scene/Lights/LED_Emissive.h
     Scene/Lights/Light.cpp
     Scene/Lights/Light.h
     Scene/Lights/LightCollection.cpp
@@ -408,6 +412,7 @@ target_sources(Falcor PRIVATE
     Scene/Lights/LightProfile.h
     Scene/Lights/LightProfile.slang
     Scene/Lights/MeshLightData.slang
+    Scene/Lights/SpectrumSampling.slang
     Scene/Lights/UpdateTriangleVertices.cs.slang
 
     Scene/Material/AlphaTest.slang

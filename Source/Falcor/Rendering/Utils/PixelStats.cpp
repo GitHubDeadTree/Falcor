@@ -67,6 +67,7 @@ namespace Falcor
             d["avgPathLength"] = stats.avgPathLength;
             d["avgPathVertices"] = stats.avgPathVertices;
             d["avgVolumeLookups"] = stats.avgVolumeLookups;
+            d["avgRayWavelength"] = stats.avgRayWavelength;
             return d;
         }
     }
@@ -467,7 +468,8 @@ namespace Falcor
                     << "CIR Reception angle (avg): " << std::fixed << std::setprecision(3) << mStats.avgCIRReceptionAngle << " rad\n"
                     << "CIR Reflectance product (avg): " << std::fixed << std::setprecision(3) << mStats.avgCIRReflectanceProduct << "\n"
                     << "CIR Emitted power (avg): " << std::fixed << std::setprecision(3) << mStats.avgCIREmittedPower << "\n"
-                    << "CIR Reflection count (avg): " << std::fixed << std::setprecision(3) << mStats.avgCIRReflectionCount << "\n";
+                    << "CIR Reflection count (avg): " << std::fixed << std::setprecision(3) << mStats.avgCIRReflectionCount << "\n"
+                    << "Ray wavelength (avg): " << std::fixed << std::setprecision(1) << mStats.avgRayWavelength << " nm\n";
             }
             else
             {
@@ -594,6 +596,7 @@ namespace Falcor
                     mStats.avgCIRReflectanceProduct = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::ReflectanceProduct].x / validCIRSamples;
                     mStats.avgCIREmittedPower = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::EmittedPower].x / validCIRSamples;
                     mStats.avgCIRReflectionCount = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::ReflectionCount].x / validCIRSamples;
+                    mStats.avgRayWavelength = cirResult[kRayTypeCount + 3 + (uint32_t)PixelStatsCIRType::Wavelength].x / validCIRSamples;
                 }
                 else
                 {
@@ -604,6 +607,7 @@ namespace Falcor
                     mStats.avgCIRReflectanceProduct = 0.0f;
                     mStats.avgCIREmittedPower = 0.0f;
                     mStats.avgCIRReflectionCount = 0.0f;
+                    mStats.avgRayWavelength = 0.0f;
                 }
 
                 mpReductionResult->unmap();

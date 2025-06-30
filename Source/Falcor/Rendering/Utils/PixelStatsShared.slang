@@ -46,6 +46,7 @@ enum class PixelStatsCIRType
     ReflectanceProduct = 3,
     EmittedPower = 4,
     ReflectionCount = 5,
+    Wavelength = 6,
 
     Count
 };
