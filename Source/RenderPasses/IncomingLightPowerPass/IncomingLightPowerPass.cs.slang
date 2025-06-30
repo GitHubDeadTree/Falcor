@@ -58,6 +58,9 @@ RWTexture2D<float4> gDebugOutput;       ///< Debug output for original calculati
 RWTexture2D<float4> gDebugInputData;    ///< Debug output for input data
 RWTexture2D<float4> gDebugCalculation;  ///< Debug output for calculation steps
 
+// Photodetector analysis buffer
+RWStructuredBuffer<uint4> gClassificationBuffer; ///< Buffer for binning results [wavelengthBin, angleBin, powerBits, validFlag]
+
 // Parameters
 cbuffer PerFrameCB
 {
@@ -72,6 +75,12 @@ cbuffer PerFrameCB
     float gBandTolerances[MAX_BANDS];  ///< Tolerances for specific wavelength bands
     float gPixelAreaScale;             ///< Scale factor for pixel area (default: 1000.0)
 
+    // Photodetector analysis parameters
+    bool gEnablePhotodetectorAnalysis; ///< Enable photodetector analysis
+    float gDetectorArea;               ///< Photodetector effective area in m²
+    float gSourceSolidAngle;           ///< Source solid angle in sr
+    uint gCurrentNumRays;              ///< Current number of rays
+
     // Camera data
     float4x4 gCameraInvViewProj;       ///< Camera inverse view-projection matrix
     float3 gCameraPosition;            ///< Camera position in world space
@@ -83,6 +92,51 @@ cbuffer PerFrameCB
 // ParameterBlock<Scene> gScene;
 
 // Utility functions
+
+// High precision binning functions for photodetector analysis
+
+// Find wavelength bin (380-780nm, 1nm precision, 400 bins total)
+uint findWavelengthBin(float wavelength)
+{
+    if (wavelength < 380.0f || wavelength > 780.0f)
+        return 0xFFFFFFFF; // Invalid bin marker
+
+    uint bin = uint(wavelength - 380.0f);  // 1nm precision
+    return min(bin, 399); // Clamp to 400 bins (0-399)
+}
+
+// Find angle bin (0-90°, 1deg precision, 90 bins total)
+uint findAngleBin(float angleDeg)
+{
+    if (angleDeg < 0.0f || angleDeg > 90.0f)
+        return 0xFFFFFFFF; // Invalid bin marker
+
+    uint bin = uint(angleDeg);  // 1deg precision
+    return min(bin, 89); // Clamp to 90 bins (0-89)
+}
+
+// Calculate incident angle from ray direction (reuses existing computeCosTheta method)
+float calculateIncidentAngle(float3 rayDir)
+{
+    // Use existing computeCosTheta function for consistency
+    float cosTheta = computeCosTheta(rayDir);
+    return acos(cosTheta) * 180.0f / 3.14159f; // Convert to degrees
+}
+
+// Error checking function for binning
+bool isValidBin(uint wavelengthBin, uint angleBin)
+{
+    return (wavelengthBin != 0xFFFFFFFF && angleBin != 0xFFFFFFFF);
+}
+
+// Log binning error (only for debug pixels to avoid spam)
+void logBinningError(float wavelength, float angle, uint2 pixel)
+{
+    // Only log errors occasionally to avoid spam
+    if ((pixel.x + pixel.y) % 1000 == 0) {
+        gDebugOutput[pixel] = float4(0.666f, wavelength, angle, 1.0f);
+    }
+}
 
 // Check if wavelength is in the visible spectrum range (380-780nm)
 bool isInVisibleSpectrum(float wavelength)
@@ -483,7 +537,46 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         wavelength = estimateWavelengthFromRGB(radiance.rgb);
     }
 
-    // Compute power
+    // Photodetector analysis (if enabled)
+    if (gEnablePhotodetectorAnalysis && any(radiance.rgb > 0))
+    {
+        // Use existing angle calculation method for consistency
+        float cosTheta = computeCosTheta(rayDir);
+        float incidentAngle = calculateIncidentAngle(rayDir);
+
+        // Key correction: Use PD physical area instead of pixel area
+        float deltaOmega = gSourceSolidAngle / float(gCurrentNumRays);
+        float3 pdPower = radiance.rgb * gDetectorArea * cosTheta * deltaOmega;
+
+        // Perform high-precision binning
+        uint wavelengthBin = findWavelengthBin(wavelength);
+        uint angleBin = findAngleBin(incidentAngle);
+
+        if (isValidBin(wavelengthBin, angleBin))
+        {
+            float totalPower = pdPower.x + pdPower.y + pdPower.z;
+
+            // Store classification data in buffer for CPU processing
+            uint index = pixel.y * dimensions.x + pixel.x;
+            gClassificationBuffer[index] = uint4(
+                wavelengthBin,           // Wavelength bin index (0-399)
+                angleBin,                // Angle bin index (0-89)
+                asuint(totalPower),      // Total power as uint bits
+                1                        // Valid flag
+            );
+        }
+        else
+        {
+            // Record binning error
+            logBinningError(wavelength, incidentAngle, pixel);
+
+            // Mark as invalid in classification buffer
+            uint index = pixel.y * dimensions.x + pixel.x;
+            gClassificationBuffer[index] = uint4(0xFFFFFFFF, 0xFFFFFFFF, 0, 0);
+        }
+    }
+
+    // Existing image sensor power calculation (preserved for compatibility)
     float4 power = computeLightPower(pixel, dimensions, rayDir, radiance, wavelength);
 
     // Write output

@@ -79,6 +79,27 @@ public:
     bool getEnableWavelengthFilter() const { return mEnableWavelengthFilter; }
     void setEnableWavelengthFilter(bool enable) { mEnableWavelengthFilter = enable; mNeedRecompile = true; }
 
+    // Photodetector analysis functions
+    bool getEnablePhotodetectorAnalysis() const { return mEnablePhotodetectorAnalysis; }
+    void setEnablePhotodetectorAnalysis(bool enable) { mEnablePhotodetectorAnalysis = enable; mNeedRecompile = true; }
+
+    float getDetectorArea() const { return mDetectorArea; }
+    void setDetectorArea(float area) { mDetectorArea = area; }
+
+    float getSourceSolidAngle() const { return mSourceSolidAngle; }
+    void setSourceSolidAngle(float angle) { mSourceSolidAngle = angle; }
+
+    uint32_t getWavelengthBinCount() const { return mWavelengthBinCount; }
+    void setWavelengthBinCount(uint32_t count) { mWavelengthBinCount = count; }
+
+    uint32_t getAngleBinCount() const { return mAngleBinCount; }
+    void setAngleBinCount(uint32_t count) { mAngleBinCount = count; }
+
+    const std::string& getPowerMatrixExportPath() const { return mPowerMatrixExportPath; }
+    void setPowerMatrixExportPath(const std::string& path) { mPowerMatrixExportPath = path; }
+
+    float getTotalAccumulatedPower() const { return mTotalAccumulatedPower; }
+
     // New export functions
     bool exportPowerData(const std::string& filename, OutputFormat format = OutputFormat::EXR);
     bool exportStatistics(const std::string& filename, OutputFormat format = OutputFormat::CSV);
@@ -200,6 +221,21 @@ private:
     static const std::string kCameraTarget;          ///< Camera target parameter name
     static const std::string kCameraFocalLength;     ///< Camera focal length parameter name
 
+    // Photodetector analysis parameters
+    bool mEnablePhotodetectorAnalysis = false;    ///< Enable PD power matrix analysis
+    float mDetectorArea = 1e-6f;                  ///< PD effective area in m²
+    float mSourceSolidAngle = 1e-3f;              ///< Source solid angle in sr
+    uint32_t mCurrentNumRays = 0;                 ///< Current number of rays
+
+    // High precision binning parameters (1nm and 1deg precision)
+    uint32_t mWavelengthBinCount = 400;           ///< Number of wavelength bins
+    uint32_t mAngleBinCount = 90;                 ///< Number of angle bins
+
+    // Power matrix storage
+    std::vector<std::vector<float>> mPowerMatrix; ///< Power matrix [wavelength][angle]
+    float mTotalAccumulatedPower = 0.0f;          ///< Total accumulated power
+    std::string mPowerMatrixExportPath = "./";    ///< Export path
+
     // Statistics and export-related members
     PowerStatistics mPowerStats;              ///< Statistics about the calculated power
     bool mEnableStatistics = true;            ///< Whether to calculate statistics
@@ -214,6 +250,9 @@ private:
     // CPU buffers for data readback
     std::vector<float4> mPowerReadbackBuffer;  ///< Buffer for power readback
     std::vector<float> mWavelengthReadbackBuffer; ///< Buffer for wavelength readback
+
+    // Photodetector analysis buffers
+    ref<Buffer> mpClassificationBuffer;        ///< GPU buffer for binning results
 
     void prepareResources(RenderContext* pRenderContext, const RenderData& renderData);
     void prepareProgram();
@@ -252,4 +291,9 @@ private:
     void processBatchExport();
     void finishBatchExport();
     void setViewpointPosition(uint32_t viewpointIndex);
+
+    // Photodetector matrix management functions
+    void initializePowerMatrix();
+    void resetPowerMatrix();
+    bool exportPowerMatrix();
 };

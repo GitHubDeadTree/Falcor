@@ -291,12 +291,26 @@ IncomingLightPowerPass::IncomingLightPowerPass(ref<Device> pDevice, const Proper
         else if (key == "statisticsFrequency") mStatisticsFrequency = value;
         else if (key == "outputPowerTexName") mOutputPowerTexName = value.operator std::string();
         else if (key == "outputWavelengthTexName") mOutputWavelengthTexName = value.operator std::string();
+        else if (key == "enablePhotodetectorAnalysis") mEnablePhotodetectorAnalysis = value;
+        else if (key == "detectorArea") mDetectorArea = value;
+        else if (key == "sourceSolidAngle") mSourceSolidAngle = value;
+        else if (key == "wavelengthBinCount") mWavelengthBinCount = value;
+        else if (key == "angleBinCount") mAngleBinCount = value;
+        else if (key == "powerMatrixExportPath") mPowerMatrixExportPath = value.operator std::string();
         else logWarning("Unknown property '{}' in IncomingLightPowerPass properties.", key);
     }
 
     // Add default wavelength bands for common light sources
     mBandWavelengths = { 405.0f, 436.0f, 546.0f, 578.0f }; // Mercury lamp wavelengths
     mBandTolerances = { 5.0f, 5.0f, 5.0f, 5.0f };
+
+    // Initialize power matrix for photodetector analysis
+    if (mEnablePhotodetectorAnalysis)
+    {
+        mPowerMatrix.clear();
+        mPowerMatrix.resize(mWavelengthBinCount, std::vector<float>(mAngleBinCount, 0.0f));
+        mTotalAccumulatedPower = 0.0f;
+    }
 
     // Create compute pass
     prepareProgram();
@@ -315,6 +329,12 @@ Properties IncomingLightPowerPass::getProperties() const
     props["statisticsFrequency"] = mStatisticsFrequency;
     props["outputPowerTexName"] = mOutputPowerTexName;
     props["outputWavelengthTexName"] = mOutputWavelengthTexName;
+    props["enablePhotodetectorAnalysis"] = mEnablePhotodetectorAnalysis;
+    props["detectorArea"] = mDetectorArea;
+    props["sourceSolidAngle"] = mSourceSolidAngle;
+    props["wavelengthBinCount"] = mWavelengthBinCount;
+    props["angleBinCount"] = mAngleBinCount;
+    props["powerMatrixExportPath"] = mPowerMatrixExportPath;
     return props;
 }
 
@@ -468,6 +488,13 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     var[kPerFrameCB]["gEnableWavelengthFilter"] = mEnableWavelengthFilter;
     var[kPerFrameCB][kPixelAreaScale] = mPixelAreaScale;
 
+    // Set photodetector analysis parameters
+    mCurrentNumRays = mFrameDim.x * mFrameDim.y; // Calculate current number of rays
+    var[kPerFrameCB]["gEnablePhotodetectorAnalysis"] = mEnablePhotodetectorAnalysis;
+    var[kPerFrameCB]["gDetectorArea"] = mDetectorArea;
+    var[kPerFrameCB]["gSourceSolidAngle"] = mSourceSolidAngle;
+    var[kPerFrameCB]["gCurrentNumRays"] = mCurrentNumRays;
+
     // Set camera data
     if (mpScene && mpScene->getCamera())
     {
@@ -538,6 +565,12 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     var["gDebugOutput"] = pDebugOutput;
     var["gDebugInputData"] = pDebugInputData;
     var["gDebugCalculation"] = pDebugCalculation;
+
+    // Bind classification buffer for photodetector analysis
+    if (mEnablePhotodetectorAnalysis && mpClassificationBuffer)
+    {
+        var["gClassificationBuffer"] = mpClassificationBuffer;
+    }
 
     // Execute the compute pass
     mpComputePass->execute(pRenderContext, uint3(mFrameDim.x, mFrameDim.y, 1));
@@ -1925,7 +1958,36 @@ void IncomingLightPowerPass::prepareResources(RenderContext* pRenderContext, con
         mPowerCalculator.setup(mpScene, mFrameDim);
     }
 
-    // Add any buffer initialization or other resource preparation here
+    // Create classification buffer for photodetector analysis if needed
+    if (mEnablePhotodetectorAnalysis)
+    {
+        uint32_t bufferSize = mFrameDim.x * mFrameDim.y;
+
+        // Create or resize classification buffer if needed
+        if (!mpClassificationBuffer || mpClassificationBuffer->getElementCount() != bufferSize)
+        {
+            try
+            {
+                mpClassificationBuffer = mpDevice->createStructuredBuffer(
+                    sizeof(uint32_t) * 4,  // 4 uint32s per entry (wavelengthBin, angleBin, powerBits, validFlag)
+                    bufferSize,
+                    ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource,
+                    MemoryType::DeviceLocal,
+                    nullptr,  // No initial data
+                    false     // Not constant buffer
+                );
+
+                logInfo("Created classification buffer with {} entries ({}KB)",
+                        bufferSize, (bufferSize * sizeof(uint32_t) * 4) / 1024);
+            }
+            catch (const std::exception& e)
+            {
+                logError("Failed to create classification buffer: {}", e.what());
+                mTotalAccumulatedPower = 0.666f; // Error marker
+                mEnablePhotodetectorAnalysis = false; // Disable PD analysis on error
+            }
+        }
+    }
 }
 
 void IncomingLightPowerPass::startBatchExport()
@@ -2126,5 +2188,106 @@ void IncomingLightPowerPass::processBatchExport()
             setViewpointPosition(mBatchExportCurrentViewpoint);
             mBatchExportFrameCount = mBatchExportFramesToWait;
         }
+    }
+}
+
+// Photodetector matrix management functions implementation
+void IncomingLightPowerPass::initializePowerMatrix()
+{
+    try
+    {
+        mPowerMatrix.clear();
+        mPowerMatrix.resize(mWavelengthBinCount, std::vector<float>(mAngleBinCount, 0.0f));
+        mTotalAccumulatedPower = 0.0f;
+        logInfo("Power matrix initialized with size {}x{} ({}KB)",
+                mWavelengthBinCount, mAngleBinCount,
+                (mWavelengthBinCount * mAngleBinCount * sizeof(float)) / 1024);
+    }
+    catch (const std::exception& e)
+    {
+        logError("Failed to initialize power matrix: {}", e.what());
+        mTotalAccumulatedPower = 0.666f; // Error marker
+    }
+}
+
+void IncomingLightPowerPass::resetPowerMatrix()
+{
+    try
+    {
+        if (!mPowerMatrix.empty())
+        {
+            for (auto& row : mPowerMatrix)
+            {
+                std::fill(row.begin(), row.end(), 0.0f);
+            }
+        }
+        mTotalAccumulatedPower = 0.0f;
+        logInfo("Power matrix reset successfully");
+    }
+    catch (const std::exception& e)
+    {
+        logError("Failed to reset power matrix: {}", e.what());
+        mTotalAccumulatedPower = 0.666f; // Error marker
+    }
+}
+
+bool IncomingLightPowerPass::exportPowerMatrix()
+{
+    try
+    {
+        // Validate matrix before export
+        if (mPowerMatrix.empty() || mPowerMatrix[0].empty())
+        {
+            logError("Power matrix is empty, cannot export");
+            return false;
+        }
+
+        // Validate dimensions
+        if (mPowerMatrix.size() != mWavelengthBinCount ||
+            mPowerMatrix[0].size() != mAngleBinCount)
+        {
+            logError("Power matrix dimensions mismatch: expected {}x{}, got {}x{}",
+                     mWavelengthBinCount, mAngleBinCount,
+                     mPowerMatrix.size(), mPowerMatrix[0].size());
+            return false;
+        }
+
+        // Generate filename with timestamp
+        std::string filename = mPowerMatrixExportPath + "power_matrix_" +
+                              std::to_string(std::time(nullptr)) + ".csv";
+
+        std::ofstream file(filename);
+        if (!file.is_open())
+        {
+            logError("Failed to create export file: {}", filename);
+            return false;
+        }
+
+        // Write CSV header
+        file << "# Photodetector Power Matrix Export\n";
+        file << "# Wavelength bins: " << mWavelengthBinCount << " (380-780nm, 1nm precision)\n";
+        file << "# Angle bins: " << mAngleBinCount << " (0-90deg, 1deg precision)\n";
+        file << "# Total accumulated power: " << mTotalAccumulatedPower << " W\n";
+        file << "# Matrix format: rows=wavelength bins, columns=angle bins\n";
+
+        // Write matrix data
+        for (uint32_t i = 0; i < mWavelengthBinCount; i++)
+        {
+            for (uint32_t j = 0; j < mAngleBinCount; j++)
+            {
+                file << mPowerMatrix[i][j];
+                if (j < mAngleBinCount - 1) file << ",";
+            }
+            file << "\n";
+        }
+
+        file.close();
+        logInfo("Power matrix exported to {}", filename);
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        logError("CSV export failed: {}", e.what());
+        return false;
     }
 }
