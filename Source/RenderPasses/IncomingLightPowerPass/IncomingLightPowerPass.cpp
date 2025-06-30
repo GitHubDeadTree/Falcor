@@ -954,7 +954,7 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
     // Statistics UI
     renderStatisticsUI(widget);
 
-    // Photodetector Analysis UI
+    // Photodetector Analysis UI - Enhanced for Task 4
     auto pdGroup = widget.group("Photodetector Analysis", true);
     if (pdGroup)
     {
@@ -965,81 +965,193 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
             if (mEnablePhotodetectorAnalysis)
             {
                 initializePowerMatrix();
+                logInfo("Photodetector analysis enabled - matrix initialized");
+            }
+            else
+            {
+                logInfo("Photodetector analysis disabled");
             }
         }
 
         if (mEnablePhotodetectorAnalysis)
         {
-            // Display matrix information
-            widget.text(fmt::format("Matrix Size: {}x{} ({:.1f}KB)",
-                                   mWavelengthBinCount, mAngleBinCount,
-                                   (mWavelengthBinCount * mAngleBinCount * sizeof(float)) / 1024.0f));
+            // Enhanced matrix information display
+            const float matrixSizeKB = (mWavelengthBinCount * mAngleBinCount * sizeof(float)) / 1024.0f;
+            widget.text(fmt::format("Matrix Size: {}x{} ({:.1f}KB/144KB limit)",
+                                   mWavelengthBinCount, mAngleBinCount, matrixSizeKB));
+            
+            // Color-coded status indicator
+            if (matrixSizeKB > 150.0f)
+            {
+                widget.text("WARNING: Matrix size exceeds recommended limit", true);
+            }
+            else if (mWavelengthBinCount == 400 && mAngleBinCount == 90)
+            {
+                widget.text("Status: Task 4 compliant (400x90 matrix)");
+            }
 
-            // Display current total power
+            // Enhanced power status display with error detection
             if (mTotalAccumulatedPower == 0.666f)
             {
                 widget.text("Status: ERROR - Check console for details", true);
+                widget.text("Error Recovery: Try resetting matrix or restarting analysis");
+            }
+            else if (mTotalAccumulatedPower == 0.0f)
+            {
+                widget.text("Status: Waiting for power data...");
             }
             else
             {
                 widget.text(fmt::format("Total Power: {:.6f} W", mTotalAccumulatedPower));
+                
+                // Calculate and display power density
+                const float powerDensity = mTotalAccumulatedPower / mDetectorArea;
+                widget.text(fmt::format("Power Density: {:.3e} W/m²", powerDensity));
             }
 
-            // PD physical parameters
+            // Enhanced physical parameters with validation
             auto paramsGroup = widget.group("Physical Parameters", false);
             if (paramsGroup)
             {
+                float oldDetectorArea = mDetectorArea;
                 changed |= widget.slider("Detector Area (m²)", mDetectorArea, 1e-9f, 1e-3f, true);
-                widget.tooltip("Physical effective area of the photodetector");
+                if (mDetectorArea != oldDetectorArea)
+                {
+                    widget.tooltip("Physical effective area of the photodetector");
+                    // Validate detector area is reasonable
+                    if (mDetectorArea < 1e-8f)
+                    {
+                        widget.text("WARNING: Very small detector area may cause numerical issues", true);
+                    }
+                }
 
+                float oldSolidAngle = mSourceSolidAngle;
                 changed |= widget.slider("Source Solid Angle (sr)", mSourceSolidAngle, 1e-6f, 1e-1f, true);
-                widget.tooltip("Solid angle subtended by the light source as seen from the detector");
+                if (mSourceSolidAngle != oldSolidAngle)
+                {
+                    widget.tooltip("Solid angle subtended by the light source as seen from the detector");
+                    // Validate solid angle is reasonable
+                    if (mSourceSolidAngle > 6.28f) // > 2π steradians
+                    {
+                        widget.text("WARNING: Solid angle exceeds hemisphere (2π sr)", true);
+                    }
+                }
 
                 widget.text(fmt::format("Current Ray Count: {}", mCurrentNumRays));
+                
+                // Display computed per-ray solid angle
+                if (mCurrentNumRays > 0)
+                {
+                    const float deltaOmega = mSourceSolidAngle / float(mCurrentNumRays);
+                    widget.text(fmt::format("Per-ray Δω: {:.3e} sr", deltaOmega));
+                }
             }
 
-            // Binning parameters (read-only display)
-            auto binningGroup = widget.group("Binning Configuration", false);
+            // Fixed binning parameters display (Task 4 specification)
+            auto binningGroup = widget.group("Binning Configuration (Task 4 Spec)", false);
             if (binningGroup)
             {
-                widget.text(fmt::format("Wavelength Bins: {} (380-780nm, 1nm precision)", mWavelengthBinCount));
-                widget.text(fmt::format("Angle Bins: {} (0-90°, 1° precision)", mAngleBinCount));
+                widget.text("Wavelength Range: 380-780nm (1nm precision)");
+                widget.text("Angle Range: 0-90° (1° precision)");
+                widget.text(fmt::format("Actual Bins: {} wavelength × {} angle", 
+                           mWavelengthBinCount, mAngleBinCount));
+                
+                // Compliance check
+                if (mWavelengthBinCount == 400 && mAngleBinCount == 90)
+                {
+                    widget.text("✓ Task 4 Compliant Configuration");
+                }
+                else
+                {
+                    widget.text("⚠ Non-standard configuration", true);
+                    if (widget.button("Reset to Task 4 Spec"))
+                    {
+                        mWavelengthBinCount = 400;
+                        mAngleBinCount = 90;
+                        initializePowerMatrix();
+                        changed = true;
+                    }
+                }
             }
 
-            // Matrix operations
+            // Enhanced matrix operations with better feedback
             auto operationsGroup = widget.group("Matrix Operations", true);
             if (operationsGroup)
             {
                 if (widget.button("Reset Matrix"))
                 {
                     resetPowerMatrix();
+                    if (mTotalAccumulatedPower != 0.666f)
+                    {
+                        widget.text("Matrix reset successful");
+                    }
                 }
-                widget.tooltip("Clear all accumulated power data");
+                widget.tooltip("Clear all accumulated power data and reset counters");
 
+                static bool exportInProgress = false;
+                static std::string lastExportMessage = "";
+                
                 if (widget.button("Export Matrix"))
                 {
-                    if (exportPowerMatrix())
+                    exportInProgress = true;
+                    bool success = exportPowerMatrix();
+                    if (success)
                     {
-                        widget.text("Matrix exported successfully!");
+                        lastExportMessage = "Matrix exported successfully!";
                     }
                     else
                     {
-                        widget.text("Export failed - check console for details", true);
+                        lastExportMessage = "Export failed - check console for details";
                     }
+                    exportInProgress = false;
                 }
-                widget.tooltip("Export power matrix as CSV file");
+                widget.tooltip("Export power matrix as CSV file with metadata");
+                
+                // Display export status
+                if (!lastExportMessage.empty())
+                {
+                    bool isError = lastExportMessage.find("failed") != std::string::npos;
+                    widget.text(lastExportMessage, isError);
+                }
+                
+                if (exportInProgress)
+                {
+                    widget.text("Exporting...");
+                }
 
-                // Export path setting
+                // Enhanced export path setting with validation
                 char pathBuffer[256];
                 strncpy_s(pathBuffer, mPowerMatrixExportPath.c_str(), sizeof(pathBuffer) - 1);
                 pathBuffer[sizeof(pathBuffer) - 1] = '\0';
                 
                 if (widget.textbox("Export Path", pathBuffer, sizeof(pathBuffer)))
                 {
-                    mPowerMatrixExportPath = std::string(pathBuffer);
+                    std::string newPath = std::string(pathBuffer);
+                    // Basic path validation
+                    if (newPath.empty())
+                    {
+                        newPath = "./";
+                    }
+                    if (newPath.back() != '/' && newPath.back() != '\\')
+                    {
+                        newPath += "/";
+                    }
+                    mPowerMatrixExportPath = newPath;
                 }
-                widget.tooltip("Directory path for matrix export");
+                widget.tooltip("Directory path for matrix export (auto-adds trailing slash)");
+                
+                // Display current export path validation
+                if (!std::filesystem::exists(mPowerMatrixExportPath))
+                {
+                    widget.text("⚠ Export path does not exist", true);
+                }
             }
+        }
+        else
+        {
+            // Display helpful information when disabled
+            widget.text("Enable analysis to access matrix management features");
+            widget.text("Task 4: 400×90 matrix (144KB) for wavelength-angle power classification");
         }
     }
 
@@ -2292,17 +2404,75 @@ void IncomingLightPowerPass::initializePowerMatrix()
 {
     try
     {
+        // Enforce strict matrix size as per task 4 requirements
+        const uint32_t requiredWavelengthBins = 400; // 380-780nm, 1nm precision
+        const uint32_t requiredAngleBins = 90;        // 0-90deg, 1deg precision
+        
+        // Validate and enforce correct matrix dimensions
+        if (mWavelengthBinCount != requiredWavelengthBins)
+        {
+            logWarning("Wavelength bin count adjusted from {} to {} for task 4 compliance", 
+                      mWavelengthBinCount, requiredWavelengthBins);
+            mWavelengthBinCount = requiredWavelengthBins;
+        }
+        
+        if (mAngleBinCount != requiredAngleBins)
+        {
+            logWarning("Angle bin count adjusted from {} to {} for task 4 compliance", 
+                      mAngleBinCount, requiredAngleBins);
+            mAngleBinCount = requiredAngleBins;
+        }
+        
+        // Calculate expected memory usage
+        const uint32_t expectedMemoryKB = (mWavelengthBinCount * mAngleBinCount * sizeof(float)) / 1024;
+        const uint32_t maxAllowedMemoryKB = 200; // Safety margin above 144KB
+        
+        if (expectedMemoryKB > maxAllowedMemoryKB)
+        {
+            logError("Matrix size {}x{} would use {}KB, exceeding {}KB limit", 
+                    mWavelengthBinCount, mAngleBinCount, expectedMemoryKB, maxAllowedMemoryKB);
+            mTotalAccumulatedPower = 0.666f; // Error marker
+            return;
+        }
+        
+        // Clear and initialize matrix with validated dimensions
         mPowerMatrix.clear();
         mPowerMatrix.resize(mWavelengthBinCount, std::vector<float>(mAngleBinCount, 0.0f));
         mTotalAccumulatedPower = 0.0f;
-        logInfo("Power matrix initialized with size {}x{} ({}KB)",
-                mWavelengthBinCount, mAngleBinCount,
-                (mWavelengthBinCount * mAngleBinCount * sizeof(float)) / 1024);
+        
+        // Validate successful initialization
+        if (mPowerMatrix.size() != mWavelengthBinCount || 
+            mPowerMatrix[0].size() != mAngleBinCount)
+        {
+            logError("Matrix initialization failed: expected {}x{}, got {}x{}",
+                    mWavelengthBinCount, mAngleBinCount, 
+                    mPowerMatrix.size(), mPowerMatrix.empty() ? 0 : mPowerMatrix[0].size());
+            mTotalAccumulatedPower = 0.666f; // Error marker
+            return;
+        }
+        
+        logInfo("Power matrix initialized with size {}x{} ({}KB) - Task 4 compliant",
+                mWavelengthBinCount, mAngleBinCount, expectedMemoryKB);
     }
     catch (const std::exception& e)
     {
         logError("Failed to initialize power matrix: {}", e.what());
         mTotalAccumulatedPower = 0.666f; // Error marker
+        
+        // Attempt recovery with minimal matrix
+        try 
+        {
+            mPowerMatrix.clear();
+            mWavelengthBinCount = 400;
+            mAngleBinCount = 90;
+            mPowerMatrix.resize(mWavelengthBinCount, std::vector<float>(mAngleBinCount, 0.0f));
+            logInfo("Recovery matrix initialized with default 400x90 dimensions");
+        }
+        catch (...)
+        {
+            logError("Matrix recovery failed - PD analysis will be disabled");
+            mEnablePhotodetectorAnalysis = false;
+        }
     }
 }
 
@@ -2310,20 +2480,76 @@ void IncomingLightPowerPass::resetPowerMatrix()
 {
     try
     {
-        if (!mPowerMatrix.empty())
+        // Validate matrix exists and has correct dimensions
+        if (mPowerMatrix.empty())
         {
-            for (auto& row : mPowerMatrix)
-            {
-                std::fill(row.begin(), row.end(), 0.0f);
-            }
+            logWarning("Attempting to reset empty matrix - initializing new matrix");
+            initializePowerMatrix();
+            return;
         }
+        
+        // Validate dimensions before reset
+        if (mPowerMatrix.size() != mWavelengthBinCount || 
+            mPowerMatrix[0].size() != mAngleBinCount)
+        {
+            logWarning("Matrix dimensions mismatch during reset: expected {}x{}, got {}x{}",
+                      mWavelengthBinCount, mAngleBinCount,
+                      mPowerMatrix.size(), mPowerMatrix[0].size());
+            // Reinitialize with correct dimensions
+            initializePowerMatrix();
+            return;
+        }
+        
+        // Efficient matrix reset - clear all values to zero
+        for (auto& row : mPowerMatrix)
+        {
+            std::fill(row.begin(), row.end(), 0.0f);
+        }
+        
+        // Reset accumulation counter
         mTotalAccumulatedPower = 0.0f;
-        logInfo("Power matrix reset successfully");
+        
+        // Verify reset was successful
+        bool resetSuccess = true;
+        for (const auto& row : mPowerMatrix)
+        {
+            for (float value : row)
+            {
+                if (value != 0.0f)
+                {
+                    resetSuccess = false;
+                    break;
+                }
+            }
+            if (!resetSuccess) break;
+        }
+        
+        if (!resetSuccess)
+        {
+            logError("Matrix reset verification failed - some values remain non-zero");
+            mTotalAccumulatedPower = 0.666f; // Error marker
+        }
+        else
+        {
+            logInfo("Power matrix reset successfully - all {}x{} elements cleared", 
+                   mWavelengthBinCount, mAngleBinCount);
+        }
     }
     catch (const std::exception& e)
     {
         logError("Failed to reset power matrix: {}", e.what());
         mTotalAccumulatedPower = 0.666f; // Error marker
+        
+        // Attempt recovery by reinitializing
+        try
+        {
+            initializePowerMatrix();
+            logInfo("Matrix reset recovery successful");
+        }
+        catch (...)
+        {
+            logError("Matrix reset recovery failed - PD analysis may be unstable");
+        }
     }
 }
 
