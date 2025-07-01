@@ -59,7 +59,7 @@ RWTexture2D<float4> gDebugInputData;    ///< Debug output for input data
 RWTexture2D<float4> gDebugCalculation;  ///< Debug output for calculation steps
 
 // Photodetector analysis buffer
-RWStructuredBuffer<uint4> gClassificationBuffer; ///< Buffer for binning results [wavelengthBin, angleBin, powerBits, validFlag]
+RWStructuredBuffer<float4> gPowerDataBuffer; ///< Buffer for direct data storage [incidentAngle, wavelength, power, validFlag]
 
 // Parameters
 cbuffer PerFrameCB
@@ -93,27 +93,7 @@ cbuffer PerFrameCB
 
 // Utility functions
 
-// High precision binning functions for photodetector analysis
-
-// Find wavelength bin (380-780nm, 1nm precision, 400 bins total)
-uint findWavelengthBin(float wavelength)
-{
-    if (wavelength < 380.0f || wavelength > 780.0f)
-        return 0xFFFFFFFF; // Invalid bin marker
-
-    uint bin = uint(wavelength - 380.0f);  // 1nm precision
-    return min(bin, 399); // Clamp to 400 bins (0-399)
-}
-
-// Find angle bin (0-90°, 1deg precision, 90 bins total)
-uint findAngleBin(float angleDeg)
-{
-    if (angleDeg < 0.0f || angleDeg > 90.0f)
-        return 0xFFFFFFFF; // Invalid bin marker
-
-    uint bin = uint(angleDeg);  // 1deg precision
-    return min(bin, 89); // Clamp to 90 bins (0-89)
-}
+// Photodetector analysis utility functions
 
 // Calculate incident angle from ray direction (reuses existing computeCosTheta method)
 float calculateIncidentAngle(float3 rayDir)
@@ -123,18 +103,20 @@ float calculateIncidentAngle(float3 rayDir)
     return acos(cosTheta) * 180.0f / 3.14159f; // Convert to degrees
 }
 
-// Error checking function for binning
-bool isValidBin(uint wavelengthBin, uint angleBin)
+// Validate power data point
+bool isValidPowerData(float incidentAngle, float wavelength, float power)
 {
-    return (wavelengthBin != 0xFFFFFFFF && angleBin != 0xFFFFFFFF);
+    return (incidentAngle >= 0.0f && incidentAngle <= 90.0f &&
+            wavelength >= 300.0f && wavelength <= 1000.0f &&
+            power >= 0.0f && power < 1e6f);
 }
 
-// Log binning error (only for debug pixels to avoid spam)
-void logBinningError(float wavelength, float angle, uint2 pixel)
+// Log data validation error
+void logDataError(float wavelength, float angle, float power, uint2 pixel)
 {
     // Only log errors occasionally to avoid spam
     if ((pixel.x + pixel.y) % 1000 == 0) {
-        gDebugOutput[pixel] = float4(0.666f, wavelength, angle, 1.0f);
+        gDebugOutput[pixel] = float4(0.666f, wavelength, angle, power);
     }
 }
 
@@ -244,9 +226,17 @@ float3 computeRayDirection(uint2 pixel, uint2 dimensions)
     return rayDir;
 }
 
-// Compute pixel area on the image sensor
+// Compute area for power measurement (used directly, not divided by pixel count)
 float computePixelArea(uint2 dimensions)
 {
+    // For photodetector analysis, use the physical detector area directly
+    if (gEnablePhotodetectorAnalysis)
+    {
+        // Use the configured detector area for photodetector analysis
+        return gDetectorArea;
+    }
+
+    // For camera-based analysis, calculate total sensor area (photosensitive plane)
     // Calculate FOV and aspect ratio
     float fovY = gCameraFocalLength;  // Camera focal length in Falcor units
     float aspectRatio = float(dimensions.x) / float(dimensions.y);
@@ -254,16 +244,14 @@ float computePixelArea(uint2 dimensions)
     // Use normalized distance to image plane
     float distToImagePlane = 1.0f;
 
-    // Calculate sensor dimensions
+    // Calculate total sensor dimensions (entire photosensitive plane)
     float sensorHeight = 2.0f * distToImagePlane * tan(fovY * 0.5f);
     float sensorWidth = sensorHeight * aspectRatio;
 
-    // Calculate pixel dimensions
-    float pixelWidth = sensorWidth / float(dimensions.x);
-    float pixelHeight = sensorHeight / float(dimensions.y);
-
-    // Return pixel area with scaling factor
-    return pixelWidth * pixelHeight * gPixelAreaScale;
+    // Return total sensor area (photosensitive plane physical area) with scaling factor
+    // The scaling factor adjusts for units and visualization purposes
+    float totalSensorArea = sensorWidth * sensorHeight;
+    return totalSensorArea * gPixelAreaScale;
 }
 
 // Define a debug structure to store cosTheta computation details
@@ -386,8 +374,9 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
         }
     }
 
-    // Calculate pixel area
-    pixelArea = computePixelArea(dimensions);
+    // Calculate area directly without dividing by pixel count
+    float area = computePixelArea(dimensions);
+    pixelArea = area; // For backward compatibility with debug code
 
     // Calculate cosine term with debug info for debug pixels
     if (isDebugPixel) {
@@ -407,15 +396,15 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
             cosThetaDebug.dotProduct,           // Raw dot product
             cosThetaDebug.cosTheta,             // Before min clamp
             cosTheta,                           // Final value (after min clamp)
-            pixelArea                           // Pixel area for power calculation
+            area                                // Area used for power calculation
         );
 
         // Special debug for first pixel (0,0)
         if (pixel.x == 0 && pixel.y == 0) {
-            // Calculate power values for the RGB components
-            float rPower = safeRadiance.r * pixelArea * cosTheta;
-            float gPower = safeRadiance.g * pixelArea * cosTheta;
-            float bPower = safeRadiance.b * pixelArea * cosTheta;
+            // Calculate power values for the RGB components using area directly
+            float rPower = safeRadiance.r * area * cosTheta;
+            float gPower = safeRadiance.g * area * cosTheta;
+            float bPower = safeRadiance.b * area * cosTheta;
 
             // Store in a special debug texture slot - we'll use gDebugInputData for pixel (1,1)
             // This avoids overwriting the camera normal information
@@ -426,7 +415,7 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
             // in a special debug texture for verification
             gDebugCalculation[pixel] = float4(
                 safeRadiance.r,              // R component of radiance
-                pixelArea,                   // Pixel area
+                area,                        // Area used for calculation
                 cosTheta,                    // Final cosTheta value
                 rPower                       // R component of calculated power
             );
@@ -438,7 +427,8 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
     }
 
     // Calculate power using the formula: Power = Radiance * Area * cos(θ)
-    float3 power = safeRadiance * pixelArea * cosTheta;
+    // Use the full area directly without dividing by pixel count
+    float3 power = safeRadiance * area * cosTheta;
 
     // Return power with the wavelength
     return float4(power, wavelength > 0.0f ? wavelength : 550.0f);
@@ -547,32 +537,28 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         // Key correction: Use PD physical area instead of pixel area
         float deltaOmega = gSourceSolidAngle / float(gCurrentNumRays);
         float3 pdPower = radiance.rgb * gDetectorArea * cosTheta * deltaOmega;
+        float totalPower = pdPower.x + pdPower.y + pdPower.z;
 
-        // Perform high-precision binning
-        uint wavelengthBin = findWavelengthBin(wavelength);
-        uint angleBin = findAngleBin(incidentAngle);
-
-        if (isValidBin(wavelengthBin, angleBin))
+        // Validate data before storing
+        if (isValidPowerData(incidentAngle, wavelength, totalPower))
         {
-            float totalPower = pdPower.x + pdPower.y + pdPower.z;
-
-            // Store classification data in buffer for CPU processing
+            // Store direct angle-wavelength-power data for CPU processing
             uint index = pixel.y * dimensions.x + pixel.x;
-            gClassificationBuffer[index] = uint4(
-                wavelengthBin,           // Wavelength bin index (0-399)
-                angleBin,                // Angle bin index (0-89)
-                asuint(totalPower),      // Total power as uint bits
-                1                        // Valid flag
+            gPowerDataBuffer[index] = float4(
+                incidentAngle,       // Incident angle in degrees
+                wavelength,          // Wavelength in nanometers
+                totalPower,          // Total power in watts
+                1.0f                 // Valid flag
             );
         }
         else
         {
-            // Record binning error
-            logBinningError(wavelength, incidentAngle, pixel);
+            // Record data validation error
+            logDataError(wavelength, incidentAngle, totalPower, pixel);
 
-            // Mark as invalid in classification buffer
+            // Mark as invalid in data buffer
             uint index = pixel.y * dimensions.x + pixel.x;
-            gClassificationBuffer[index] = uint4(0xFFFFFFFF, 0xFFFFFFFF, 0, 0);
+            gPowerDataBuffer[index] = float4(0.0f, 0.0f, 0.0f, 0.0f);
         }
     }
 

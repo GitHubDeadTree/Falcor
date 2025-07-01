@@ -94,9 +94,8 @@ float IncomingLightPowerPass::CameraIncidentPower::computePixelArea() const
     if (!mHasValidCamera || !mpCamera)
         return 1.0f;  // Default value if no camera
 
-    // Get camera sensor dimensions
-    // In a real camera, this would be the physical sensor size
-    // For our virtual camera, we use the FOV and distance to calculate the sensor size
+    // Calculate the total sensor area (photosensitive plane physical area)
+    // instead of individual pixel area for proper power measurement
 
     // Get focal length in mm
     float focalLength = mpCamera->getFocalLength();
@@ -110,23 +109,19 @@ float IncomingLightPowerPass::CameraIncidentPower::computePixelArea() const
     // We use 1.0 as a normalized distance to image plane
     float distToImagePlane = 1.0f;
 
-    // Calculate sensor width and height at this distance
+    // Calculate total sensor dimensions (entire photosensitive plane)
     float sensorWidth = 2.0f * distToImagePlane * std::tan(hFOV * 0.5f);
     float aspectRatio = (float)mFrameDimensions.x / mFrameDimensions.y;
     float sensorHeight = sensorWidth / aspectRatio;
 
-    // Calculate pixel dimensions
-    float pixelWidth = sensorWidth / mFrameDimensions.x;
-    float pixelHeight = sensorHeight / mFrameDimensions.y;
+    // Calculate total sensor area (photosensitive plane physical area)
+    float totalSensorArea = sensorWidth * sensorHeight;
 
-    // Calculate pixel area
-    float pixelArea = pixelWidth * pixelHeight;
+    // Ensure total sensor area is not too small or zero
+    const float minSensorArea = 0.001f;
+    totalSensorArea = std::max(totalSensorArea, minSensorArea);
 
-    // Ensure pixel area is not too small or zero
-    const float minPixelArea = 0.00001f;
-    pixelArea = std::max(pixelArea, minPixelArea);
-
-    return pixelArea;
+    return totalSensorArea;
 }
 
 float3 IncomingLightPowerPass::CameraIncidentPower::computeRayDirection(const uint2& pixel) const
@@ -258,14 +253,15 @@ float4 IncomingLightPowerPass::CameraIncidentPower::compute(
         return float4(0.f, 0.f, 0.f, 0.f);
     }
 
-    // Calculate pixel area
-    float pixelArea = computePixelArea();
+    // Calculate area directly without dividing by pixel count
+    float area = computePixelArea();
 
     // Calculate cosine term
     float cosTheta = computeCosTheta(rayDir);
 
     // Calculate power using the formula: Power = Radiance * Area * cos(θ)
-    float3 power = float3(radiance.r, radiance.g, radiance.b) * pixelArea * cosTheta;
+    // Use the full area directly without dividing by pixel count
+    float3 power = float3(radiance.r, radiance.g, radiance.b) * area * cosTheta;
 
     // Return power with the wavelength
     return float4(power.x, power.y, power.z, wavelength > 0.0f ? wavelength : 550.0f);
@@ -294,9 +290,8 @@ IncomingLightPowerPass::IncomingLightPowerPass(ref<Device> pDevice, const Proper
         else if (key == "enablePhotodetectorAnalysis") mEnablePhotodetectorAnalysis = value;
         else if (key == "detectorArea") mDetectorArea = value;
         else if (key == "sourceSolidAngle") mSourceSolidAngle = value;
-        else if (key == "wavelengthBinCount") mWavelengthBinCount = value;
-        else if (key == "angleBinCount") mAngleBinCount = value;
-        else if (key == "powerMatrixExportPath") mPowerMatrixExportPath = value.operator std::string();
+        else if (key == "maxDataPoints") mMaxDataPoints = value;
+        else if (key == "powerDataExportPath") mPowerDataExportPath = value.operator std::string();
         else logWarning("Unknown property '{}' in IncomingLightPowerPass properties.", key);
     }
 
@@ -304,12 +299,10 @@ IncomingLightPowerPass::IncomingLightPowerPass(ref<Device> pDevice, const Proper
     mBandWavelengths = { 405.0f, 436.0f, 546.0f, 578.0f }; // Mercury lamp wavelengths
     mBandTolerances = { 5.0f, 5.0f, 5.0f, 5.0f };
 
-    // Initialize power matrix for photodetector analysis
+    // Initialize power data storage for photodetector analysis
     if (mEnablePhotodetectorAnalysis)
     {
-        mPowerMatrix.clear();
-        mPowerMatrix.resize(mWavelengthBinCount, std::vector<float>(mAngleBinCount, 0.0f));
-        mTotalAccumulatedPower = 0.0f;
+        initializePowerData();
     }
 
     // Create compute pass
@@ -332,9 +325,8 @@ Properties IncomingLightPowerPass::getProperties() const
     props["enablePhotodetectorAnalysis"] = mEnablePhotodetectorAnalysis;
     props["detectorArea"] = mDetectorArea;
     props["sourceSolidAngle"] = mSourceSolidAngle;
-    props["wavelengthBinCount"] = mWavelengthBinCount;
-    props["angleBinCount"] = mAngleBinCount;
-    props["powerMatrixExportPath"] = mPowerMatrixExportPath;
+    props["maxDataPoints"] = mMaxDataPoints;
+    props["powerDataExportPath"] = mPowerDataExportPath;
     return props;
 }
 
@@ -567,9 +559,9 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     var["gDebugCalculation"] = pDebugCalculation;
 
     // Bind classification buffer for photodetector analysis
-    if (mEnablePhotodetectorAnalysis && mpClassificationBuffer)
-    {
-        var["gClassificationBuffer"] = mpClassificationBuffer;
+            if (mEnablePhotodetectorAnalysis && mpPowerDataBuffer)
+        {
+            var["gPowerDataBuffer"] = mpPowerDataBuffer;
     }
 
     // Execute the compute pass
@@ -796,12 +788,12 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
         }
     }
 
-    // Add pixel area scale control
-    auto pixelAreaGroup = widget.group("Pixel Area Adjustment", true);
-    if (pixelAreaGroup)
+    // Add area scale control
+    auto areaGroup = widget.group("Area Scale Control", true);
+    if (areaGroup)
     {
-        changed |= widget.slider("Pixel Area Scale", mPixelAreaScale, 1.0f, 10000.0f);
-        widget.tooltip("Scales the calculated pixel area to make power values more visible.\nDefault: 1000.0");
+        changed |= widget.slider("Area Scale Factor", mPixelAreaScale, 1.0f, 10000.0f);
+        widget.tooltip("Scales the area used for power calculation.\nArea is used directly without dividing by pixel count.\nFor PD mode: scales gDetectorArea. For camera mode: scales computed sensor area.");
     }
 
     auto filterGroup = widget.group("Wavelength Filter", true);
@@ -964,8 +956,8 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
             changed = true;
             if (mEnablePhotodetectorAnalysis)
             {
-                initializePowerMatrix();
-                logInfo("Photodetector analysis enabled - matrix initialized");
+                initializePowerData();
+                logInfo("Photodetector analysis enabled - data storage initialized");
             }
             else
             {
@@ -975,26 +967,26 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
 
         if (mEnablePhotodetectorAnalysis)
         {
-            // Enhanced matrix information display
-            const float matrixSizeKB = (mWavelengthBinCount * mAngleBinCount * sizeof(float)) / 1024.0f;
-            widget.text(fmt::format("Matrix Size: {}x{} ({:.1f}KB/144KB limit)",
-                                   mWavelengthBinCount, mAngleBinCount, matrixSizeKB));
+            // Data storage information display
+            const float dataSizeMB = (mPowerDataPoints.size() * sizeof(PowerDataPoint)) / (1024.0f * 1024.0f);
+            widget.text(fmt::format("Data Points: {} / {} ({:.2f}MB)",
+                                   mPowerDataPoints.size(), mMaxDataPoints, dataSizeMB));
             
-            // Color-coded status indicator
-            if (matrixSizeKB > 150.0f)
+            // Storage status indicator
+            if (mPowerDataPoints.size() >= mMaxDataPoints)
             {
-                widget.text("WARNING: Matrix size exceeds recommended limit", true);
+                widget.text("WARNING: Maximum data points reached", true);
             }
-            else if (mWavelengthBinCount == 400 && mAngleBinCount == 90)
+            else
             {
-                widget.text("Status: Task 4 compliant (400x90 matrix)");
+                widget.text("Status: Ready for data collection");
             }
 
-            // Enhanced power status display with error detection
+            // Power status display with error detection
             if (mTotalAccumulatedPower == 0.666f)
             {
                 widget.text("Status: ERROR - Check console for details", true);
-                widget.text("Error Recovery: Try resetting matrix or restarting analysis");
+                widget.text("Error Recovery: Try resetting data or restarting analysis");
             }
             else if (mTotalAccumulatedPower == 0.0f)
             {
@@ -1047,43 +1039,27 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
                 }
             }
 
-            // Fixed binning parameters display (Task 4 specification)
-            auto binningGroup = widget.group("Binning Configuration (Task 4 Spec)", false);
-            if (binningGroup)
+            // Data collection settings
+            auto settingsGroup = widget.group("Data Collection Settings", false);
+            if (settingsGroup)
             {
-                widget.text("Wavelength Range: 380-780nm (1nm precision)");
-                widget.text("Angle Range: 0-90° (1° precision)");
-                widget.text(fmt::format("Actual Bins: {} wavelength × {} angle", 
-                           mWavelengthBinCount, mAngleBinCount));
+                changed |= widget.slider("Max Data Points", mMaxDataPoints, 10000u, 2000000u);
+                widget.tooltip("Maximum number of data points to store in memory");
                 
-                // Compliance check
-                if (mWavelengthBinCount == 400 && mAngleBinCount == 90)
-                {
-                    widget.text("✓ Task 4 Compliant Configuration");
-                }
-                else
-                {
-                    widget.text("⚠ Non-standard configuration", true);
-                    if (widget.button("Reset to Task 4 Spec"))
-                    {
-                        mWavelengthBinCount = 400;
-                        mAngleBinCount = 90;
-                        initializePowerMatrix();
-                        changed = true;
-                    }
-                }
+                widget.text("Direct storage: angle-wavelength-power triplets");
+                widget.text("No binning - full precision data retention");
             }
 
-            // Enhanced matrix operations with better feedback
-            auto operationsGroup = widget.group("Matrix Operations", true);
+            // Data operations with better feedback
+            auto operationsGroup = widget.group("Data Operations", true);
             if (operationsGroup)
             {
-                if (widget.button("Reset Matrix"))
+                if (widget.button("Reset Data"))
                 {
-                    resetPowerMatrix();
+                    resetPowerData();
                     if (mTotalAccumulatedPower != 0.666f)
                     {
-                        widget.text("Matrix reset successful");
+                        widget.text("Data reset successful");
                     }
                 }
                 widget.tooltip("Clear all accumulated power data and reset counters");
@@ -1091,13 +1067,13 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
                 static bool exportInProgress = false;
                 static std::string lastExportMessage = "";
                 
-                if (widget.button("Export Matrix"))
+                if (widget.button("Export Data"))
                 {
                     exportInProgress = true;
-                    bool success = exportPowerMatrix();
+                    bool success = exportPowerData();
                     if (success)
                     {
-                        lastExportMessage = "Matrix exported successfully!";
+                        lastExportMessage = "Data exported successfully!";
                     }
                     else
                     {
@@ -1105,7 +1081,7 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
                     }
                     exportInProgress = false;
                 }
-                widget.tooltip("Export power matrix as CSV file with metadata");
+                widget.tooltip("Export power data as CSV file with angle,wavelength,power columns");
                 
                 // Display export status
                 if (!lastExportMessage.empty())
@@ -1119,9 +1095,9 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
                     widget.text("Exporting...");
                 }
 
-                // Enhanced export path setting with validation
+                // Export path setting with validation
                 char pathBuffer[256];
-                strncpy_s(pathBuffer, mPowerMatrixExportPath.c_str(), sizeof(pathBuffer) - 1);
+                strncpy_s(pathBuffer, mPowerDataExportPath.c_str(), sizeof(pathBuffer) - 1);
                 pathBuffer[sizeof(pathBuffer) - 1] = '\0';
                 
                 if (widget.textbox("Export Path", pathBuffer, sizeof(pathBuffer)))
@@ -1136,12 +1112,12 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
                     {
                         newPath += "/";
                     }
-                    mPowerMatrixExportPath = newPath;
+                    mPowerDataExportPath = newPath;
                 }
-                widget.tooltip("Directory path for matrix export (auto-adds trailing slash)");
+                widget.tooltip("Directory path for data export (auto-adds trailing slash)");
                 
                 // Display current export path validation
-                if (!std::filesystem::exists(mPowerMatrixExportPath))
+                if (!std::filesystem::exists(mPowerDataExportPath))
                 {
                     widget.text("⚠ Export path does not exist", true);
                 }
@@ -1150,8 +1126,8 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
         else
         {
             // Display helpful information when disabled
-            widget.text("Enable analysis to access matrix management features");
-            widget.text("Task 4: 400×90 matrix (144KB) for wavelength-angle power classification");
+            widget.text("Enable analysis to access data collection features");
+            widget.text("Direct storage: Saves angle-wavelength-power triplets without binning");
         }
     }
 
@@ -2171,13 +2147,13 @@ void IncomingLightPowerPass::prepareResources(RenderContext* pRenderContext, con
     {
         uint32_t bufferSize = mFrameDim.x * mFrameDim.y;
 
-        // Create or resize classification buffer if needed
-        if (!mpClassificationBuffer || mpClassificationBuffer->getElementCount() != bufferSize)
+        // Create or resize power data buffer if needed
+        if (!mpPowerDataBuffer || mpPowerDataBuffer->getElementCount() != bufferSize)
         {
             try
             {
-                mpClassificationBuffer = mpDevice->createStructuredBuffer(
-                    sizeof(uint32_t) * 4,  // 4 uint32s per entry (wavelengthBin, angleBin, powerBits, validFlag)
+                mpPowerDataBuffer = mpDevice->createStructuredBuffer(
+                    sizeof(float) * 4,  // 4 floats per entry (incidentAngle, wavelength, power, validFlag)
                     bufferSize,
                     ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource,
                     MemoryType::DeviceLocal,
@@ -2185,12 +2161,12 @@ void IncomingLightPowerPass::prepareResources(RenderContext* pRenderContext, con
                     false     // Not constant buffer
                 );
 
-                logInfo("Created classification buffer with {} entries ({}KB)",
-                        bufferSize, (bufferSize * sizeof(uint32_t) * 4) / 1024);
+                logInfo("Created power data buffer with {} entries ({}KB)",
+                        bufferSize, (bufferSize * sizeof(float) * 4) / 1024);
             }
             catch (const std::exception& e)
             {
-                logError("Failed to create classification buffer: {}", e.what());
+                logError("Failed to create power data buffer: {}", e.what());
                 mTotalAccumulatedPower = 0.666f; // Error marker
                 mEnablePhotodetectorAnalysis = false; // Disable PD analysis on error
             }
@@ -2399,183 +2375,98 @@ void IncomingLightPowerPass::processBatchExport()
     }
 }
 
-// Photodetector matrix management functions implementation
-void IncomingLightPowerPass::initializePowerMatrix()
+// Photodetector data management functions implementation
+void IncomingLightPowerPass::initializePowerData()
 {
     try
     {
-        // Enforce strict matrix size as per task 4 requirements
-        const uint32_t requiredWavelengthBins = 400; // 380-780nm, 1nm precision
-        const uint32_t requiredAngleBins = 90;        // 0-90deg, 1deg precision
+        // Clear existing data points
+        mPowerDataPoints.clear();
+        mPowerDataPoints.reserve(mMaxDataPoints);
         
-        // Validate and enforce correct matrix dimensions
-        if (mWavelengthBinCount != requiredWavelengthBins)
-        {
-            logWarning("Wavelength bin count adjusted from {} to {} for task 4 compliance", 
-                      mWavelengthBinCount, requiredWavelengthBins);
-            mWavelengthBinCount = requiredWavelengthBins;
-        }
-        
-        if (mAngleBinCount != requiredAngleBins)
-        {
-            logWarning("Angle bin count adjusted from {} to {} for task 4 compliance", 
-                      mAngleBinCount, requiredAngleBins);
-            mAngleBinCount = requiredAngleBins;
-        }
-        
-        // Calculate expected memory usage
-        const uint32_t expectedMemoryKB = (mWavelengthBinCount * mAngleBinCount * sizeof(float)) / 1024;
-        const uint32_t maxAllowedMemoryKB = 200; // Safety margin above 144KB
-        
-        if (expectedMemoryKB > maxAllowedMemoryKB)
-        {
-            logError("Matrix size {}x{} would use {}KB, exceeding {}KB limit", 
-                    mWavelengthBinCount, mAngleBinCount, expectedMemoryKB, maxAllowedMemoryKB);
-            mTotalAccumulatedPower = 0.666f; // Error marker
-            return;
-        }
-        
-        // Clear and initialize matrix with validated dimensions
-        mPowerMatrix.clear();
-        mPowerMatrix.resize(mWavelengthBinCount, std::vector<float>(mAngleBinCount, 0.0f));
+        // Reset total accumulated power
         mTotalAccumulatedPower = 0.0f;
         
-        // Validate successful initialization
-        if (mPowerMatrix.size() != mWavelengthBinCount || 
-            mPowerMatrix[0].size() != mAngleBinCount)
+        // Calculate expected memory usage
+        const float expectedMemoryMB = (mMaxDataPoints * sizeof(PowerDataPoint)) / (1024.0f * 1024.0f);
+        const float maxAllowedMemoryMB = 100.0f; // Reasonable limit for data storage
+        
+        if (expectedMemoryMB > maxAllowedMemoryMB)
         {
-            logError("Matrix initialization failed: expected {}x{}, got {}x{}",
-                    mWavelengthBinCount, mAngleBinCount, 
-                    mPowerMatrix.size(), mPowerMatrix.empty() ? 0 : mPowerMatrix[0].size());
+            logError("Data storage size {} would use {:.2f}MB, exceeding {:.2f}MB limit", 
+                    mMaxDataPoints, expectedMemoryMB, maxAllowedMemoryMB);
             mTotalAccumulatedPower = 0.666f; // Error marker
             return;
         }
         
-        logInfo("Power matrix initialized with size {}x{} ({}KB) - Task 4 compliant",
-                mWavelengthBinCount, mAngleBinCount, expectedMemoryKB);
+        logInfo("Power data storage initialized: max {} data points ({:.2f}MB)", 
+                mMaxDataPoints, expectedMemoryMB);
     }
     catch (const std::exception& e)
     {
-        logError("Failed to initialize power matrix: {}", e.what());
+        logError("Failed to initialize power data storage: {}", e.what());
         mTotalAccumulatedPower = 0.666f; // Error marker
         
-        // Attempt recovery with minimal matrix
+        // Attempt recovery with smaller data size
         try 
         {
-            mPowerMatrix.clear();
-            mWavelengthBinCount = 400;
-            mAngleBinCount = 90;
-            mPowerMatrix.resize(mWavelengthBinCount, std::vector<float>(mAngleBinCount, 0.0f));
-            logInfo("Recovery matrix initialized with default 400x90 dimensions");
+            mPowerDataPoints.clear();
+            mMaxDataPoints = 100000; // Fallback to smaller size
+            mPowerDataPoints.reserve(mMaxDataPoints);
+            logInfo("Recovery data storage initialized with {} data points", mMaxDataPoints);
         }
         catch (...)
         {
-            logError("Matrix recovery failed - PD analysis will be disabled");
+            logError("Data storage recovery failed - PD analysis will be disabled");
             mEnablePhotodetectorAnalysis = false;
         }
     }
 }
 
-void IncomingLightPowerPass::resetPowerMatrix()
+void IncomingLightPowerPass::resetPowerData()
 {
     try
     {
-        // Validate matrix exists and has correct dimensions
-        if (mPowerMatrix.empty())
-        {
-            logWarning("Attempting to reset empty matrix - initializing new matrix");
-            initializePowerMatrix();
-            return;
-        }
-        
-        // Validate dimensions before reset
-        if (mPowerMatrix.size() != mWavelengthBinCount || 
-            mPowerMatrix[0].size() != mAngleBinCount)
-        {
-            logWarning("Matrix dimensions mismatch during reset: expected {}x{}, got {}x{}",
-                      mWavelengthBinCount, mAngleBinCount,
-                      mPowerMatrix.size(), mPowerMatrix[0].size());
-            // Reinitialize with correct dimensions
-            initializePowerMatrix();
-            return;
-        }
-        
-        // Efficient matrix reset - clear all values to zero
-        for (auto& row : mPowerMatrix)
-        {
-            std::fill(row.begin(), row.end(), 0.0f);
-        }
+        // Clear all data points
+        mPowerDataPoints.clear();
         
         // Reset accumulation counter
         mTotalAccumulatedPower = 0.0f;
         
-        // Verify reset was successful
-        bool resetSuccess = true;
-        for (const auto& row : mPowerMatrix)
-        {
-            for (float value : row)
-            {
-                if (value != 0.0f)
-                {
-                    resetSuccess = false;
-                    break;
-                }
-            }
-            if (!resetSuccess) break;
-        }
-        
-        if (!resetSuccess)
-        {
-            logError("Matrix reset verification failed - some values remain non-zero");
-            mTotalAccumulatedPower = 0.666f; // Error marker
-        }
-        else
-        {
-            logInfo("Power matrix reset successfully - all {}x{} elements cleared", 
-                   mWavelengthBinCount, mAngleBinCount);
-        }
+        logInfo("Power data reset successfully - {} data points cleared", 
+               mPowerDataPoints.size());
     }
     catch (const std::exception& e)
     {
-        logError("Failed to reset power matrix: {}", e.what());
+        logError("Failed to reset power data: {}", e.what());
         mTotalAccumulatedPower = 0.666f; // Error marker
         
         // Attempt recovery by reinitializing
         try
         {
-            initializePowerMatrix();
-            logInfo("Matrix reset recovery successful");
+            initializePowerData();
+            logInfo("Power data reset recovery successful");
         }
         catch (...)
         {
-            logError("Matrix reset recovery failed - PD analysis may be unstable");
+            logError("Power data reset recovery failed - PD analysis may be unstable");
         }
     }
 }
 
-bool IncomingLightPowerPass::exportPowerMatrix()
+bool IncomingLightPowerPass::exportPowerData()
 {
     try
     {
-        // Validate matrix before export
-        if (mPowerMatrix.empty() || mPowerMatrix[0].empty())
+        // Validate data before export
+        if (mPowerDataPoints.empty())
         {
-            logError("Power matrix is empty, cannot export");
-            return false;
-        }
-
-        // Validate dimensions
-        if (mPowerMatrix.size() != mWavelengthBinCount ||
-            mPowerMatrix[0].size() != mAngleBinCount)
-        {
-            logError("Power matrix dimensions mismatch: expected {}x{}, got {}x{}",
-                     mWavelengthBinCount, mAngleBinCount,
-                     mPowerMatrix.size(), mPowerMatrix[0].size());
+            logError("Power data is empty, cannot export");
             return false;
         }
 
         // Generate filename with timestamp
-        std::string filename = mPowerMatrixExportPath + "power_matrix_" +
+        std::string filename = mPowerDataExportPath + "power_data_" +
                               std::to_string(std::time(nullptr)) + ".csv";
 
         std::ofstream file(filename);
@@ -2586,25 +2477,22 @@ bool IncomingLightPowerPass::exportPowerMatrix()
         }
 
         // Write CSV header
-        file << "# Photodetector Power Matrix Export\n";
-        file << "# Wavelength bins: " << mWavelengthBinCount << " (380-780nm, 1nm precision)\n";
-        file << "# Angle bins: " << mAngleBinCount << " (0-90deg, 1deg precision)\n";
+        file << "# Photodetector Power Data Export\n";
+        file << "# Data points: " << mPowerDataPoints.size() << "\n";
         file << "# Total accumulated power: " << mTotalAccumulatedPower << " W\n";
-        file << "# Matrix format: rows=wavelength bins, columns=angle bins\n";
+        file << "# Format: incident_angle_deg,wavelength_nm,power_w\n";
+        file << "incident_angle,wavelength,power\n";
 
-        // Write matrix data
-        for (uint32_t i = 0; i < mWavelengthBinCount; i++)
+        // Write data points
+        for (const auto& dataPoint : mPowerDataPoints)
         {
-            for (uint32_t j = 0; j < mAngleBinCount; j++)
-            {
-                file << mPowerMatrix[i][j];
-                if (j < mAngleBinCount - 1) file << ",";
-            }
-            file << "\n";
+            file << dataPoint.incidentAngle << ","
+                 << dataPoint.wavelength << ","
+                 << dataPoint.power << "\n";
         }
 
         file.close();
-        logInfo("Power matrix exported to {}", filename);
+        logInfo("Power data exported to {} ({} data points)", filename, mPowerDataPoints.size());
         return true;
     }
     catch (const std::exception& e)
@@ -2616,59 +2504,51 @@ bool IncomingLightPowerPass::exportPowerMatrix()
 
 void IncomingLightPowerPass::accumulatePowerData(RenderContext* pRenderContext)
 {
-    if (!mEnablePhotodetectorAnalysis || !mpClassificationBuffer)
+    if (!mEnablePhotodetectorAnalysis || !mpPowerDataBuffer)
     {
         return;
     }
 
     try
     {
-        // Ensure matrix is initialized
-        if (mPowerMatrix.empty())
+        // Check if we're approaching data point limit
+        if (mPowerDataPoints.size() >= mMaxDataPoints)
         {
-            initializePowerMatrix();
-        }
-
-        // Validate matrix dimensions
-        if (mPowerMatrix.size() != mWavelengthBinCount ||
-            mPowerMatrix[0].size() != mAngleBinCount)
-        {
-            logError("Power matrix dimensions mismatch during accumulation");
-            mTotalAccumulatedPower = 0.666f; // Error marker
+            logWarning("Maximum data points reached ({}), skipping accumulation", mMaxDataPoints);
             return;
         }
 
-        // Read back classification data from GPU buffer
+        // Read back power data from GPU buffer
         uint32_t bufferSize = mFrameDim.x * mFrameDim.y;
-        uint32_t totalBytes = bufferSize * sizeof(uint32_t) * 4; // 4 uint32s per entry
+        uint32_t totalBytes = bufferSize * sizeof(float) * 4; // 4 floats per entry
 
         // Create ReadBack staging buffer if it doesn't exist or is too small
-        if (!mpClassificationStagingBuffer || mpClassificationStagingBuffer->getSize() < totalBytes)
+        if (!mpPowerDataStagingBuffer || mpPowerDataStagingBuffer->getSize() < totalBytes)
         {
-            mpClassificationStagingBuffer = mpDevice->createBuffer(
+            mpPowerDataStagingBuffer = mpDevice->createBuffer(
                 totalBytes,
                 ResourceBindFlags::None,
                 MemoryType::ReadBack
             );
-            if (!mpClassificationStagingBuffer)
+            if (!mpPowerDataStagingBuffer)
             {
-                logError("Failed to create classification staging buffer");
+                logError("Failed to create power data staging buffer");
                 mTotalAccumulatedPower = 0.666f; // Error marker
                 return;
             }
         }
 
         // Copy data from GPU buffer to staging buffer
-        pRenderContext->copyResource(mpClassificationStagingBuffer.get(), mpClassificationBuffer.get());
+        pRenderContext->copyResource(mpPowerDataStagingBuffer.get(), mpPowerDataBuffer.get());
         
         // Wait for copy to complete
         pRenderContext->submit(true);
 
         // Map staging buffer for reading
-        const uint32_t* pData = static_cast<const uint32_t*>(mpClassificationStagingBuffer->map());
+        const float* pData = static_cast<const float*>(mpPowerDataStagingBuffer->map());
         if (!pData)
         {
-            logError("Failed to map classification staging buffer for reading");
+            logError("Failed to map power data staging buffer for reading");
             mTotalAccumulatedPower = 0.666f; // Error marker
             return;
         }
@@ -2676,38 +2556,31 @@ void IncomingLightPowerPass::accumulatePowerData(RenderContext* pRenderContext)
         uint32_t validPixels = 0;
         uint32_t invalidPixels = 0;
 
-        // Process each pixel's classification data
-        for (uint32_t i = 0; i < bufferSize; i++)
+        // Process each pixel's power data
+        for (uint32_t i = 0; i < bufferSize && mPowerDataPoints.size() < mMaxDataPoints; i++)
         {
-            uint32_t dataOffset = i * 4; // 4 uint32s per entry
+            uint32_t dataOffset = i * 4; // 4 floats per entry
             
-            uint32_t wavelengthBin = pData[dataOffset + 0];
-            uint32_t angleBin = pData[dataOffset + 1];
-            uint32_t powerBits = pData[dataOffset + 2];
-            uint32_t validFlag = pData[dataOffset + 3];
+            float incidentAngle = pData[dataOffset + 0];
+            float wavelength = pData[dataOffset + 1];
+            float power = pData[dataOffset + 2];
+            float validFlag = pData[dataOffset + 3];
 
             // Check if this pixel has valid data
-            if (validFlag != 0 && 
-                wavelengthBin != 0xFFFFFFFF && 
-                angleBin != 0xFFFFFFFF &&
-                wavelengthBin < mWavelengthBinCount &&
-                angleBin < mAngleBinCount)
+            if (validFlag > 0.5f && 
+                incidentAngle >= 0.0f && incidentAngle <= 90.0f &&
+                wavelength >= 300.0f && wavelength <= 1000.0f &&
+                power >= 0.0f && power < 1e6f)
             {
-                // Convert power bits back to float
-                float power = *reinterpret_cast<const float*>(&powerBits);
+                // Store direct data point
+                PowerDataPoint dataPoint;
+                dataPoint.incidentAngle = incidentAngle;
+                dataPoint.wavelength = wavelength;
+                dataPoint.power = power;
                 
-                // Validate power value
-                if (power >= 0.0f && power < 1e6f) // Reasonable power range
-                {
-                    // Accumulate to matrix
-                    mPowerMatrix[wavelengthBin][angleBin] += power;
-                    mTotalAccumulatedPower += power;
-                    validPixels++;
-                }
-                else
-                {
-                    invalidPixels++;
-                }
+                mPowerDataPoints.push_back(dataPoint);
+                mTotalAccumulatedPower += power;
+                validPixels++;
             }
             else
             {
@@ -2716,13 +2589,13 @@ void IncomingLightPowerPass::accumulatePowerData(RenderContext* pRenderContext)
         }
 
         // Unmap staging buffer
-        mpClassificationStagingBuffer->unmap();
+        mpPowerDataStagingBuffer->unmap();
 
         // Log accumulation results for debugging
         if (mDebugMode && (mFrameCount % mDebugLogFrequency == 0))
         {
-            logInfo("Power data accumulation: {} valid pixels, {} invalid pixels, total power: {:.6f} W",
-                    validPixels, invalidPixels, mTotalAccumulatedPower);
+            logInfo("Power data accumulation: {} valid pixels, {} invalid pixels, {} total data points, {:.6f} W total power",
+                    validPixels, invalidPixels, mPowerDataPoints.size(), mTotalAccumulatedPower);
         }
 
         // Check for errors

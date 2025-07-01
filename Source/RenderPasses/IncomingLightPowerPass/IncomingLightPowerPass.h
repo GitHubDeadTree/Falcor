@@ -89,14 +89,13 @@ public:
     float getSourceSolidAngle() const { return mSourceSolidAngle; }
     void setSourceSolidAngle(float angle) { mSourceSolidAngle = angle; }
 
-    uint32_t getWavelengthBinCount() const { return mWavelengthBinCount; }
-    void setWavelengthBinCount(uint32_t count) { mWavelengthBinCount = count; }
-
-    uint32_t getAngleBinCount() const { return mAngleBinCount; }
-    void setAngleBinCount(uint32_t count) { mAngleBinCount = count; }
-
-    const std::string& getPowerMatrixExportPath() const { return mPowerMatrixExportPath; }
-    void setPowerMatrixExportPath(const std::string& path) { mPowerMatrixExportPath = path; }
+    const std::string& getPowerDataExportPath() const { return mPowerDataExportPath; }
+    void setPowerDataExportPath(const std::string& path) { mPowerDataExportPath = path; }
+    
+    uint32_t getMaxDataPoints() const { return mMaxDataPoints; }
+    void setMaxDataPoints(uint32_t maxPoints) { mMaxDataPoints = maxPoints; }
+    
+    uint32_t getCurrentDataPointCount() const { return static_cast<uint32_t>(mPowerDataPoints.size()); }
 
     float getTotalAccumulatedPower() const { return mTotalAccumulatedPower; }
 
@@ -180,7 +179,7 @@ private:
     std::vector<float> mBandWavelengths; ///< Specific wavelength bands to filter
     std::vector<float> mBandTolerances;  ///< Tolerances for specific wavelength bands
     static constexpr float kDefaultTolerance = 5.0f; ///< Default tolerance for specific bands in nm
-    float mPixelAreaScale = 1.0f;     ///< Scale factor for pixel area calculation
+    float mPixelAreaScale = 1.0f;     ///< Scale factor for area calculation (no pixel division)
 
     // UI variables
     bool mEnabled = true;                ///< Enable/disable the pass
@@ -227,14 +226,18 @@ private:
     float mSourceSolidAngle = 1e-3f;              ///< Source solid angle in sr
     uint32_t mCurrentNumRays = 0;                 ///< Current number of rays
 
-    // High precision binning parameters (1nm and 1deg precision)
-    uint32_t mWavelengthBinCount = 400;           ///< Number of wavelength bins
-    uint32_t mAngleBinCount = 90;                 ///< Number of angle bins
-
-    // Power matrix storage
-    std::vector<std::vector<float>> mPowerMatrix; ///< Power matrix [wavelength][angle]
+    // Simplified data storage - direct angle-wavelength-power triplets
+    struct PowerDataPoint
+    {
+        float incidentAngle;  ///< Incident angle in degrees
+        float wavelength;     ///< Wavelength in nanometers
+        float power;          ///< Power in watts
+    };
+    
+    std::vector<PowerDataPoint> mPowerDataPoints; ///< Direct storage of power data points
     float mTotalAccumulatedPower = 0.0f;          ///< Total accumulated power
-    std::string mPowerMatrixExportPath = "./";    ///< Export path
+    std::string mPowerDataExportPath = "./";      ///< Export path
+    uint32_t mMaxDataPoints = 1000000;            ///< Maximum number of data points to store
 
     // Statistics and export-related members
     PowerStatistics mPowerStats;              ///< Statistics about the calculated power
@@ -252,8 +255,8 @@ private:
     std::vector<float> mWavelengthReadbackBuffer; ///< Buffer for wavelength readback
 
     // Photodetector analysis buffers
-    ref<Buffer> mpClassificationBuffer;        ///< GPU buffer for binning results
-    ref<Buffer> mpClassificationStagingBuffer; ///< ReadBack staging buffer for CPU access
+    ref<Buffer> mpPowerDataBuffer;        ///< GPU buffer for power data
+    ref<Buffer> mpPowerDataStagingBuffer; ///< ReadBack staging buffer for CPU access
 
     void prepareResources(RenderContext* pRenderContext, const RenderData& renderData);
     void prepareProgram();
@@ -294,8 +297,8 @@ private:
     void setViewpointPosition(uint32_t viewpointIndex);
 
     // Photodetector matrix management functions
-    void initializePowerMatrix();
-    void resetPowerMatrix();
-    bool exportPowerMatrix();
+    void initializePowerData();
+    void resetPowerData();
+    bool exportPowerData();
     void accumulatePowerData(RenderContext* pRenderContext);
 };

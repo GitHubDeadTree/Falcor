@@ -1,0 +1,38 @@
+{
+  "metadata": {
+    "filterMode": 0,
+    "minWavelength": 450,
+    "maxWavelength": 495,
+    "useVisibleSpectrumOnly": true,
+    "invertFilter": false
+  },
+  "powerStatistics": {
+    "totalPower": [0.152024, 0.0999888, 0.059825],
+    "averagePower": [2.60673e-05, 1.71448e-05, 1.02581e-05],
+    "peakPower": [0.0321496, 0.0135454, 0.00502721]
+  },
+  "pixelStatistics": {
+    "pixelCount": 5832,
+    "totalPixels": 1713798,
+    "passRate": 0.340297
+  },
+  "wavelengthDistribution": {
+    "450-460": 534,
+    "460-470": 72,
+    "470-480": 188,
+    "480-490": 42,
+    "520-530": 252,
+    "530-540": 481,
+    "540-550": 453,
+    "550-560": 277,
+    "560-570": 1,
+    "620-630": 427,
+    "630-640": 212,
+    "640-650": 532,
+    "650-660": 539,
+    "660-670": 727,
+    "670-680": 483,
+    "680-690": 534,
+    "690-700": 78
+  }
+}
