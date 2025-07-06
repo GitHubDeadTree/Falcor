@@ -86,6 +86,7 @@ cbuffer PerFrameCB
     float3 gCameraPosition;            ///< Camera position in world space
     float3 gCameraTarget;              ///< Camera target in world space
     float gCameraFocalLength;          ///< Camera focal length
+    float gCameraFovY;                 ///< Camera field of view Y in radians
 }
 
 // Remove Scene parameter block - we don't need it anymore
@@ -226,9 +227,12 @@ float3 computeRayDirection(uint2 pixel, uint2 dimensions)
     return rayDir;
 }
 
-// Compute area for power measurement (used directly, not divided by pixel count)
+// Compute area for power measurement - returns SINGLE pixel area
 float computePixelArea(uint2 dimensions)
 {
+    // If no valid dimensions, return error identifier value
+    if (dimensions.x == 0 || dimensions.y == 0) return 0.666e-8f;
+
     // For photodetector analysis, use the physical detector area directly
     if (gEnablePhotodetectorAnalysis)
     {
@@ -236,22 +240,26 @@ float computePixelArea(uint2 dimensions)
         return gDetectorArea;
     }
 
-    // For camera-based analysis, calculate total sensor area (photosensitive plane)
-    // Calculate FOV and aspect ratio
-    float fovY = gCameraFocalLength;  // Camera focal length in Falcor units
+    // For camera-based analysis, calculate SINGLE pixel area
+    // Get camera parameters to calculate total sensor area
+    float fovY = gCameraFovY; // Use FoV Y parameter from cbuffer
     float aspectRatio = float(dimensions.x) / float(dimensions.y);
+    float distToImagePlane = 1.0f; // Standard normalized distance
 
-    // Use normalized distance to image plane
-    float distToImagePlane = 1.0f;
-
-    // Calculate total sensor dimensions (entire photosensitive plane)
+    // Calculate total sensor dimensions
     float sensorHeight = 2.0f * distToImagePlane * tan(fovY * 0.5f);
     float sensorWidth = sensorHeight * aspectRatio;
-
-    // Return total sensor area (photosensitive plane physical area) with scaling factor
-    // The scaling factor adjusts for units and visualization purposes
     float totalSensorArea = sensorWidth * sensorHeight;
-    return totalSensorArea * gPixelAreaScale;
+
+    // Calculate SINGLE pixel area by dividing total area by pixel count
+    float pixelArea = totalSensorArea / (float(dimensions.x) * float(dimensions.y));
+
+    // Validate calculation result
+    if (pixelArea <= 0.0f || !isfinite(pixelArea)) {
+        return 0.666e-8f; // 0.666 square micrometers, obvious error identifier
+    }
+
+    return pixelArea * gPixelAreaScale; // gPixelAreaScale for unit adjustment
 }
 
 // Define a debug structure to store cosTheta computation details
@@ -374,7 +382,7 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
         }
     }
 
-    // Calculate area directly without dividing by pixel count
+    // Calculate SINGLE pixel area
     float area = computePixelArea(dimensions);
     pixelArea = area; // For backward compatibility with debug code
 
@@ -427,8 +435,13 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
     }
 
     // Calculate power using the formula: Power = Radiance * Area * cos(θ)
-    // Use the full area directly without dividing by pixel count
+    // Use single pixel area for proper per-pixel power calculation
     float3 power = safeRadiance * area * cosTheta;
+
+    // Validate power calculation result
+    if (any(!isfinite(power)) || any(power < 0.0f)) {
+        return float4(0.666f, 0.666f, 0.666f, wavelength);
+    }
 
     // Return power with the wavelength
     return float4(power, wavelength > 0.0f ? wavelength : 550.0f);

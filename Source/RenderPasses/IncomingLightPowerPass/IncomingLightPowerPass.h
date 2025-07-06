@@ -91,10 +91,10 @@ public:
 
     const std::string& getPowerDataExportPath() const { return mPowerDataExportPath; }
     void setPowerDataExportPath(const std::string& path) { mPowerDataExportPath = path; }
-    
+
     uint32_t getMaxDataPoints() const { return mMaxDataPoints; }
     void setMaxDataPoints(uint32_t maxPoints) { mMaxDataPoints = maxPoints; }
-    
+
     uint32_t getCurrentDataPointCount() const { return static_cast<uint32_t>(mPowerDataPoints.size()); }
 
     float getTotalAccumulatedPower() const { return mTotalAccumulatedPower; }
@@ -219,6 +219,7 @@ private:
     static const std::string kCameraPosition;        ///< Camera position parameter name
     static const std::string kCameraTarget;          ///< Camera target parameter name
     static const std::string kCameraFocalLength;     ///< Camera focal length parameter name
+    static const std::string kCameraFovY;            ///< Camera field of view Y parameter name
 
     // Photodetector analysis parameters
     bool mEnablePhotodetectorAnalysis = false;    ///< Enable PD power matrix analysis
@@ -233,7 +234,7 @@ private:
         float wavelength;     ///< Wavelength in nanometers
         float power;          ///< Power in watts
     };
-    
+
     std::vector<PowerDataPoint> mPowerDataPoints; ///< Direct storage of power data points
     float mTotalAccumulatedPower = 0.0f;          ///< Total accumulated power
     std::string mPowerDataExportPath = "./";      ///< Export path
@@ -271,6 +272,11 @@ private:
     void renderExportUI(Gui::Widgets& widget);
     std::string getFormattedStatistics() const;
     void resetStatistics();
+
+    // New helper functions for physics-based power calculation
+    float calculateSinglePixelArea() const;
+    float calculateTotalDetectorArea() const;
+    void logCameraAndAreaInfo() const;
 
     // Batch export state
     bool mBatchExportActive = false;
