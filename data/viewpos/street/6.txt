@@ -1,0 +1,9 @@
+
+3, Transform(position = float3(13.8186, 0.873383, 0.71975), target = float3(12.9525, 0.873383, 1.21975), up = float3(0, 1, 0))
+6, Transform(position = float3(12.888, 0.873383, -0.496122), target = float3(12.0218, 0.873383, 0.003878), up = float3(0, 1, 0))
+9, Transform(position = float3(-2.91377, 0.873383, 2.12844), target = float3(-3.91377, 0.873383, 2.12844), up = float3(0, 1, 0))
+12, Transform(position = float3(-2.85944, 0.873383, 0.45525), target = float3(-3.85944, 0.873383, 0.45525), up = float3(0, 1, 0))
+15, Transform(position = float3(2.94572, 0.873383, -7.09045), target = float3(3.94572, 0.873383, -7.09045), up = float3(0, 1, 0))
+18, Transform(position = float3(3.16195, 0.873383, -5.29308), target = float3(4.16195, 0.873383, -5.29308), up = float3(0, 1, 0))
+21, Transform(position = float3(-6.65157, 0.873383, -7.78604), target = float3(-8.65157, 0.873383, -7.78604), up = float3(0, 1, 0))
+24, Transform(position = float3(-6.32474, 0.873383, -5.87402), target = float3(-7.65157, 0.873383, -6.78604), up = float3(0, 1, 0))
