@@ -1021,8 +1021,20 @@ struct PathTracer
 
             // Accumulate emitted radiance weighted by path throughput and MIS weight.
             float3 emission = misWeight * bsdfProperties.emission;
-            addToPathContribution(path, emission);
 
+            // Apply distance attenuation for direct hits to maintain consistency with NEE sampling.
+            // For indirect lighting via NEE, distance attenuation is already included in the Li calculation.
+            float hitDistance = length(sd.posW - path.origin);
+            float distSqr = hitDistance * hitDistance;
+
+            // Apply 1/r^2 attenuation to match the physics of NEE sampling
+            // Guard against division by very small distances to avoid numerical issues
+            float3 attenuatedEmission = emission / max(distSqr, 1e-6f);
+
+            addToPathContribution(path, attenuatedEmission);
+
+            // Note: attenuatedEmission for wavelength updates should use the original emission
+            // as the wavelength calculation is based on the intrinsic emission properties
             attenuatedEmission = path.thp * emission;
 
             // Update path wavelength based on LED light emission

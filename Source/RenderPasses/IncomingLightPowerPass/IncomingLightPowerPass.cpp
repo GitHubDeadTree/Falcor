@@ -1780,12 +1780,11 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
         resetStatistics();
     }
 
-    // PHYSICS-BASED CALCULATION: Step 1 - Calculate average radiance from valid pixels
-    float3 totalRadiance = float3(0.0f);
-    float totalCosTheta = 0.0f;
+    // DIRECT POWER ACCUMULATION: Simply sum up all valid pixel powers
+    float3 totalPower = float3(0.0f);
     uint32_t validPixelCount = 0;
 
-    // First pass: Analyze pixel power data to extract radiance information
+    // Direct accumulation of pixel power values
     for (uint32_t i = 0; i < mPowerReadbackBuffer.size(); i++)
     {
         const float4& pixelPowerData = mPowerReadbackBuffer[i];
@@ -1799,21 +1798,9 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
                 continue;
             }
 
-            // Extract radiance from pixel power using physics formula
-            // P_pixel = Radiance × PixelArea × cos(θ)
-            // Therefore: Radiance = P_pixel / (PixelArea × cos(θ))
-            float singlePixelArea = calculateSinglePixelArea();
-            if (singlePixelArea > 0.0f)
-            {
-                // Simplified assumption: cos(θ) ≈ 1 for most pixels (near normal incidence)
-                // In practice, this could be improved by reading back ray direction texture
-                float assumedCosTheta = 1.0f;
-                float3 radiance = pixelPowerData.xyz() / (singlePixelArea * assumedCosTheta);
-
-                totalRadiance += radiance;
-                totalCosTheta += assumedCosTheta;
-                validPixelCount++;
-            }
+            // Direct accumulation: P_total = Σ P_pixel
+            totalPower += pixelPowerData.xyz();
+            validPixelCount++;
         }
     }
 
@@ -1824,23 +1811,7 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
         return;
     }
 
-    // PHYSICS-BASED CALCULATION: Step 2 - Calculate average radiance E_total
-    float3 averageRadiance = totalRadiance / float(validPixelCount);
-    float averageCosTheta = totalCosTheta / float(validPixelCount);
-
-    // PHYSICS-BASED CALCULATION: Step 3 - Calculate total sensor area A_sensor
-    float totalSensorArea = calculateTotalDetectorArea();
-    if (totalSensorArea <= 0.0f)
-    {
-        logError("Invalid total sensor area calculation");
-        mPowerStats.totalPower[0] = mPowerStats.totalPower[1] = mPowerStats.totalPower[2] = 0.666f;
-        return;
-    }
-
-    // PHYSICS-BASED CALCULATION: Step 4 - Apply physics formula P_total = E_total × A_sensor × cos(θ)
-    float3 totalPower = averageRadiance * totalSensorArea * averageCosTheta;
-
-    // Update statistics with physics-based calculation results
+    // Update statistics with direct power accumulation results
     mPowerStats.totalPower[0] = totalPower.x;
     mPowerStats.totalPower[1] = totalPower.y;
     mPowerStats.totalPower[2] = totalPower.z;
@@ -1886,19 +1857,16 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
         mAccumulatedFrames++;
     }
 
-    // Debug output for physics-based calculation (only in debug mode and at intervals)
+    // Debug output for direct power accumulation (only in debug mode and at intervals)
     if (shouldLogThisFrame)
     {
         float percentage = mPowerReadbackBuffer.size() > 0 ?
                         100.0f * validPixelCount / mPowerReadbackBuffer.size() : 0.0f;
 
-        logInfo(fmt::format("Image sensor physics-based power calculation:"));
+        logInfo(fmt::format("Image sensor direct power accumulation:"));
         logInfo(fmt::format("  Valid pixels: {0} out of {1} ({2:.2f}%)",
                            validPixelCount, mPowerReadbackBuffer.size(), percentage));
-        logInfo(fmt::format("  Average radiance: [{:.6e}, {:.6e}, {:.6e}] W/(m²·sr)",
-                           averageRadiance.x, averageRadiance.y, averageRadiance.z));
-        logInfo(fmt::format("  Total sensor area: {:.6e} m²", totalSensorArea));
-        logInfo(fmt::format("  Average cos(θ): {:.4f}", averageCosTheta));
+        logInfo(fmt::format("  Calculation method: Direct pixel power summation"));
         logInfo(fmt::format("  Total power: [{:.6e}, {:.6e}, {:.6e}] W",
                            totalPower.x, totalPower.y, totalPower.z));
         logInfo(fmt::format("  Peak pixel power: [{:.6e}, {:.6e}, {:.6e}] W",
@@ -1924,7 +1892,7 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
         {
             uint64_t endTime = getTimeInMicroseconds();
             float calculationTime = (endTime - startTime) / 1000.0f; // Convert to milliseconds
-            logInfo(fmt::format("Physics-based statistics calculation completed in {0:.2f} ms", calculationTime));
+            logInfo(fmt::format("Direct power accumulation completed in {0:.2f} ms", calculationTime));
         }
     }
 
