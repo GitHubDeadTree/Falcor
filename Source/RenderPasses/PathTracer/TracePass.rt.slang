@@ -63,6 +63,12 @@ struct PathPayload
     InteriorList interiorList;  ///< Interior list. Keeping track of a stack of materials with medium properties. The size depends on the config (4B/item).
     SampleGenerator sg;         ///< Sample generator state. Typically 4-16B.
 
+    // === Vertex collection fields for path vertex transmission ===
+    uint2 compressedVertices[7];  ///< Compressed vertex coordinates, each vertex 6 bytes, total 42 bytes
+    float3 basePosition;          ///< Base position (camera position) for relative coordinates, 12 bytes
+    uint vertexCount;             ///< Vertex count, 4 bytes
+    // Total vertex data addition: 58 bytes
+
     static PathPayload pack(const PathState path)
     {
         PathPayload p = {};
@@ -114,6 +120,23 @@ struct PathPayload
         p.guideData = path.guideData;
         p.interiorList = path.interiorList;
         p.sg = path.sg;
+
+        // === Pack vertex collection data ===
+        p.basePosition = path.pathBasePosition;
+        p.vertexCount = path.pathVertexCount;
+
+        // Compress and pack vertex array
+        for (uint i = 0; i < 7; i++)
+        {
+            if (i < path.pathVertexCount)
+            {
+                p.compressedVertices[i] = compressVertex(path.pathVertices[i], path.pathBasePosition);
+            }
+            else
+            {
+                p.compressedVertices[i] = uint2(0, 0); // Empty vertex marker
+            }
+        }
 
         return p;
     }
@@ -188,6 +211,26 @@ struct PathPayload
         path.guideData = p.guideData;
         path.interiorList = p.interiorList;
         path.sg = p.sg;
+
+        // === Unpack vertex collection data ===
+        path.pathBasePosition = p.basePosition;
+        path.pathVertexCount = p.vertexCount;
+
+        // Decompress vertex array
+        for (uint i = 0; i < min(p.vertexCount, 7u); i++)
+        {
+            path.pathVertices[i] = decompressVertex(p.compressedVertices[i], p.basePosition);
+        }
+
+        // Validate unpacked vertex data
+        if (path.pathVertexCount > 7)
+        {
+            // Clamp vertex count to maximum allowed
+            path.pathVertexCount = 7;
+        }
+
+        // Enable vertex collection if we have valid data
+        path.vertexCollectionEnabled = (path.pathVertexCount > 0);
 
         return path;
     }
@@ -643,6 +686,26 @@ void scatterTriangleAnyHit(inout PathPayload payload : SV_RayPayload, BuiltInTri
 [shader("closesthit")]
 void scatterTriangleClosestHit(inout PathPayload payload : SV_RayPayload, BuiltInTriangleIntersectionAttributes attribs : SV_IntersectionAttributes)
 {
+    // === Unpack path state to collect new vertex ===
+    PathState path = PathPayload::unpack(payload);
+
+    // === Calculate and add new hit vertex ===
+    float hitT = RayTCurrent();
+    Ray ray = Ray(WorldRayOrigin(), WorldRayDirection(), 0.f, kRayTMax);
+    float3 newHitPos = ray.origin + ray.dir * hitT;
+
+    // Validate new vertex coordinates
+    if (!isnan(newHitPos.x) && !isnan(newHitPos.y) && !isnan(newHitPos.z))
+    {
+        path.addPathVertex(newHitPos);
+    }
+
+    // Update path scene length for vertex calculation
+    path.sceneLength += hitT;
+
+    // === Re-pack updated path state ===
+    payload = PathPayload::pack(path);
+
 #if USE_SER
     gScheduler.handleHit(payload);
 #else
@@ -673,6 +736,26 @@ void displacedTriangleMeshIntersection()
 [shader("closesthit")]
 void scatterDisplacedTriangleMeshClosestHit(inout PathPayload payload, DisplacedTriangleMeshIntersector::Attribs attribs)
 {
+    // === Unpack path state to collect new vertex ===
+    PathState path = PathPayload::unpack(payload);
+
+    // === Calculate and add new hit vertex ===
+    float hitT = RayTCurrent();
+    Ray ray = Ray(WorldRayOrigin(), WorldRayDirection(), 0.f, kRayTMax);
+    float3 newHitPos = ray.origin + ray.dir * hitT;
+
+    // Validate new vertex coordinates
+    if (!isnan(newHitPos.x) && !isnan(newHitPos.y) && !isnan(newHitPos.z))
+    {
+        path.addPathVertex(newHitPos);
+    }
+
+    // Update path scene length for vertex calculation
+    path.sceneLength += hitT;
+
+    // === Re-pack updated path state ===
+    payload = PathPayload::pack(path);
+
 #if USE_SER
     gScheduler.handleHit(payload);
 #else
@@ -704,6 +787,26 @@ void curveIntersection()
 [shader("closesthit")]
 void scatterCurveClosestHit(inout PathPayload payload, CurveIntersector::Attribs attribs)
 {
+    // === Unpack path state to collect new vertex ===
+    PathState path = PathPayload::unpack(payload);
+
+    // === Calculate and add new hit vertex ===
+    float hitT = RayTCurrent();
+    Ray ray = Ray(WorldRayOrigin(), WorldRayDirection(), 0.f, kRayTMax);
+    float3 newHitPos = ray.origin + ray.dir * hitT;
+
+    // Validate new vertex coordinates
+    if (!isnan(newHitPos.x) && !isnan(newHitPos.y) && !isnan(newHitPos.z))
+    {
+        path.addPathVertex(newHitPos);
+    }
+
+    // Update path scene length for vertex calculation
+    path.sceneLength += hitT;
+
+    // === Re-pack updated path state ===
+    payload = PathPayload::pack(path);
+
 #if USE_SER
     gScheduler.handleHit(payload);
 #else
@@ -735,6 +838,26 @@ void sdfGridIntersection()
 [shader("closesthit")]
 void scatterSdfGridClosestHit(inout PathPayload payload, SDFGridHitData sdfGridHitData)
 {
+    // === Unpack path state to collect new vertex ===
+    PathState path = PathPayload::unpack(payload);
+
+    // === Calculate and add new hit vertex ===
+    float hitT = RayTCurrent();
+    Ray ray = Ray(WorldRayOrigin(), WorldRayDirection(), 0.f, kRayTMax);
+    float3 newHitPos = ray.origin + ray.dir * hitT;
+
+    // Validate new vertex coordinates
+    if (!isnan(newHitPos.x) && !isnan(newHitPos.y) && !isnan(newHitPos.z))
+    {
+        path.addPathVertex(newHitPos);
+    }
+
+    // Update path scene length for vertex calculation
+    path.sceneLength += hitT;
+
+    // === Re-pack updated path state ===
+    payload = PathPayload::pack(path);
+
 #if USE_SER
     gScheduler.handleHit(payload);
 #else

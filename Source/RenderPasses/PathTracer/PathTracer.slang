@@ -315,6 +315,9 @@ struct PathTracer
         // Store initial direction for irradiance calculation
         path.initialDir = cameraRay.dir;
 
+        // === Initialize vertex collection ===
+        path.initPathVertexCollection(cameraRay.origin);
+
         // Create sample generator.
         const uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
         path.sg = SampleGenerator(pixel, params.seed * maxSpp + path.getSampleIdx());
@@ -327,6 +330,13 @@ struct PathTracer
         {
             path.setHit(hit);
             path.setVertexIndex(1);
+
+            // === Add first hit vertex ===
+            float3 hitPos = path.origin + path.dir * path.sceneLength;
+            if (!isnan(hitPos.x) && !isnan(hitPos.y) && !isnan(hitPos.z))
+            {
+                path.addPathVertex(hitPos);
+            }
         }
     }
 

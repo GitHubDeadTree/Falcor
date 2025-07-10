@@ -47,6 +47,11 @@ struct CIRPathData
     uint pixelY;                ///< Pixel Y coordinate
     uint pathIndex;             ///< Unique index identifier for this path
 
+    // New vertex-related fields for path vertex collection feature
+    uint2 compressedVertices[7];  ///< Compressed vertex coordinates, each vertex uses 6 bytes
+    uint vertexCount;             ///< Actual number of vertices in the path
+    float3 basePosition;          ///< Base position (camera position) for relative coordinate calculation
+
     /** Validate that all CIR parameters are within expected physical ranges.
         MODIFIED: Relaxed emittedPower validation to allow zero values for better data preservation.
         \return True if all parameters are valid, false otherwise.
@@ -76,3 +81,60 @@ struct CIRPathData
         // 移除所有其他字段的处理逻辑
     }
 };
+
+/** Compress a 3D vertex coordinate using 16-bit float precision and relative positioning.
+    Uses relative coordinates from a base position to maximize precision within 16-bit float range.
+
+    \param vertex World space vertex position to compress
+    \param basePosition Base position (typically camera position) for relative coordinate calculation
+    \return Compressed vertex data packed into uint2 (6 bytes total)
+*/
+uint2 compressVertex(float3 vertex, float3 basePosition)
+{
+    // Calculate relative coordinates to maximize 16-bit float precision
+    float3 relative = vertex - basePosition;
+
+    // Check coordinate range to prevent 16-bit float overflow
+    const float MAX_RANGE = 65000.0f; // Safe range for 16-bit floating point numbers
+    if (length(relative) > MAX_RANGE)
+    {
+        // If exceeds range, scale to fit within safe bounds
+        relative = normalize(relative) * MAX_RANGE;
+    }
+
+    // Compress using 16-bit floating point representation
+    uint x16 = f32tof16(relative.x);
+    uint y16 = f32tof16(relative.y);
+    uint z16 = f32tof16(relative.z);
+
+    // Pack coordinates into uint2 structure (6 bytes total)
+    uint2 compressed;
+    compressed.x = (y16 << 16) | x16;  // Pack x and y into first uint
+    compressed.y = z16;                // Store z in second uint (only lower 16 bits used)
+    return compressed;
+}
+
+/** Decompress a vertex coordinate from compressed uint2 format back to world space.
+
+    \param compressed Compressed vertex data from compressVertex function
+    \param basePosition Base position used during compression
+    \return Decompressed world space vertex position, or error indicator (0.666, 0.666, 0.666) if invalid
+*/
+float3 decompressVertex(uint2 compressed, float3 basePosition)
+{
+    // Extract relative coordinates from compressed format
+    float x = f16tof32(compressed.x & 0xFFFF);      // Extract lower 16 bits
+    float y = f16tof32(compressed.x >> 16);         // Extract upper 16 bits
+    float z = f16tof32(compressed.y & 0xFFFF);      // Extract z from second uint
+
+    // Validate decompression results for NaN or infinite values
+    if (isnan(x) || isnan(y) || isnan(z) || isinf(x) || isinf(y) || isinf(z))
+    {
+        // Return error indicator position for invalid data
+        return float3(0.666, 0.666, 0.666);
+    }
+
+    // Convert relative coordinates back to world space
+    float3 relative = float3(x, y, z);
+    return basePosition + relative;
+}
