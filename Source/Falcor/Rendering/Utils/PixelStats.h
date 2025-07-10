@@ -99,7 +99,7 @@ namespace Falcor
                         emissionAngle >= minAngle && emissionAngle <= maxAngle &&
                         receptionAngle >= minAngle && receptionAngle <= maxAngle &&
                         reflectanceProduct >= minReflectance && reflectanceProduct <= maxReflectance &&
-                        emittedPower > minEmittedPower && emittedPower <= maxEmittedPower;
+                        emittedPower >= minEmittedPower && emittedPower <= maxEmittedPower;
 
             return valid;
         }
@@ -359,14 +359,21 @@ namespace Falcor
         CIRExportFormat                     mCIRExportFormat = CIRExportFormat::CSV; ///< Selected CIR export format.
 
         // CIR filtering parameters (configurable via UI)
-        float                               mCIRMinPathLength = 1.0f;        ///< Minimum path length for CIR filtering (meters)
-        float                               mCIRMaxPathLength = 200.0f;      ///< Maximum path length for CIR filtering (meters)
+        bool                                mCIRFilteringEnabled = true;     ///< Enable CIR data filtering
+        float                               mCIRMinPathLength = 0.1f;        ///< Minimum path length for CIR filtering (meters)
+        float                               mCIRMaxPathLength = 1000.0f;     ///< Maximum path length for CIR filtering (meters)
         float                               mCIRMinEmittedPower = 0.0f;      ///< Minimum emitted power for CIR filtering (watts)
-        float                               mCIRMaxEmittedPower = 10000.0f;  ///< Maximum emitted power for CIR filtering (watts)
+        float                               mCIRMaxEmittedPower = 100000.0f; ///< Maximum emitted power for CIR filtering (watts)
         float                               mCIRMinAngle = 0.0f;             ///< Minimum angle for CIR filtering (radians)
         float                               mCIRMaxAngle = 3.14159f;         ///< Maximum angle for CIR filtering (radians)
         float                               mCIRMinReflectance = 0.0f;       ///< Minimum reflectance for CIR filtering
         float                               mCIRMaxReflectance = 1.0f;       ///< Maximum reflectance for CIR filtering
+
+        // CIR logging control parameters
+        bool                                mCIRDetailedLogging = false;     ///< Enable detailed CIR filtering logs
+        uint32_t                            mCIRLogFrameCounter = 0;         ///< Frame counter for limiting log frequency
+        uint32_t                            mCIRLogInterval = 10;            ///< Log output interval (frames)
+        uint32_t                            mLastCIRFilteredCount = 0;       ///< Last filtered count for change detection
 
         // Scene reference for CIR parameter computation
         ref<Scene>                          mpScene;                        ///< Scene reference for static parameter calculation.

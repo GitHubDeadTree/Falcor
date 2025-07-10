@@ -321,7 +321,16 @@ namespace Falcor
 
                 // CIR raw data controls
                 copyCIRRawDataToCPU();
-                widget.text(fmt::format("Collected CIR paths: {}", mCollectedCIRPaths));
+
+                // Display filtered CIR paths count with original count for reference
+                uint32_t filteredCount = mCIRRawDataValid ? static_cast<uint32_t>(mCIRRawData.size()) : 0;
+                if (mCIRFilteringEnabled) {
+                    widget.text(fmt::format("CIR paths: {} filtered / {} collected", filteredCount, mCollectedCIRPaths));
+                    widget.tooltip("Shows filtered CIR paths count vs total collected paths");
+                } else {
+                    widget.text(fmt::format("CIR paths: {} collected (filtering disabled)", filteredCount));
+                    widget.tooltip("Shows collected CIR paths count (no filtering applied)");
+                }
 
                 if (widget.button("Export CIR Data (Auto-timestamped)"))
                 {
@@ -338,90 +347,111 @@ namespace Falcor
                 // Add CIR filtering parameters UI
                 if (auto group = widget.group("CIR Filtering Parameters")) {
                     try {
-                        // Path Length Filtering
-                        group.text("Path Length Filtering:");
-                        if (group.var("Min Path Length (m)", mCIRMinPathLength, 0.1f, 500.0f, 0.1f)) {
-                            // Ensure min <= max
-                            if (mCIRMinPathLength > mCIRMaxPathLength) {
-                                mCIRMaxPathLength = mCIRMinPathLength;
-                                logWarning("CIR UI: Adjusted max path length to match min value");
-                            }
-                        }
-                        group.tooltip("Minimum path length for CIR data filtering (meters)");
+                        // Filtering Enable/Disable Switch
+                        group.checkbox("Enable CIR Filtering", mCIRFilteringEnabled);
+                        group.tooltip("Enable or disable CIR data filtering. When disabled, all collected paths are included.");
 
-                        if (group.var("Max Path Length (m)", mCIRMaxPathLength, 1.0f, 10000.0f, 1.0f)) {
-                            // Ensure max >= min
-                            if (mCIRMaxPathLength < mCIRMinPathLength) {
-                                mCIRMinPathLength = mCIRMaxPathLength;
-                                logWarning("CIR UI: Adjusted min path length to match max value");
+                        if (mCIRFilteringEnabled) {
+                            // Path Length Filtering
+                            group.text("Path Length Filtering:");
+                            if (group.var("Min Path Length (m)", mCIRMinPathLength, 0.1f, 500.0f, 0.1f)) {
+                                // Ensure min <= max
+                                if (mCIRMinPathLength > mCIRMaxPathLength) {
+                                    mCIRMaxPathLength = mCIRMinPathLength;
+                                    logWarning("CIR UI: Adjusted max path length to match min value");
+                                }
                             }
-                        }
-                        group.tooltip("Maximum path length for CIR data filtering (meters)");
+                            group.tooltip("Minimum path length for CIR data filtering (meters)");
 
-                        // Emitted Power Filtering
-                        group.text("Emitted Power Filtering:");
-                        if (group.var("Min Emitted Power (W)", mCIRMinEmittedPower, 0.0f, 100.0f, 0.01f)) {
-                            if (mCIRMinEmittedPower > mCIRMaxEmittedPower) {
-                                mCIRMaxEmittedPower = mCIRMinEmittedPower;
-                                logWarning("CIR UI: Adjusted max emitted power to match min value");
+                            if (group.var("Max Path Length (m)", mCIRMaxPathLength, 1.0f, 10000.0f, 1.0f)) {
+                                // Ensure max >= min
+                                if (mCIRMaxPathLength < mCIRMinPathLength) {
+                                    mCIRMinPathLength = mCIRMaxPathLength;
+                                    logWarning("CIR UI: Adjusted min path length to match max value");
+                                }
                             }
-                        }
-                        group.tooltip("Minimum emitted power for CIR data filtering (watts)");
+                            group.tooltip("Maximum path length for CIR data filtering (meters)");
 
-                        if (group.var("Max Emitted Power (W)", mCIRMaxEmittedPower, 1.0f, 50000.0f, 1.0f)) {
-                            if (mCIRMaxEmittedPower < mCIRMinEmittedPower) {
-                                mCIRMinEmittedPower = mCIRMaxEmittedPower;
-                                logWarning("CIR UI: Adjusted min emitted power to match max value");
+                            // Emitted Power Filtering
+                            group.text("Emitted Power Filtering:");
+                            if (group.var("Min Emitted Power (W)", mCIRMinEmittedPower, 0.0f, 100.0f, 0.01f)) {
+                                if (mCIRMinEmittedPower > mCIRMaxEmittedPower) {
+                                    mCIRMaxEmittedPower = mCIRMinEmittedPower;
+                                    logWarning("CIR UI: Adjusted max emitted power to match min value");
+                                }
                             }
-                        }
-                        group.tooltip("Maximum emitted power for CIR data filtering (watts)");
+                            group.tooltip("Minimum emitted power for CIR data filtering (watts)");
 
-                        // Angle Filtering
-                        group.text("Angle Filtering:");
-                        if (group.var("Min Angle (rad)", mCIRMinAngle, 0.0f, 3.14159f, 0.01f)) {
-                            if (mCIRMinAngle > mCIRMaxAngle) {
-                                mCIRMaxAngle = mCIRMinAngle;
-                                logWarning("CIR UI: Adjusted max angle to match min value");
+                            if (group.var("Max Emitted Power (W)", mCIRMaxEmittedPower, 1.0f, 50000.0f, 1.0f)) {
+                                if (mCIRMaxEmittedPower < mCIRMinEmittedPower) {
+                                    mCIRMinEmittedPower = mCIRMaxEmittedPower;
+                                    logWarning("CIR UI: Adjusted min emitted power to match max value");
+                                }
                             }
-                        }
-                        group.tooltip("Minimum angle for emission/reception filtering (radians)");
+                            group.tooltip("Maximum emitted power for CIR data filtering (watts)");
 
-                        if (group.var("Max Angle (rad)", mCIRMaxAngle, 0.0f, 3.14159f, 0.01f)) {
-                            if (mCIRMaxAngle < mCIRMinAngle) {
-                                mCIRMinAngle = mCIRMaxAngle;
-                                logWarning("CIR UI: Adjusted min angle to match max value");
+                            // Angle Filtering
+                            group.text("Angle Filtering:");
+                            if (group.var("Min Angle (rad)", mCIRMinAngle, 0.0f, 3.14159f, 0.01f)) {
+                                if (mCIRMinAngle > mCIRMaxAngle) {
+                                    mCIRMaxAngle = mCIRMinAngle;
+                                    logWarning("CIR UI: Adjusted max angle to match min value");
+                                }
                             }
-                        }
-                        group.tooltip("Maximum angle for emission/reception filtering (radians)");
+                            group.tooltip("Minimum angle for emission/reception filtering (radians)");
 
-                        // Reflectance Filtering
-                        group.text("Reflectance Filtering:");
-                        if (group.var("Min Reflectance", mCIRMinReflectance, 0.0f, 1.0f, 0.01f)) {
-                            if (mCIRMinReflectance > mCIRMaxReflectance) {
-                                mCIRMaxReflectance = mCIRMinReflectance;
-                                logWarning("CIR UI: Adjusted max reflectance to match min value");
+                            if (group.var("Max Angle (rad)", mCIRMaxAngle, 0.0f, 3.14159f, 0.01f)) {
+                                if (mCIRMaxAngle < mCIRMinAngle) {
+                                    mCIRMinAngle = mCIRMaxAngle;
+                                    logWarning("CIR UI: Adjusted min angle to match max value");
+                                }
                             }
-                        }
-                        group.tooltip("Minimum reflectance product for CIR data filtering");
+                            group.tooltip("Maximum angle for emission/reception filtering (radians)");
 
-                        if (group.var("Max Reflectance", mCIRMaxReflectance, 0.0f, 1.0f, 0.01f)) {
-                            if (mCIRMaxReflectance < mCIRMinReflectance) {
-                                mCIRMinReflectance = mCIRMaxReflectance;
-                                logWarning("CIR UI: Adjusted min reflectance to match max value");
+                            // Reflectance Filtering
+                            group.text("Reflectance Filtering:");
+                            if (group.var("Min Reflectance", mCIRMinReflectance, 0.0f, 1.0f, 0.01f)) {
+                                if (mCIRMinReflectance > mCIRMaxReflectance) {
+                                    mCIRMaxReflectance = mCIRMinReflectance;
+                                    logWarning("CIR UI: Adjusted max reflectance to match min value");
+                                }
                             }
-                        }
-                        group.tooltip("Maximum reflectance product for CIR data filtering");
+                            group.tooltip("Minimum reflectance product for CIR data filtering");
 
-                        // Reset Button
+                            if (group.var("Max Reflectance", mCIRMaxReflectance, 0.0f, 1.0f, 0.01f)) {
+                                if (mCIRMaxReflectance < mCIRMinReflectance) {
+                                    mCIRMinReflectance = mCIRMaxReflectance;
+                                    logWarning("CIR UI: Adjusted min reflectance to match max value");
+                                }
+                            }
+                            group.tooltip("Maximum reflectance product for CIR data filtering");
+
+                                                    // Reset Button
                         if (group.button("Reset to Defaults")) {
-                            mCIRMinPathLength = 1.0f;
-                            mCIRMaxPathLength = 200.0f;
+                            mCIRFilteringEnabled = true;
+                            mCIRMinPathLength = 0.1f;
+                            mCIRMaxPathLength = 1000.0f;
                             mCIRMinEmittedPower = 0.0f;
-                            mCIRMaxEmittedPower = 10000.0f;
+                            mCIRMaxEmittedPower = 100000.0f;
                             mCIRMinAngle = 0.0f;
                             mCIRMaxAngle = 3.14159f;
                             mCIRMinReflectance = 0.0f;
                             mCIRMaxReflectance = 1.0f;
+                        }
+
+                        // Logging Control Section
+                        group.text("Logging Control:");
+                        group.checkbox("Enable Detailed CIR Logging", mCIRDetailedLogging);
+                        group.tooltip("Enable detailed CIR filtering logs with frequency control");
+
+                        if (mCIRDetailedLogging) {
+                            if (group.var("Log Interval (frames)", mCIRLogInterval, 1u, 100u, 1u)) {
+                                // Ensure reasonable interval
+                                if (mCIRLogInterval < 1) mCIRLogInterval = 1;
+                                if (mCIRLogInterval > 100) mCIRLogInterval = 100;
+                            }
+                            group.tooltip("How often to output detailed CIR filtering logs (in frames)");
+                        }
                         }
                     } catch (const std::exception& e) {
                         logError("CIR UI rendering error: " + std::string(e.what()));
@@ -652,10 +682,16 @@ namespace Falcor
                             {
                                 try {
                                     // Apply CPU-side filtering with configurable criteria
-                                    if (rawData[i].isValid(mCIRMinPathLength, mCIRMaxPathLength,
-                                                          mCIRMinEmittedPower, mCIRMaxEmittedPower,
-                                                          mCIRMinAngle, mCIRMaxAngle,
-                                                          mCIRMinReflectance, mCIRMaxReflectance))
+                                    bool shouldInclude = true;
+                                    if (mCIRFilteringEnabled)
+                                    {
+                                        shouldInclude = rawData[i].isValid(mCIRMinPathLength, mCIRMaxPathLength,
+                                                                          mCIRMinEmittedPower, mCIRMaxEmittedPower,
+                                                                          mCIRMinAngle, mCIRMaxAngle,
+                                                                          mCIRMinReflectance, mCIRMaxReflectance);
+                                    }
+
+                                    if (shouldInclude)
                                     {
                                         mCIRRawData.push_back(rawData[i]);
                                         filteredCount++;
@@ -667,20 +703,56 @@ namespace Falcor
                                 }
                             }
 
-                            // Log filtering statistics
+                            // Log filtering statistics with frequency control
                             if (totalCount > 0) {
                                 float filterRatio = static_cast<float>(filteredCount) / totalCount;
-                                if (filterRatio < 0.1f) {
-                                    logWarning("CIR filtering: Only {:.1%} of data passed filters ({}/{})",
-                                              filterRatio, filteredCount, totalCount);
+
+                                // Increment frame counter
+                                mCIRLogFrameCounter++;
+
+                                // Check if we should log this frame (based on interval and change detection)
+                                bool shouldLog = mCIRDetailedLogging &&
+                                               (mCIRLogFrameCounter % mCIRLogInterval == 0 ||
+                                                filteredCount != mLastCIRFilteredCount);
+
+                                if (shouldLog) {
+                                    // Log detailed filtering information
+                                    logInfo("CIR filtering details:");
+                                    logInfo("  - Filtering enabled: {}", mCIRFilteringEnabled ? "Yes" : "No");
+                                    logInfo("  - Path length range: [{:.2f}, {:.2f}] m", mCIRMinPathLength, mCIRMaxPathLength);
+                                    logInfo("  - Emitted power range: [{:.2e}, {:.2e}] W", mCIRMinEmittedPower, mCIRMaxEmittedPower);
+                                    logInfo("  - Angle range: [{:.3f}, {:.3f}] rad", mCIRMinAngle, mCIRMaxAngle);
+                                    logInfo("  - Reflectance range: [{:.3f}, {:.3f}]", mCIRMinReflectance, mCIRMaxReflectance);
+                                    logInfo("  - Total paths collected: {}", totalCount);
+                                    logInfo("  - Paths after filtering: {}", filteredCount);
+
+                                    if (filterRatio < 0.1f) {
+                                        logWarning("CIR filtering: Only {:.1f}% of data passed filters ({}/{})",
+                                                  filterRatio * 100.0f, filteredCount, totalCount);
+                                    }
+
+                                    // Update last filtered count for change detection
+                                    mLastCIRFilteredCount = filteredCount;
                                 }
                             }
 
                             mpCIRRawDataReadback->unmap();
                             mCIRRawDataValid = true;
 
-                            logInfo("PixelStats: CPU-filtered {} valid CIR paths out of {} total (configurable criteria)",
-                                   filteredCount, totalCount);
+                            // Only log summary if detailed logging is enabled and it's time to log
+                            if (mCIRDetailedLogging && (mCIRLogFrameCounter % mCIRLogInterval == 0 || filteredCount != mLastCIRFilteredCount))
+                            {
+                                if (mCIRFilteringEnabled)
+                                {
+                                    logInfo("PixelStats: CPU-filtered {} valid CIR paths out of {} total (configurable criteria)",
+                                           filteredCount, totalCount);
+                                }
+                                else
+                                {
+                                    logInfo("PixelStats: Collected {} CIR paths (filtering disabled)",
+                                           filteredCount);
+                                }
+                            }
                         }
                     }
                     else
