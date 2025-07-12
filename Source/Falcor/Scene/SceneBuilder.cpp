@@ -30,6 +30,7 @@
 #include "Importer.h"
 #include "Curves/CurveConfig.h"
 #include "Material/StandardMaterial.h"
+#include "Lights/LED_Emissive.h"
 #include "Utils/Logger.h"
 #include "Utils/Math/Common.h"
 #include "Utils/Image/TextureAnalyzer.h"
@@ -997,6 +998,16 @@ namespace Falcor
         mSceneData.lights.push_back(pLight);
         FALCOR_ASSERT(mSceneData.lights.size() <= std::numeric_limits<uint32_t>::max());
         return LightID(mSceneData.lights.size() - 1);
+    }
+
+    void SceneBuilder::addLEDEmissive(const ref<LED_Emissive>& pLEDEmissive)
+    {
+        FALCOR_CHECK(pLEDEmissive != nullptr, "'pLEDEmissive' is missing");
+
+        // Add to SceneData container for UI management
+        mSceneData.ledEmissives.push_back(pLEDEmissive);
+
+        logInfo("SceneBuilder::addLEDEmissive - Added LED_Emissive '" + pLEDEmissive->getName() + "' to scene data");
     }
 
     void SceneBuilder::loadLightProfile(const std::string& filename, bool normalize)
@@ -2990,7 +3001,8 @@ namespace Falcor
         sceneBuilder.def("addVolume", &SceneBuilder::addGridVolume, "gridVolume"_a, "nodeID"_a = NodeID::kInvalidID); // PYTHONDEPRECATED
         sceneBuilder.def("getGridVolume", &SceneBuilder::getGridVolume, "name"_a);
         sceneBuilder.def("getVolume", &SceneBuilder::getGridVolume, "name"_a); // PYTHONDEPRECATED
-        sceneBuilder.def("addLight", &SceneBuilder::addLight, "light"_a);
+        sceneBuilder.def("addLight", &SceneBuilder::addLight, "light"_a)
+        .def("addLEDEmissive", &SceneBuilder::addLEDEmissive, "ledEmissive"_a);
         sceneBuilder.def("getLight", &SceneBuilder::getLight, "name"_a);
         sceneBuilder.def("loadLightProfile", &SceneBuilder::loadLightProfile, "filename"_a, "normalize"_a = true);
         sceneBuilder.def("addCamera", &SceneBuilder::addCamera, "camera"_a);

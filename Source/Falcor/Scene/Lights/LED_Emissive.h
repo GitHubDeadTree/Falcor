@@ -1,5 +1,4 @@
 #pragma once
-#include "Scene/Scene.h"
 #include "Scene/Material/Material.h"
 #include "Scene/Lights/LightProfile.h"
 #include "Scene/SceneIDs.h"
@@ -13,6 +12,8 @@
 
 namespace Falcor {
 
+// Forward declarations
+class Scene;
 class SceneBuilder;
 
 enum class LED_EmissiveShape {
@@ -50,6 +51,7 @@ public:
     void renderUI(Gui::Widgets& widget);
 
     // Property getters
+    std::string getName() const { return mName; }
     LED_EmissiveShape getShape() const { return mShape; }
     float3 getPosition() const { return mPosition; }
     float3 getScaling() const { return mScaling; }
