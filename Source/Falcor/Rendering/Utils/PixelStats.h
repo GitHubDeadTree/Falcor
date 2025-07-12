@@ -361,8 +361,8 @@ namespace Falcor
         // CIR filtering parameters (configurable via UI)
         bool                                mCIRFilteringEnabled = true;     ///< Enable CIR data filtering
         float                               mCIRMinPathLength = 0.1f;        ///< Minimum path length for CIR filtering (meters)
-        float                               mCIRMaxPathLength = 1000.0f;     ///< Maximum path length for CIR filtering (meters)
-        float                               mCIRMinEmittedPower = 0.0f;      ///< Minimum emitted power for CIR filtering (watts)
+        float                               mCIRMaxPathLength = 80.0f;       ///< Maximum path length for CIR filtering (meters)
+        float                               mCIRMinEmittedPower = 1e-14f;    ///< Minimum emitted power for CIR filtering (watts)
         float                               mCIRMaxEmittedPower = 100000.0f; ///< Maximum emitted power for CIR filtering (watts)
         float                               mCIRMinAngle = 0.0f;             ///< Minimum angle for CIR filtering (radians)
         float                               mCIRMaxAngle = 3.14159f;         ///< Maximum angle for CIR filtering (radians)
