@@ -969,7 +969,16 @@ struct PathTracer
         const IMaterialInstance mi = gScene.materials.getMaterialInstance(sd, lod, hints);
         BSDFProperties bsdfProperties = mi.getProperties(sd);
 
-                // === Update CIR data during path tracing ===
+        // CRITICAL FIX: Accumulate primary hit distance before CIR processing
+        // Primary hits bypass TracePass.rt.slang's handleHit function and go directly here
+        // This is essential for ReflectionCount=0 paths to have non-zero path length
+        if (isPrimaryHit)
+        {
+            float primaryHitDist = length(sd.posW - path.origin);
+            path.sceneLength += primaryHitDist;
+        }
+
+        // === Update CIR data during path tracing ===
         updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties);
 
         // Disable specular lobes if caustics are disabled and path already contains a diffuse vertex.
