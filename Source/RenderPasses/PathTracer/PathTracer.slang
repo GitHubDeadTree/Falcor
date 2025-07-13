@@ -969,16 +969,8 @@ struct PathTracer
         const IMaterialInstance mi = gScene.materials.getMaterialInstance(sd, lod, hints);
         BSDFProperties bsdfProperties = mi.getProperties(sd);
 
-        // === Update CIR data during path tracing ===
+                // === Update CIR data during path tracing ===
         updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties);
-
-        // If we hit an emissive surface, terminate the path immediately
-        // This prevents further bounce counting and maintains current reflection count
-        if (path.hitEmissiveSurface)
-        {
-            path.terminate();
-            return;
-        }
 
         // Disable specular lobes if caustics are disabled and path already contains a diffuse vertex.
         bool isSpecular = bsdfProperties.roughness <= params.specularRoughnessThreshold;
@@ -1058,6 +1050,27 @@ struct PathTracer
 
             // Update path wavelength based on emission color
             updatePathWavelength(path, attenuatedEmission);
+        }
+
+        // MODIFIED: Check for early termination after emissive calculation
+        // Only terminate if we hit an emissive surface AND have valid CIR data
+        // This ensures we collect meaningful path length, power, and reflection data
+        if (path.hitEmissiveSurface)
+        {
+#ifdef _PIXEL_STATS_ENABLED
+            // Check if we have sufficient data before terminating
+            bool hasValidPathLength = path.sceneLength > 0.0f;
+            bool hasValidPower = luminance(path.L) > 0.0f;
+            bool hasValidReflectionData = path.getBounces(BounceType::Diffuse) > 0 || path.getBounces(BounceType::Specular) > 0 || isPrimaryHit;
+
+            // Only terminate if we have meaningful data to record
+            if (hasValidPathLength && hasValidPower && hasValidReflectionData)
+            {
+                path.terminate();
+                return;
+            }
+            // If we don't have valid data, continue tracing to collect more information
+#endif
         }
 
         // Terminate after scatter ray on last vertex has been processed.
