@@ -972,6 +972,14 @@ struct PathTracer
         // === Update CIR data during path tracing ===
         updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties);
 
+        // If we hit an emissive surface, terminate the path immediately
+        // This prevents further bounce counting and maintains current reflection count
+        if (path.hitEmissiveSurface)
+        {
+            path.terminate();
+            return;
+        }
+
         // Disable specular lobes if caustics are disabled and path already contains a diffuse vertex.
         bool isSpecular = bsdfProperties.roughness <= params.specularRoughnessThreshold;
         if (kDisableCaustics && path.getBounces(BounceType::Diffuse) > 0 && isSpecular)
@@ -1368,12 +1376,12 @@ struct PathTracer
         \param[in] surfaceNormal Surface normal at hit point.
         \param[in] bsdfProperties BSDF properties for emission angle calculation.
     */
-    void updateCIRDataDuringTracing(inout PathState path, float3 surfaceNormal, BSDFProperties bsdfProperties)
+        void updateCIRDataDuringTracing(inout PathState path, float3 surfaceNormal, BSDFProperties bsdfProperties)
     {
         const uint vertexIndex = path.getVertexIndex();
         const bool isPrimaryHit = (vertexIndex == 1);
 
-        // Strategy 1: Check for emissive materials (LED modeled as emissive surfaces)
+                // Strategy 1: Check for emissive materials (LED modeled as emissive surfaces)
         if (any(bsdfProperties.emission > 0.0f))
         {
             path.hitEmissiveSurface = true;  // Set flag when hitting emissive surface

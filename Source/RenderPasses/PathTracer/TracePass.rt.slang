@@ -540,10 +540,8 @@ struct Scheduler
     {
         PathState path = PathPayload::unpack(payload);
         path.setHit(hit);
-        // Only skip path length update if:
-        // 1. We've already hit an emissive surface previously
-        // 2. AND we already have accumulated some path length
-        if (!(path.hitEmissiveSurface && path.sceneLength > 0.0f))
+        // Only update path length if we haven't hit an emissive surface
+        if (!path.hitEmissiveSurface)
         {
             path.sceneLength += hitT;
         }
@@ -700,8 +698,11 @@ void scatterTriangleClosestHit(inout PathPayload payload : SV_RayPayload, BuiltI
         path.addPathVertex(newHitPos);
     }
 
-    // Update path scene length for vertex calculation
-    path.sceneLength += hitT;
+    // Update path scene length for vertex calculation - only if not hit emissive surface
+    if (!path.hitEmissiveSurface)
+    {
+        path.sceneLength += hitT;
+    }
 
     // === Re-pack updated path state ===
     payload = PathPayload::pack(path);
@@ -750,8 +751,11 @@ void scatterDisplacedTriangleMeshClosestHit(inout PathPayload payload, Displaced
         path.addPathVertex(newHitPos);
     }
 
-    // Update path scene length for vertex calculation
-    path.sceneLength += hitT;
+    // Update path scene length for vertex calculation - only if not hit emissive surface
+    if (!path.hitEmissiveSurface)
+    {
+        path.sceneLength += hitT;
+    }
 
     // === Re-pack updated path state ===
     payload = PathPayload::pack(path);
@@ -801,8 +805,11 @@ void scatterCurveClosestHit(inout PathPayload payload, CurveIntersector::Attribs
         path.addPathVertex(newHitPos);
     }
 
-    // Update path scene length for vertex calculation
-    path.sceneLength += hitT;
+    // Update path scene length for vertex calculation - only if not hit emissive surface
+    if (!path.hitEmissiveSurface)
+    {
+        path.sceneLength += hitT;
+    }
 
     // === Re-pack updated path state ===
     payload = PathPayload::pack(path);
@@ -852,8 +859,11 @@ void scatterSdfGridClosestHit(inout PathPayload payload, SDFGridHitData sdfGridH
         path.addPathVertex(newHitPos);
     }
 
-    // Update path scene length for vertex calculation
-    path.sceneLength += hitT;
+    // Update path scene length for vertex calculation - only if not hit emissive surface
+    if (!path.hitEmissiveSurface)
+    {
+        path.sceneLength += hitT;
+    }
 
     // === Re-pack updated path state ===
     payload = PathPayload::pack(path);

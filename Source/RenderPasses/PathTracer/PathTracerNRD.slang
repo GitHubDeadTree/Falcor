@@ -66,6 +66,16 @@ extension PathTracer
         let mi = gScene.materials.getMaterialInstance(sd, lod, hints);
         let bsdfProperties = mi.getProperties(sd);
 
+        // === Update CIR data during path tracing ===
+        updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties);
+
+        // If we hit an emissive surface, terminate the path immediately
+        if (path.hitEmissiveSurface)
+        {
+            path.terminate();
+            return;
+        }
+
         // Query BSDF lobes.
         const uint lobeTypes = mi.getLobeTypes(sd);
         const bool hasDeltaLobes = (lobeTypes & (uint)LobeType::Delta) != 0;
@@ -85,13 +95,8 @@ extension PathTracer
 
             // Add primary ray length to the path length.
             float primaryHitDist = length(sd.posW - path.origin);
-            // Only skip path length update if:
-            // 1. We've already hit an emissive surface previously
-            // 2. AND we already have accumulated some path length
-            if (!(path.hitEmissiveSurface && path.sceneLength > 0.0f))
-            {
-                path.sceneLength += primaryHitDist;
-            }
+            // Path length accumulation (emissive surface case already handled above)
+            path.sceneLength += primaryHitDist;
             // Hijack pdf that we don't need.
             path.pdf += primaryHitDist;
 
@@ -209,6 +214,16 @@ extension PathTracer
         let mi = gScene.materials.getMaterialInstance(sd, lod, hints);
         let bsdfProperties = mi.getProperties(sd);
 
+        // === Update CIR data during path tracing ===
+        updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties);
+
+        // If we hit an emissive surface, terminate the path immediately
+        if (path.hitEmissiveSurface)
+        {
+            path.terminate();
+            return;
+        }
+
         const uint lobeTypes = mi.getLobeTypes(sd);
 
         // Terminate without the write-out if the path doesn't start as delta transmission.
@@ -223,13 +238,8 @@ extension PathTracer
         if (isPrimaryHit)
         {
             // Add primary ray length to the path length.
-            // Only skip path length update if:
-            // 1. We've already hit an emissive surface previously
-            // 2. AND we already have accumulated some path length
-            if (!(path.hitEmissiveSurface && path.sceneLength > 0.0f))
-            {
-                path.sceneLength += length(sd.posW - path.origin);
-            }
+            // Path length accumulation (emissive surface case already handled above)
+            path.sceneLength += length(sd.posW - path.origin);
         }
         else
         {
