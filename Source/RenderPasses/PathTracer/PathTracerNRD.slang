@@ -31,6 +31,7 @@ import RenderPasses.Shared.Denoising.NRDHelpers;
 import LoadShadingData;
 import PathTracer;
 import NRDHelpers;
+import Utils.Color.ColorHelpers;  // Import for luminance function
 
 /** Extends the PathTracer with variants of handleHit() to trace NRD guide paths.
 */
@@ -66,6 +67,9 @@ extension PathTracer
         let mi = gScene.materials.getMaterialInstance(sd, lod, hints);
         let bsdfProperties = mi.getProperties(sd);
 
+        // === Update CIR data during path tracing ===
+        updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties);
+
         // Query BSDF lobes.
         const uint lobeTypes = mi.getLobeTypes(sd);
         const bool hasDeltaLobes = (lobeTypes & (uint)LobeType::Delta) != 0;
@@ -85,13 +89,8 @@ extension PathTracer
 
             // Add primary ray length to the path length.
             float primaryHitDist = length(sd.posW - path.origin);
-            // Only skip path length update if:
-            // 1. We've already hit an emissive surface previously
-            // 2. AND we already have accumulated some path length
-            if (!(path.hitEmissiveSurface && path.sceneLength > 0.0f))
-            {
-                path.sceneLength += primaryHitDist;
-            }
+            // Path length accumulation (emissive surface case already handled above)
+            path.sceneLength += primaryHitDist;
             // Hijack pdf that we don't need.
             path.pdf += primaryHitDist;
 
@@ -103,6 +102,25 @@ extension PathTracer
             // Use path's radiance field to accumulate emission along the path since the radiance is not used for denoiser guide paths.
             // No need for accumulating emission at the primary hit since the primary hit emission is coming from GBuffer.
             path.L += path.thp * bsdfProperties.emission;
+
+            // MODIFIED: Check for early termination after emissive calculation
+            // Only terminate if we hit an emissive surface AND have valid CIR data
+            if (path.hitEmissiveSurface)
+            {
+#ifdef _PIXEL_STATS_ENABLED
+                // Check if we have sufficient data before terminating
+                bool hasValidPathLength = path.sceneLength > 0.0f;
+                bool hasValidPower = luminance(path.L) > 0.0f;
+                bool hasValidReflectionData = path.getBounces(BounceType::Diffuse) > 0 || path.getBounces(BounceType::Specular) > 0 || isPrimaryHit;
+
+                // Only terminate if we have meaningful data to record
+                if (hasValidPathLength && hasValidPower && hasValidReflectionData)
+                {
+                    path.terminate();
+                    return;
+                }
+#endif
+            }
 
             // Terminate after scatter ray on last vertex has been processed or non-delta lobe exists.
             const bool lastVertex = hasFinishedSurfaceBounces(path);
@@ -209,6 +227,9 @@ extension PathTracer
         let mi = gScene.materials.getMaterialInstance(sd, lod, hints);
         let bsdfProperties = mi.getProperties(sd);
 
+        // === Update CIR data during path tracing ===
+        updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties);
+
         const uint lobeTypes = mi.getLobeTypes(sd);
 
         // Terminate without the write-out if the path doesn't start as delta transmission.
@@ -223,19 +244,33 @@ extension PathTracer
         if (isPrimaryHit)
         {
             // Add primary ray length to the path length.
-            // Only skip path length update if:
-            // 1. We've already hit an emissive surface previously
-            // 2. AND we already have accumulated some path length
-            if (!(path.hitEmissiveSurface && path.sceneLength > 0.0f))
-            {
-                path.sceneLength += length(sd.posW - path.origin);
-            }
+            // Path length accumulation (emissive surface case already handled above)
+            path.sceneLength += length(sd.posW - path.origin);
         }
         else
         {
             // Use path's radiance field to accumulate emission along the path since the radiance is not used for denoiser guide paths.
             // No need for accumulating emission at the primary hit since the primary hit emission is coming from GBuffer.
             path.L += path.thp * bsdfProperties.emission;
+
+            // MODIFIED: Check for early termination after emissive calculation
+            // Only terminate if we hit an emissive surface AND have valid CIR data
+            if (path.hitEmissiveSurface)
+            {
+#ifdef _PIXEL_STATS_ENABLED
+                // Check if we have sufficient data before terminating
+                bool hasValidPathLength = path.sceneLength > 0.0f;
+                bool hasValidPower = luminance(path.L) > 0.0f;
+                bool hasValidReflectionData = path.getBounces(BounceType::Diffuse) > 0 || path.getBounces(BounceType::Specular) > 0 || isPrimaryHit;
+
+                // Only terminate if we have meaningful data to record
+                if (hasValidPathLength && hasValidPower && hasValidReflectionData)
+                {
+                    path.terminate();
+                    return;
+                }
+#endif
+            }
         }
 
         // Terminate the delta transmission path.

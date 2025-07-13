@@ -79,6 +79,26 @@ public:
     bool getEnableWavelengthFilter() const { return mEnableWavelengthFilter; }
     void setEnableWavelengthFilter(bool enable) { mEnableWavelengthFilter = enable; mNeedRecompile = true; }
 
+    // Photodetector analysis functions
+    bool getEnablePhotodetectorAnalysis() const { return mEnablePhotodetectorAnalysis; }
+    void setEnablePhotodetectorAnalysis(bool enable) { mEnablePhotodetectorAnalysis = enable; mNeedRecompile = true; }
+
+    float getDetectorArea() const { return mDetectorArea; }
+    void setDetectorArea(float area) { mDetectorArea = area; }
+
+    float getSourceSolidAngle() const { return mSourceSolidAngle; }
+    void setSourceSolidAngle(float angle) { mSourceSolidAngle = angle; }
+
+    const std::string& getPowerDataExportPath() const { return mPowerDataExportPath; }
+    void setPowerDataExportPath(const std::string& path) { mPowerDataExportPath = path; }
+
+    uint32_t getMaxDataPoints() const { return mMaxDataPoints; }
+    void setMaxDataPoints(uint32_t maxPoints) { mMaxDataPoints = maxPoints; }
+
+    uint32_t getCurrentDataPointCount() const { return static_cast<uint32_t>(mPowerDataPoints.size()); }
+
+    float getTotalAccumulatedPower() const { return mTotalAccumulatedPower; }
+
     // New export functions
     bool exportPowerData(const std::string& filename, OutputFormat format = OutputFormat::EXR);
     bool exportStatistics(const std::string& filename, OutputFormat format = OutputFormat::CSV);
@@ -159,7 +179,7 @@ private:
     std::vector<float> mBandWavelengths; ///< Specific wavelength bands to filter
     std::vector<float> mBandTolerances;  ///< Tolerances for specific wavelength bands
     static constexpr float kDefaultTolerance = 5.0f; ///< Default tolerance for specific bands in nm
-    float mPixelAreaScale = 1.0f;     ///< Scale factor for pixel area calculation
+    float mPixelAreaScale = 1.0f;     ///< Scale factor for area calculation (no pixel division)
 
     // UI variables
     bool mEnabled = true;                ///< Enable/disable the pass
@@ -199,6 +219,26 @@ private:
     static const std::string kCameraPosition;        ///< Camera position parameter name
     static const std::string kCameraTarget;          ///< Camera target parameter name
     static const std::string kCameraFocalLength;     ///< Camera focal length parameter name
+    static const std::string kCameraFovY;            ///< Camera field of view Y parameter name
+
+    // Photodetector analysis parameters
+    bool mEnablePhotodetectorAnalysis = false;    ///< Enable PD power matrix analysis
+    float mDetectorArea = 1e-6f;                  ///< PD effective area in m²
+    float mSourceSolidAngle = 1e-3f;              ///< Source solid angle in sr
+    uint32_t mCurrentNumRays = 0;                 ///< Current number of rays
+
+    // Simplified data storage - direct angle-wavelength-power triplets
+    struct PowerDataPoint
+    {
+        float incidentAngle;  ///< Incident angle in degrees
+        float wavelength;     ///< Wavelength in nanometers
+        float power;          ///< Power in watts
+    };
+
+    std::vector<PowerDataPoint> mPowerDataPoints; ///< Direct storage of power data points
+    float mTotalAccumulatedPower = 0.0f;          ///< Total accumulated power
+    std::string mPowerDataExportPath = "./";      ///< Export path
+    uint32_t mMaxDataPoints = 1000000;            ///< Maximum number of data points to store
 
     // Statistics and export-related members
     PowerStatistics mPowerStats;              ///< Statistics about the calculated power
@@ -215,6 +255,10 @@ private:
     std::vector<float4> mPowerReadbackBuffer;  ///< Buffer for power readback
     std::vector<float> mWavelengthReadbackBuffer; ///< Buffer for wavelength readback
 
+    // Photodetector analysis buffers
+    ref<Buffer> mpPowerDataBuffer;        ///< GPU buffer for power data
+    ref<Buffer> mpPowerDataStagingBuffer; ///< ReadBack staging buffer for CPU access
+
     void prepareResources(RenderContext* pRenderContext, const RenderData& renderData);
     void prepareProgram();
 
@@ -228,6 +272,11 @@ private:
     void renderExportUI(Gui::Widgets& widget);
     std::string getFormattedStatistics() const;
     void resetStatistics();
+
+    // New helper functions for physics-based power calculation
+    float calculateSinglePixelArea() const;
+    float calculateTotalDetectorArea() const;
+    void logCameraAndAreaInfo() const;
 
     // Batch export state
     bool mBatchExportActive = false;
@@ -252,4 +301,10 @@ private:
     void processBatchExport();
     void finishBatchExport();
     void setViewpointPosition(uint32_t viewpointIndex);
+
+    // Photodetector matrix management functions
+    void initializePowerData();
+    void resetPowerData();
+    bool exportPowerData();
+    void accumulatePowerData(RenderContext* pRenderContext);
 };

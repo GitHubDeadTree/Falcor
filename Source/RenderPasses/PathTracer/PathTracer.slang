@@ -315,6 +315,9 @@ struct PathTracer
         // Store initial direction for irradiance calculation
         path.initialDir = cameraRay.dir;
 
+        // === Initialize vertex collection ===
+        path.initPathVertexCollection(cameraRay.origin);
+
         // Create sample generator.
         const uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
         path.sg = SampleGenerator(pixel, params.seed * maxSpp + path.getSampleIdx());
@@ -327,6 +330,9 @@ struct PathTracer
         {
             path.setHit(hit);
             path.setVertexIndex(1);
+
+            // Note: Vertex addition for surface hits is handled by closesthit shaders
+            // to ensure accurate hit positions are used, avoiding duplicate camera positions
         }
     }
 
@@ -963,6 +969,15 @@ struct PathTracer
         const IMaterialInstance mi = gScene.materials.getMaterialInstance(sd, lod, hints);
         BSDFProperties bsdfProperties = mi.getProperties(sd);
 
+        // CRITICAL FIX: Accumulate primary hit distance before CIR processing
+        // Primary hits bypass TracePass.rt.slang's handleHit function and go directly here
+        // This is essential for ReflectionCount=0 paths to have non-zero path length
+        if (isPrimaryHit)
+        {
+            float primaryHitDist = length(sd.posW - path.origin);
+            path.sceneLength += primaryHitDist;
+        }
+
         // === Update CIR data during path tracing ===
         updateCIRDataDuringTracing(path, sd.faceN, bsdfProperties);
 
@@ -1044,6 +1059,27 @@ struct PathTracer
 
             // Update path wavelength based on emission color
             updatePathWavelength(path, attenuatedEmission);
+        }
+
+        // MODIFIED: Check for early termination after emissive calculation
+        // Only terminate if we hit an emissive surface AND have valid CIR data
+        // This ensures we collect meaningful path length, power, and reflection data
+        if (path.hitEmissiveSurface)
+        {
+#ifdef _PIXEL_STATS_ENABLED
+            // Check if we have sufficient data before terminating
+            bool hasValidPathLength = path.sceneLength > 0.0f;
+            bool hasValidPower = luminance(path.L) > 0.0f;
+            bool hasValidReflectionData = path.getBounces(BounceType::Diffuse) > 0 || path.getBounces(BounceType::Specular) > 0 || isPrimaryHit;
+
+            // Only terminate if we have meaningful data to record
+            if (hasValidPathLength && hasValidPower && hasValidReflectionData)
+            {
+                path.terminate();
+                return;
+            }
+            // If we don't have valid data, continue tracing to collect more information
+#endif
         }
 
         // Terminate after scatter ray on last vertex has been processed.
@@ -1362,12 +1398,12 @@ struct PathTracer
         \param[in] surfaceNormal Surface normal at hit point.
         \param[in] bsdfProperties BSDF properties for emission angle calculation.
     */
-    void updateCIRDataDuringTracing(inout PathState path, float3 surfaceNormal, BSDFProperties bsdfProperties)
+        void updateCIRDataDuringTracing(inout PathState path, float3 surfaceNormal, BSDFProperties bsdfProperties)
     {
         const uint vertexIndex = path.getVertexIndex();
         const bool isPrimaryHit = (vertexIndex == 1);
 
-        // Strategy 1: Check for emissive materials (LED modeled as emissive surfaces)
+                // Strategy 1: Check for emissive materials (LED modeled as emissive surfaces)
         if (any(bsdfProperties.emission > 0.0f))
         {
             path.hitEmissiveSurface = true;  // Set flag when hitting emissive surface

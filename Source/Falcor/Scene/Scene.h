@@ -75,6 +75,7 @@ namespace Falcor
     struct GamepadState;
 
     class RtProgramVars;
+    class LED_Emissive;
 
     /** This class is the main scene representation.
         It holds all scene resources such as geometry, cameras, lights, and materials.
@@ -250,6 +251,7 @@ namespace Falcor
             uint32_t selectedCamera = 0;                            ///< Index of selected camera.
             float cameraSpeed = 1.f;                                ///< Camera speed.
             std::vector<ref<Light>> lights;                         ///< List of light sources.
+            std::vector<ref<LED_Emissive>> ledEmissives;            ///< List of LED emissive objects.
             std::unique_ptr<MaterialSystem> pMaterials;             ///< Material system. This holds data and resources for all materials.
             std::vector<ref<GridVolume>> gridVolumes;               ///< List of grid volumes.
             std::vector<ref<Grid>> grids;                           ///< List of grids.
@@ -821,6 +823,11 @@ namespace Falcor
         */
         MaterialID addMaterial(const ref<Material>& pMaterial) { return mpMaterials->addMaterial(pMaterial); }
 
+        /** Update material system to synchronize changes.
+            This method should be called after adding materials to ensure UI compatibility.
+        */
+        void updateMaterialSystem() { mpMaterials->update(false); }
+
         /** Get a list of all grid volumes in the scene.
         */
         const std::vector<ref<GridVolume>>& getGridVolumes() const { return mGridVolumes; }
@@ -880,6 +887,35 @@ namespace Falcor
         /** Get the environment map or nullptr if it doesn't exist.
         */
         const ref<EnvMap>& getEnvMap() const override { return mpEnvMap; }
+
+        // LED_Emissive management methods
+        /** Add a LED_Emissive object to the scene.
+        */
+        void addLEDEmissive(ref<LED_Emissive> pLEDEmissive);
+
+        /** Remove a LED_Emissive object from the scene.
+        */
+        void removeLEDEmissive(ref<LED_Emissive> pLEDEmissive);
+
+        /** Remove all LED_Emissive objects from the scene.
+        */
+        void clearLEDEmissives();
+
+        /** Get a list of all LED_Emissive objects in the scene.
+        */
+        const std::vector<ref<LED_Emissive>>& getLEDEmissives() const;
+
+        /** Get a LED_Emissive object by index.
+        */
+        ref<LED_Emissive> getLEDEmissive(uint32_t index) const;
+
+        /** Get a LED_Emissive object by name.
+        */
+        ref<LED_Emissive> getLEDEmissiveByName(const std::string& name) const;
+
+        /** Get the number of LED_Emissive objects in the scene.
+        */
+        uint32_t getLEDEmissiveCount() const;
 
         /** Set how the scene's TLASes are updated when raytracing.
             TLASes are REBUILT by default.
@@ -1312,6 +1348,8 @@ namespace Falcor
         // Lights
         std::vector<ref<Light>> mLights;                            ///< All analytic lights. Note that not all may be active.
         std::vector<ref<Light>> mActiveLights;                      ///< All active analytic lights.
+        std::vector<ref<LED_Emissive>> mLEDEmissives;               ///< All LED emissive objects in the scene.
+        ref<LED_Emissive> mLEDEmissiveToRemove;                     ///< LED_Emissive marked for delayed removal during UI rendering.
         std::vector<ref<GridVolume>> mGridVolumes;                  ///< All loaded grid volumes.
         std::vector<ref<Grid>> mGrids;                              ///< All loaded grids.
         std::unordered_map<ref<Grid>, SdfGridID> mGridIDs;          ///< Lookup table for grid IDs.
@@ -1449,7 +1487,7 @@ namespace Falcor
         std::vector<std::filesystem::path> mImportPaths;    ///< Vector of paths to assets loaded to create scene.
         std::vector<SceneData::ImportDict> mImportDicts;    ///< Vector of dictionaries associated with each asset loaded to create scene.
         bool mFinalized = false;                            ///< True if scene is ready to be bound to the GPU.
-        
+
         // Debug options
         bool mEnableDebugLogs = false;                      ///< Enable debug logging for LED light updates and other operations.
 

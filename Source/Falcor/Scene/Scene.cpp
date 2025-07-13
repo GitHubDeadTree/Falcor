@@ -37,6 +37,7 @@
 #include "SDFs/SparseVoxelOctree/SDFSVO.h"
 #include "SDFs/SparseVoxelSet/SDFSVS.h"
 #include "Lights/LEDLight.h"
+#include "Lights/LED_Emissive.h"
 #include "Core/API/Device.h"
 #include "Core/API/RenderContext.h"
 #include "Core/API/IndirectCommands.h"
@@ -172,6 +173,8 @@ namespace Falcor
         mSelectedCamera = sceneData.selectedCamera;
         mCameraSpeed = sceneData.cameraSpeed;
         mLights = std::move(sceneData.lights);
+        mLEDEmissives = std::move(sceneData.ledEmissives);
+        mLEDEmissiveToRemove = nullptr;
 
         mpMaterials = std::move(sceneData.pMaterials);
         mGridVolumes = std::move(sceneData.gridVolumes);
@@ -2318,6 +2321,92 @@ namespace Falcor
                     light->renderUI(lightGroup);
                 }
                 lightID++;
+            }
+        }
+
+        if (auto ledEmissiveGroup = widget.group("LED_Emissive"))
+        {
+            // Display LED_Emissive statistics
+            ledEmissiveGroup.text("LED_Emissive Count: " + std::to_string(getLEDEmissiveCount()));
+
+            // Iterate through all LED_Emissive objects
+            uint32_t ledID = 0;
+            for (auto& ledEmissive : mLEDEmissives)
+            {
+                try
+                {
+                    // Create sub-group for each LED_Emissive object
+                    auto name = std::to_string(ledID) + ": " + ledEmissive->getName();
+                    if (auto ledGroup = ledEmissiveGroup.group(name))
+                    {
+                        // Render LED_Emissive UI
+                        ledEmissive->renderUI(ledGroup);
+
+                        // Add delete button
+                        ledGroup.separator();
+                        if (ledGroup.button("Remove LED_Emissive"))
+                        {
+                            // Mark for delayed removal (cannot delete during iteration)
+                            mLEDEmissiveToRemove = ledEmissive;
+                        }
+                    }
+                }
+                catch (const std::exception& e)
+                {
+                    logError("Scene::renderUI - LED_Emissive UI error: " + std::string(e.what()));
+
+                    // Display error information
+                    ledEmissiveGroup.text("Error rendering LED_Emissive " + std::to_string(ledID) + ": " + std::string(e.what()));
+                }
+
+                ledID++;
+            }
+
+            // Add button to create new LED_Emissive
+            ledEmissiveGroup.separator();
+            if (ledEmissiveGroup.button("Add LED_Emissive"))
+            {
+                try
+                {
+                    // Create new LED_Emissive object
+                    std::string newName = "LED_" + std::to_string(getLEDEmissiveCount());
+                    auto newLED = LED_Emissive::create(newName);
+
+                    if (newLED)
+                    {
+                        // Set default parameters
+                        newLED->setPosition(float3(0.0f, 2.0f, 0.0f));
+                        newLED->setTotalPower(10.0f);
+                        newLED->setColor(float3(1.0f, 1.0f, 1.0f));
+
+                        // Add to scene
+                        addLEDEmissive(newLED);
+
+                        logInfo("Scene::renderUI - Created new LED_Emissive: " + newName);
+                    }
+                    else
+                    {
+                        logError("Scene::renderUI - Failed to create LED_Emissive");
+                    }
+                }
+                catch (const std::exception& e)
+                {
+                    logError("Scene::renderUI - LED_Emissive creation error: " + std::string(e.what()));
+                }
+            }
+
+            // Handle delayed removal
+            if (mLEDEmissiveToRemove)
+            {
+                try
+                {
+                    removeLEDEmissive(mLEDEmissiveToRemove);
+                    mLEDEmissiveToRemove.reset();
+                }
+                catch (const std::exception& e)
+                {
+                    logError("Scene::renderUI - LED_Emissive removal error: " + std::string(e.what()));
+                }
             }
         }
 
@@ -4595,6 +4684,144 @@ namespace Falcor
 #endif
     }
 
+    // LED_Emissive management methods implementation
+    void Scene::addLEDEmissive(ref<LED_Emissive> pLEDEmissive)
+{
+    if (!pLEDEmissive)
+    {
+        logError("Scene::addLEDEmissive - LED_Emissive object is null");
+        return;
+    }
+
+    try
+    {
+        // Check if already exists
+        auto it = std::find(mLEDEmissives.begin(), mLEDEmissives.end(), pLEDEmissive);
+        if (it != mLEDEmissives.end())
+        {
+            logWarning("Scene::addLEDEmissive - LED_Emissive already exists: " + pLEDEmissive->getName());
+            return;
+        }
+
+        // Add to scene integration
+        pLEDEmissive->addToScene(this);
+
+        // Add to container
+        mLEDEmissives.push_back(pLEDEmissive);
+
+        // Trigger scene update
+        mUpdates |= IScene::UpdateFlags::GeometryChanged;
+
+        logInfo("Scene::addLEDEmissive - Added LED_Emissive: " + pLEDEmissive->getName());
+    }
+    catch (const std::exception& e)
+    {
+        logError("Scene::addLEDEmissive - Exception: " + std::string(e.what()));
+    }
+}
+
+    void Scene::removeLEDEmissive(ref<LED_Emissive> pLEDEmissive)
+    {
+        if (!pLEDEmissive)
+        {
+            logError("Scene::removeLEDEmissive - LED_Emissive object is null");
+            return;
+        }
+
+        try
+        {
+            auto it = std::find(mLEDEmissives.begin(), mLEDEmissives.end(), pLEDEmissive);
+            if (it != mLEDEmissives.end())
+            {
+                // Remove from scene
+                (*it)->removeFromScene();
+
+                // Remove from container
+                mLEDEmissives.erase(it);
+
+                // Trigger scene update
+                mUpdates |= IScene::UpdateFlags::GeometryChanged;
+
+                logInfo("Scene::removeLEDEmissive - Removed LED_Emissive: " + pLEDEmissive->getName());
+            }
+            else
+            {
+                logWarning("Scene::removeLEDEmissive - LED_Emissive not found: " + pLEDEmissive->getName());
+            }
+        }
+        catch (const std::exception& e)
+        {
+            logError("Scene::removeLEDEmissive - Exception: " + std::string(e.what()));
+        }
+    }
+
+    void Scene::clearLEDEmissives()
+    {
+        try
+        {
+            // Remove all LED_Emissive from scene
+            for (auto& ledEmissive : mLEDEmissives)
+            {
+                ledEmissive->removeFromScene();
+            }
+
+            // Clear container
+            mLEDEmissives.clear();
+
+            // Trigger scene update
+            mUpdates |= IScene::UpdateFlags::GeometryChanged;
+
+            logInfo("Scene::clearLEDEmissives - Cleared all LED_Emissive objects");
+        }
+        catch (const std::exception& e)
+        {
+            logError("Scene::clearLEDEmissives - Exception: " + std::string(e.what()));
+        }
+    }
+
+    const std::vector<ref<LED_Emissive>>& Scene::getLEDEmissives() const
+    {
+        return mLEDEmissives;
+    }
+
+    ref<LED_Emissive> Scene::getLEDEmissive(uint32_t index) const
+    {
+        if (index >= mLEDEmissives.size())
+        {
+            logWarning("Scene::getLEDEmissive - Index out of range: " + std::to_string(index));
+            return nullptr;
+        }
+
+        return mLEDEmissives[index];
+    }
+
+    ref<LED_Emissive> Scene::getLEDEmissiveByName(const std::string& name) const
+    {
+        try
+        {
+            for (const auto& ledEmissive : mLEDEmissives)
+            {
+                if (ledEmissive->getName() == name)
+                {
+                    return ledEmissive;
+                }
+            }
+
+            logWarning("Scene::getLEDEmissiveByName - LED_Emissive not found: " + name);
+            return nullptr;
+        }
+        catch (const std::exception& e)
+        {
+            logError("Scene::getLEDEmissiveByName - Exception: " + std::string(e.what()));
+            return nullptr;
+        }
+    }
+
+    uint32_t Scene::getLEDEmissiveCount() const
+    {
+        return static_cast<uint32_t>(mLEDEmissives.size());
+    }
+
     FALCOR_SCRIPT_BINDING(Scene)
     {
         using namespace pybind11::literals;
@@ -4608,6 +4835,7 @@ namespace Falcor
         FALCOR_SCRIPT_BINDING_DEPENDENCY(Camera)
         FALCOR_SCRIPT_BINDING_DEPENDENCY(EnvMap)
         FALCOR_SCRIPT_BINDING_DEPENDENCY(SDFGrid)
+        FALCOR_SCRIPT_BINDING_DEPENDENCY(LED_Emissive)
 
         // RenderSettings
         pybind11::class_<Scene::RenderSettings> renderSettings(m, "SceneRenderSettings");
@@ -4697,6 +4925,22 @@ namespace Falcor
         scene.def("get_mesh", &Scene::getMesh, "mesh_id"_a);
         scene.def("get_mesh_vertices_and_indices", getMeshVerticesAndIndicesPython, "mesh_id"_a, "buffers"_a);
         scene.def("set_mesh_vertices", setMeshVerticesPython, "mesh_id"_a, "buffers"_a);
+
+        // LED_Emissive management methods
+        scene.def("addLEDEmissive", &Scene::addLEDEmissive, "ledEmissive"_a,
+                  "Add a LED_Emissive object to the scene");
+        scene.def("removeLEDEmissive", &Scene::removeLEDEmissive, "ledEmissive"_a,
+                  "Remove a LED_Emissive object from the scene");
+        scene.def("clearLEDEmissives", &Scene::clearLEDEmissives,
+                  "Remove all LED_Emissive objects from the scene");
+        scene.def("getLEDEmissive", &Scene::getLEDEmissive, "index"_a,
+                  "Get LED_Emissive object by index");
+        scene.def("getLEDEmissiveByName", &Scene::getLEDEmissiveByName, "name"_a,
+                  "Get LED_Emissive object by name");
+        scene.def("getLEDEmissiveCount", &Scene::getLEDEmissiveCount,
+                  "Get the number of LED_Emissive objects");
+        scene.def_property_readonly("ledEmissives", &Scene::getLEDEmissives,
+                                   "List of LED_Emissive objects in the scene");
     }
 
     void Scene::loadViewpoints()

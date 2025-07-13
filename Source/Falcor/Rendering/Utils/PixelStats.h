@@ -63,6 +63,15 @@ namespace Falcor
         uint32_t pixelY;
         uint32_t pathIndex;
 
+        // New vertex-related fields for path vertex collection feature (must match GPU definition)
+        struct CompressedVertex
+        {
+            uint32_t x; // Contains packed x(16 bits) and y(16 bits) coordinates
+            uint32_t y; // Contains z coordinate in lower 16 bits
+        } compressedVertices[7];  // Compressed vertex coordinates, each vertex uses 6 bytes
+        uint32_t vertexCount;     // Actual number of vertices in the path
+        float3 basePosition;      // Base position (camera position) for relative coordinate calculation
+
         bool isValid(float minPathLength, float maxPathLength,
                     float minEmittedPower, float maxEmittedPower,
                     float minAngle, float maxAngle,
@@ -90,9 +99,31 @@ namespace Falcor
                         emissionAngle >= minAngle && emissionAngle <= maxAngle &&
                         receptionAngle >= minAngle && receptionAngle <= maxAngle &&
                         reflectanceProduct >= minReflectance && reflectanceProduct <= maxReflectance &&
-                        emittedPower > minEmittedPower && emittedPower <= maxEmittedPower;
+                        emittedPower >= minEmittedPower && emittedPower <= maxEmittedPower;
 
             return valid;
+        }
+
+        /** Validate vertex data integrity for path vertex collection feature.
+            Checks vertex count range and base position validity.
+            \return True if vertex data is valid, false otherwise.
+        */
+        bool isVertexDataValid() const
+        {
+            // Check vertex count is within valid range
+            if (vertexCount > 7)
+            {
+                return false;
+            }
+
+            // Check base position for NaN or infinite values
+            if (std::isnan(basePosition.x) || std::isnan(basePosition.y) || std::isnan(basePosition.z) ||
+                std::isinf(basePosition.x) || std::isinf(basePosition.y) || std::isinf(basePosition.z))
+            {
+                return false;
+            }
+
+            return true;
         }
     };
 
@@ -275,6 +306,39 @@ namespace Falcor
         bool exportCIRDataJSONL(const std::string& filename, const CIRStaticParameters& staticParams);
         bool exportCIRDataTXT(const std::string& filename, const CIRStaticParameters& staticParams);
 
+        // Vertex processing functions for path vertex collection feature
+        /** Decompress a vertex coordinate from compressed format back to world space.
+            CPU-side implementation matching GPU decompressVertex function.
+            \param compressed Compressed vertex data
+            \param basePosition Base position used during compression
+            \return Decompressed world space vertex position, or error indicator if invalid
+        */
+        float3 decompressVertex(const CIRPathData::CompressedVertex& compressed, const float3& basePosition) const;
+
+        /** Decompress all vertices in a CIRPathData structure.
+            \param cirData CIR path data containing compressed vertices
+            \return Vector of decompressed world space vertex positions
+        */
+        std::vector<float3> decompressPathVertices(const CIRPathData& cirData) const;
+
+        /** Validate CIR vertex data integrity with detailed error reporting.
+            \param cirData CIR path data to validate
+            \return True if vertex data is valid, false with error logging if invalid
+        */
+        bool validateCIRVertexData(const CIRPathData& cirData) const;
+
+        // Backward compatibility support functions
+        /** Check if CIR data version supports vertex collection feature.
+            \param cirData CIR path data to check
+            \return True if vertex data is available, false for legacy data
+        */
+        bool supportsVertexData(const CIRPathData& cirData) const;
+
+        /** Handle legacy CIR data by providing default vertex information.
+            \param cirData CIR path data to update (will be modified)
+        */
+        void handleLegacyData(CIRPathData& cirData) const;
+
         static const uint32_t kRayTypeCount = (uint32_t)PixelStatsRayType::Count;
         static const uint32_t kCIRTypeCount = (uint32_t)PixelStatsCIRType::Count;
 
@@ -289,20 +353,27 @@ namespace Falcor
         bool                                mEnabled = false;               ///< Enable pixel statistics.
         bool                                mEnableLogging = false;         ///< Enable printing to logfile.
         CollectionMode                      mCollectionMode = CollectionMode::Both;  ///< Data collection mode.
-        uint32_t                            mMaxCIRPathsPerFrame = 1000000; ///< Maximum CIR paths to collect per frame.
+        uint32_t                            mMaxCIRPathsPerFrame = 10000;   ///< Maximum CIR paths to collect per frame.
 
         // CIR export configuration
         CIRExportFormat                     mCIRExportFormat = CIRExportFormat::CSV; ///< Selected CIR export format.
 
         // CIR filtering parameters (configurable via UI)
-        float                               mCIRMinPathLength = 1.0f;        ///< Minimum path length for CIR filtering (meters)
-        float                               mCIRMaxPathLength = 200.0f;      ///< Maximum path length for CIR filtering (meters)
-        float                               mCIRMinEmittedPower = 0.0f;      ///< Minimum emitted power for CIR filtering (watts)
-        float                               mCIRMaxEmittedPower = 10000.0f;  ///< Maximum emitted power for CIR filtering (watts)
+        bool                                mCIRFilteringEnabled = true;     ///< Enable CIR data filtering
+        float                               mCIRMinPathLength = 0.1f;        ///< Minimum path length for CIR filtering (meters)
+        float                               mCIRMaxPathLength = 80.0f;       ///< Maximum path length for CIR filtering (meters)
+        float                               mCIRMinEmittedPower = 1e-14f;    ///< Minimum emitted power for CIR filtering (watts)
+        float                               mCIRMaxEmittedPower = 100000.0f; ///< Maximum emitted power for CIR filtering (watts)
         float                               mCIRMinAngle = 0.0f;             ///< Minimum angle for CIR filtering (radians)
         float                               mCIRMaxAngle = 3.14159f;         ///< Maximum angle for CIR filtering (radians)
         float                               mCIRMinReflectance = 0.0f;       ///< Minimum reflectance for CIR filtering
         float                               mCIRMaxReflectance = 1.0f;       ///< Maximum reflectance for CIR filtering
+
+        // CIR logging control parameters
+        bool                                mCIRDetailedLogging = false;     ///< Enable detailed CIR filtering logs
+        uint32_t                            mCIRLogFrameCounter = 0;         ///< Frame counter for limiting log frequency
+        uint32_t                            mCIRLogInterval = 10;            ///< Log output interval (frames)
+        uint32_t                            mLastCIRFilteredCount = 0;       ///< Last filtered count for change detection
 
         // Scene reference for CIR parameter computation
         ref<Scene>                          mpScene;                        ///< Scene reference for static parameter calculation.

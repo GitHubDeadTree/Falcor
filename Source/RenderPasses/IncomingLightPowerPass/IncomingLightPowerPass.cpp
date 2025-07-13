@@ -1,4 +1,5 @@
 #include "IncomingLightPowerPass.h"
+#include "Utils/Math/FalcorMath.h"
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -67,6 +68,7 @@ const std::string IncomingLightPowerPass::kCameraInvViewProj = "gCameraInvViewPr
 const std::string IncomingLightPowerPass::kCameraPosition = "gCameraPosition";
 const std::string IncomingLightPowerPass::kCameraTarget = "gCameraTarget";
 const std::string IncomingLightPowerPass::kCameraFocalLength = "gCameraFocalLength";
+const std::string IncomingLightPowerPass::kCameraFovY = "gCameraFovY";
 
 // Implementation of CameraIncidentPower methods
 void IncomingLightPowerPass::CameraIncidentPower::setup(const ref<Scene>& pScene, const uint2& dimensions)
@@ -94,9 +96,8 @@ float IncomingLightPowerPass::CameraIncidentPower::computePixelArea() const
     if (!mHasValidCamera || !mpCamera)
         return 1.0f;  // Default value if no camera
 
-    // Get camera sensor dimensions
-    // In a real camera, this would be the physical sensor size
-    // For our virtual camera, we use the FOV and distance to calculate the sensor size
+    // Calculate the total sensor area (photosensitive plane physical area)
+    // instead of individual pixel area for proper power measurement
 
     // Get focal length in mm
     float focalLength = mpCamera->getFocalLength();
@@ -110,23 +111,19 @@ float IncomingLightPowerPass::CameraIncidentPower::computePixelArea() const
     // We use 1.0 as a normalized distance to image plane
     float distToImagePlane = 1.0f;
 
-    // Calculate sensor width and height at this distance
+    // Calculate total sensor dimensions (entire photosensitive plane)
     float sensorWidth = 2.0f * distToImagePlane * std::tan(hFOV * 0.5f);
     float aspectRatio = (float)mFrameDimensions.x / mFrameDimensions.y;
     float sensorHeight = sensorWidth / aspectRatio;
 
-    // Calculate pixel dimensions
-    float pixelWidth = sensorWidth / mFrameDimensions.x;
-    float pixelHeight = sensorHeight / mFrameDimensions.y;
+    // Calculate total sensor area (photosensitive plane physical area)
+    float totalSensorArea = sensorWidth * sensorHeight;
 
-    // Calculate pixel area
-    float pixelArea = pixelWidth * pixelHeight;
+    // Ensure total sensor area is not too small or zero
+    const float minSensorArea = 0.001f;
+    totalSensorArea = std::max(totalSensorArea, minSensorArea);
 
-    // Ensure pixel area is not too small or zero
-    const float minPixelArea = 0.00001f;
-    pixelArea = std::max(pixelArea, minPixelArea);
-
-    return pixelArea;
+    return totalSensorArea;
 }
 
 float3 IncomingLightPowerPass::CameraIncidentPower::computeRayDirection(const uint2& pixel) const
@@ -258,14 +255,15 @@ float4 IncomingLightPowerPass::CameraIncidentPower::compute(
         return float4(0.f, 0.f, 0.f, 0.f);
     }
 
-    // Calculate pixel area
-    float pixelArea = computePixelArea();
+    // Calculate area directly without dividing by pixel count
+    float area = computePixelArea();
 
     // Calculate cosine term
     float cosTheta = computeCosTheta(rayDir);
 
     // Calculate power using the formula: Power = Radiance * Area * cos(θ)
-    float3 power = float3(radiance.r, radiance.g, radiance.b) * pixelArea * cosTheta;
+    // Use the full area directly without dividing by pixel count
+    float3 power = float3(radiance.r, radiance.g, radiance.b) * area * cosTheta;
 
     // Return power with the wavelength
     return float4(power.x, power.y, power.z, wavelength > 0.0f ? wavelength : 550.0f);
@@ -291,12 +289,23 @@ IncomingLightPowerPass::IncomingLightPowerPass(ref<Device> pDevice, const Proper
         else if (key == "statisticsFrequency") mStatisticsFrequency = value;
         else if (key == "outputPowerTexName") mOutputPowerTexName = value.operator std::string();
         else if (key == "outputWavelengthTexName") mOutputWavelengthTexName = value.operator std::string();
+        else if (key == "enablePhotodetectorAnalysis") mEnablePhotodetectorAnalysis = value;
+        else if (key == "detectorArea") mDetectorArea = value;
+        else if (key == "sourceSolidAngle") mSourceSolidAngle = value;
+        else if (key == "maxDataPoints") mMaxDataPoints = value;
+        else if (key == "powerDataExportPath") mPowerDataExportPath = value.operator std::string();
         else logWarning("Unknown property '{}' in IncomingLightPowerPass properties.", key);
     }
 
     // Add default wavelength bands for common light sources
     mBandWavelengths = { 405.0f, 436.0f, 546.0f, 578.0f }; // Mercury lamp wavelengths
     mBandTolerances = { 5.0f, 5.0f, 5.0f, 5.0f };
+
+    // Initialize power data storage for photodetector analysis
+    if (mEnablePhotodetectorAnalysis)
+    {
+        initializePowerData();
+    }
 
     // Create compute pass
     prepareProgram();
@@ -315,6 +324,11 @@ Properties IncomingLightPowerPass::getProperties() const
     props["statisticsFrequency"] = mStatisticsFrequency;
     props["outputPowerTexName"] = mOutputPowerTexName;
     props["outputWavelengthTexName"] = mOutputWavelengthTexName;
+    props["enablePhotodetectorAnalysis"] = mEnablePhotodetectorAnalysis;
+    props["detectorArea"] = mDetectorArea;
+    props["sourceSolidAngle"] = mSourceSolidAngle;
+    props["maxDataPoints"] = mMaxDataPoints;
+    props["powerDataExportPath"] = mPowerDataExportPath;
     return props;
 }
 
@@ -468,6 +482,13 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     var[kPerFrameCB]["gEnableWavelengthFilter"] = mEnableWavelengthFilter;
     var[kPerFrameCB][kPixelAreaScale] = mPixelAreaScale;
 
+    // Set photodetector analysis parameters
+    mCurrentNumRays = mFrameDim.x * mFrameDim.y; // Calculate current number of rays
+    var[kPerFrameCB]["gEnablePhotodetectorAnalysis"] = mEnablePhotodetectorAnalysis;
+    var[kPerFrameCB]["gDetectorArea"] = mDetectorArea;
+    var[kPerFrameCB]["gSourceSolidAngle"] = mSourceSolidAngle;
+    var[kPerFrameCB]["gCurrentNumRays"] = mCurrentNumRays;
+
     // Set camera data
     if (mpScene && mpScene->getCamera())
     {
@@ -476,6 +497,11 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
         var[kPerFrameCB][kCameraPosition] = pCamera->getPosition();
         var[kPerFrameCB][kCameraTarget] = pCamera->getTarget();
         var[kPerFrameCB][kCameraFocalLength] = pCamera->getFocalLength();
+        // Calculate FOV Y from focal length and frame height using Falcor's math utilities
+        float focalLength = pCamera->getFocalLength(); // in mm
+        float frameHeight = pCamera->getFrameHeight(); // in mm
+        float fovY = focalLengthToFovY(focalLength, frameHeight); // in radians
+        var[kPerFrameCB][kCameraFovY] = fovY; // Add FoV Y parameter for task 1
     }
     else
     {
@@ -484,6 +510,7 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
         var[kPerFrameCB][kCameraPosition] = float3(0.0f, 0.0f, 0.0f);
         var[kPerFrameCB][kCameraTarget] = float3(0.0f, 0.0f, -1.0f);
         var[kPerFrameCB][kCameraFocalLength] = 21.0f; // Default focal length
+        var[kPerFrameCB][kCameraFovY] = 1.0f; // Default FoV Y in radians (approximately 57.3 degrees)
     }
 
     // Set band data if available
@@ -538,6 +565,12 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
     var["gDebugOutput"] = pDebugOutput;
     var["gDebugInputData"] = pDebugInputData;
     var["gDebugCalculation"] = pDebugCalculation;
+
+    // Bind classification buffer for photodetector analysis
+            if (mEnablePhotodetectorAnalysis && mpPowerDataBuffer)
+        {
+            var["gPowerDataBuffer"] = mpPowerDataBuffer;
+    }
 
     // Execute the compute pass
     mpComputePass->execute(pRenderContext, uint3(mFrameDim.x, mFrameDim.y, 1));
@@ -731,6 +764,13 @@ void IncomingLightPowerPass::execute(RenderContext* pRenderContext, const Render
         calculateStatistics(pRenderContext, renderData);
     }
 
+    // Accumulate photodetector power data if enabled
+    if (mEnablePhotodetectorAnalysis)
+    {
+        pRenderContext->submit(true); // Ensure GPU work is complete before reading back
+        accumulatePowerData(pRenderContext);
+    }
+
     processBatchExport();
 }
 
@@ -756,12 +796,12 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
         }
     }
 
-    // Add pixel area scale control
-    auto pixelAreaGroup = widget.group("Pixel Area Adjustment", true);
-    if (pixelAreaGroup)
+    // Add area scale control
+    auto areaGroup = widget.group("Area Scale Control", true);
+    if (areaGroup)
     {
-        changed |= widget.slider("Pixel Area Scale", mPixelAreaScale, 1.0f, 10000.0f);
-        widget.tooltip("Scales the calculated pixel area to make power values more visible.\nDefault: 1000.0");
+        changed |= widget.slider("Area Scale Factor", mPixelAreaScale, 1.0f, 10000.0f);
+        widget.tooltip("Scales the area used for power calculation.\nArea is used directly without dividing by pixel count.\nFor PD mode: scales gDetectorArea. For camera mode: scales computed sensor area.");
     }
 
     auto filterGroup = widget.group("Wavelength Filter", true);
@@ -914,6 +954,191 @@ void IncomingLightPowerPass::renderUI(Gui::Widgets& widget)
     // Statistics UI
     renderStatisticsUI(widget);
 
+    // Photodetector Analysis UI - Enhanced for Task 4
+    auto pdGroup = widget.group("Photodetector Analysis", true);
+    if (pdGroup)
+    {
+        bool pdChanged = widget.checkbox("Enable Analysis", mEnablePhotodetectorAnalysis);
+        if (pdChanged)
+        {
+            changed = true;
+            if (mEnablePhotodetectorAnalysis)
+            {
+                initializePowerData();
+                logInfo("Photodetector analysis enabled - data storage initialized");
+            }
+            else
+            {
+                logInfo("Photodetector analysis disabled");
+            }
+        }
+
+        if (mEnablePhotodetectorAnalysis)
+        {
+            // Data storage information display
+            const float dataSizeMB = (mPowerDataPoints.size() * sizeof(PowerDataPoint)) / (1024.0f * 1024.0f);
+            widget.text(fmt::format("Data Points: {} / {} ({:.2f}MB)",
+                                   mPowerDataPoints.size(), mMaxDataPoints, dataSizeMB));
+
+            // Storage status indicator
+            if (mPowerDataPoints.size() >= mMaxDataPoints)
+            {
+                widget.text("WARNING: Maximum data points reached", true);
+            }
+            else
+            {
+                widget.text("Status: Ready for data collection");
+            }
+
+            // Power status display with error detection
+            if (mTotalAccumulatedPower == 0.666f)
+            {
+                widget.text("Status: ERROR - Check console for details", true);
+                widget.text("Error Recovery: Try resetting data or restarting analysis");
+            }
+            else if (mTotalAccumulatedPower == 0.0f)
+            {
+                widget.text("Status: Waiting for power data...");
+            }
+            else
+            {
+                widget.text(fmt::format("Total Power: {:.6f} W", mTotalAccumulatedPower));
+
+                // Calculate and display power density
+                const float powerDensity = mTotalAccumulatedPower / mDetectorArea;
+                widget.text(fmt::format("Power Density: {:.3e} W/m²", powerDensity));
+            }
+
+            // Enhanced physical parameters with validation
+            auto paramsGroup = widget.group("Physical Parameters", false);
+            if (paramsGroup)
+            {
+                float oldDetectorArea = mDetectorArea;
+                changed |= widget.slider("Detector Area (m²)", mDetectorArea, 1e-9f, 1e-3f, true);
+                if (mDetectorArea != oldDetectorArea)
+                {
+                    widget.tooltip("Physical effective area of the photodetector");
+                    // Validate detector area is reasonable
+                    if (mDetectorArea < 1e-8f)
+                    {
+                        widget.text("WARNING: Very small detector area may cause numerical issues", true);
+                    }
+                }
+
+                float oldSolidAngle = mSourceSolidAngle;
+                changed |= widget.slider("Source Solid Angle (sr)", mSourceSolidAngle, 1e-6f, 1e-1f, true);
+                if (mSourceSolidAngle != oldSolidAngle)
+                {
+                    widget.tooltip("Solid angle subtended by the light source as seen from the detector");
+                    // Validate solid angle is reasonable
+                    if (mSourceSolidAngle > 6.28f) // > 2π steradians
+                    {
+                        widget.text("WARNING: Solid angle exceeds hemisphere (2π sr)", true);
+                    }
+                }
+
+                widget.text(fmt::format("Current Ray Count: {}", mCurrentNumRays));
+
+                // Display computed per-ray solid angle
+                if (mCurrentNumRays > 0)
+                {
+                    const float deltaOmega = mSourceSolidAngle / float(mCurrentNumRays);
+                    widget.text(fmt::format("Per-ray Δω: {:.3e} sr", deltaOmega));
+                }
+            }
+
+            // Data collection settings
+            auto settingsGroup = widget.group("Data Collection Settings", false);
+            if (settingsGroup)
+            {
+                changed |= widget.slider("Max Data Points", mMaxDataPoints, 10000u, 2000000u);
+                widget.tooltip("Maximum number of data points to store in memory");
+
+                widget.text("Direct storage: angle-wavelength-power triplets");
+                widget.text("No binning - full precision data retention");
+            }
+
+            // Data operations with better feedback
+            auto operationsGroup = widget.group("Data Operations", true);
+            if (operationsGroup)
+            {
+                if (widget.button("Reset Data"))
+                {
+                    resetPowerData();
+                    if (mTotalAccumulatedPower != 0.666f)
+                    {
+                        widget.text("Data reset successful");
+                    }
+                }
+                widget.tooltip("Clear all accumulated power data and reset counters");
+
+                static bool exportInProgress = false;
+                static std::string lastExportMessage = "";
+
+                if (widget.button("Export Data"))
+                {
+                    exportInProgress = true;
+                    bool success = exportPowerData();
+                    if (success)
+                    {
+                        lastExportMessage = "Data exported successfully!";
+                    }
+                    else
+                    {
+                        lastExportMessage = "Export failed - check console for details";
+                    }
+                    exportInProgress = false;
+                }
+                widget.tooltip("Export power data as CSV file with angle,wavelength,power columns");
+
+                // Display export status
+                if (!lastExportMessage.empty())
+                {
+                    bool isError = lastExportMessage.find("failed") != std::string::npos;
+                    widget.text(lastExportMessage, isError);
+                }
+
+                if (exportInProgress)
+                {
+                    widget.text("Exporting...");
+                }
+
+                // Export path setting with validation
+                char pathBuffer[256];
+                strncpy_s(pathBuffer, mPowerDataExportPath.c_str(), sizeof(pathBuffer) - 1);
+                pathBuffer[sizeof(pathBuffer) - 1] = '\0';
+
+                if (widget.textbox("Export Path", pathBuffer, sizeof(pathBuffer)))
+                {
+                    std::string newPath = std::string(pathBuffer);
+                    // Basic path validation
+                    if (newPath.empty())
+                    {
+                        newPath = "./";
+                    }
+                    if (newPath.back() != '/' && newPath.back() != '\\')
+                    {
+                        newPath += "/";
+                    }
+                    mPowerDataExportPath = newPath;
+                }
+                widget.tooltip("Directory path for data export (auto-adds trailing slash)");
+
+                // Display current export path validation
+                if (!std::filesystem::exists(mPowerDataExportPath))
+                {
+                    widget.text("⚠ Export path does not exist", true);
+                }
+            }
+        }
+        else
+        {
+            // Display helpful information when disabled
+            widget.text("Enable analysis to access data collection features");
+            widget.text("Direct storage: Saves angle-wavelength-power triplets without binning");
+        }
+    }
+
     // Export UI
     renderExportUI(widget);
 
@@ -1024,6 +1249,11 @@ void IncomingLightPowerPass::renderStatisticsUI(Gui::Widgets& widget)
             if (widget.button("Force Refresh Statistics"))
             {
                 mNeedStatsUpdate = true;
+            }
+
+            // Add a button to output detailed camera and area information to log
+            if (widget.button("Log Debug Info")) {
+                logCameraAndAreaInfo();
             }
 
             statsChanged |= widget.checkbox("Auto-clear when filter changes", mAutoClearStats);
@@ -1437,6 +1667,75 @@ bool IncomingLightPowerPass::exportStatistics(const std::string& filename, Outpu
     return false;
 }
 
+// New helper function: Calculate single pixel area for physics-based calculation
+float IncomingLightPowerPass::calculateSinglePixelArea() const
+{
+    if (!mpScene || !mpScene->getCamera() || mFrameDim.x == 0 || mFrameDim.y == 0)
+    {
+        logWarning("Cannot calculate pixel area: No scene, camera, or invalid dimensions");
+        return 0.666e-8f; // Error identifier value
+    }
+
+    auto camera = mpScene->getCamera();
+    // Calculate FOV Y from focal length and frame height using Falcor's math utilities
+    float focalLength = camera->getFocalLength(); // in mm
+    float frameHeight = camera->getFrameHeight(); // in mm
+    float fovY = focalLengthToFovY(focalLength, frameHeight); // in radians
+
+    float aspectRatio = float(mFrameDim.x) / float(mFrameDim.y);
+    float distToImagePlane = 1.0f; // Standard normalized distance
+
+    // Calculate total sensor dimensions
+    float sensorHeight = 2.0f * distToImagePlane * std::tan(fovY * 0.5f);
+    float sensorWidth = sensorHeight * aspectRatio;
+    float totalSensorArea = sensorWidth * sensorHeight;
+
+    // Calculate single pixel area
+    float pixelArea = totalSensorArea / (float(mFrameDim.x) * float(mFrameDim.y));
+
+    // Validate calculation result
+    if (pixelArea <= 0.0f || !std::isfinite(pixelArea)) {
+        logError("Invalid single pixel area calculation result");
+        return 0.666e-8f; // Error identifier value
+    }
+
+    return pixelArea * mPixelAreaScale; // Apply scaling factor
+}
+
+// New helper function: Calculate total detector area for physics-based calculation
+float IncomingLightPowerPass::calculateTotalDetectorArea() const
+{
+    return calculateSinglePixelArea() * float(mFrameDim.x * mFrameDim.y);
+}
+
+// New helper function: Log detailed camera and area information for debugging
+void IncomingLightPowerPass::logCameraAndAreaInfo() const
+{
+    if (!mpScene || !mpScene->getCamera()) {
+        logError("Cannot log debug info: No scene or camera available.");
+        return;
+    }
+
+    auto camera = mpScene->getCamera();
+    // Calculate FOV Y from focal length and frame height using Falcor's math utilities
+    float focalLength = camera->getFocalLength(); // in mm
+    float frameHeight = camera->getFrameHeight(); // in mm
+    float fovY = focalLengthToFovY(focalLength, frameHeight); // in radians
+
+    float aspectRatio = float(mFrameDim.x) / float(mFrameDim.y);
+    float totalArea = calculateTotalDetectorArea();
+    float pixelArea = calculateSinglePixelArea();
+
+    logInfo("====== Power Calculation Debug Info ======");
+    logInfo(fmt::format("FoV Y: {:.2f} rad ({:.2f} degrees)", fovY, fovY * 180.0f / 3.14159f));
+    logInfo(fmt::format("Aspect Ratio: {:.2f}", aspectRatio));
+    logInfo(fmt::format("Dimensions: {}x{}", mFrameDim.x, mFrameDim.y));
+    logInfo(fmt::format("Pixel Area Scale: {:.6e}", mPixelAreaScale));
+    logInfo(fmt::format("Calculated Total Sensor Area: {:.6e} m^2", totalArea));
+    logInfo(fmt::format("Calculated Single Pixel Area: {:.6e} m^2", pixelArea));
+    logInfo("========================================");
+}
+
 void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, const RenderData& renderData)
 {
     // Get start time for performance measurement
@@ -1481,111 +1780,75 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
         resetStatistics();
     }
 
-    // Count pixels, accumulate power values
-    uint32_t nonZeroPixels = 0;
-    float maxR = 0.0f, maxG = 0.0f, maxB = 0.0f;
-    float sumR = 0.0f, sumG = 0.0f, sumB = 0.0f;
+    // DIRECT POWER ACCUMULATION: Simply sum up all valid pixel powers
+    float3 totalPower = float3(0.0f);
+    uint32_t validPixelCount = 0;
 
-    // First pass: count non-zero pixels and gather statistics
+    // Direct accumulation of pixel power values
+    for (uint32_t i = 0; i < mPowerReadbackBuffer.size(); i++)
+    {
+        const float4& pixelPowerData = mPowerReadbackBuffer[i];
+
+        // Check if pixel power is valid
+        if (pixelPowerData.x > 1e-12f || pixelPowerData.y > 1e-12f || pixelPowerData.z > 1e-12f)
+        {
+            // Check for shader error identifier values
+            if (std::abs(pixelPowerData.x - 0.666f) < 1e-6f) {
+                logWarning("Shader reported a calculation error for a pixel.");
+                continue;
+            }
+
+            // Direct accumulation: P_total = Σ P_pixel
+            totalPower += pixelPowerData.xyz();
+            validPixelCount++;
+        }
+    }
+
+    if (validPixelCount == 0)
+    {
+        logWarning("No valid pixels found for power calculation");
+        mPowerStats.totalPower[0] = mPowerStats.totalPower[1] = mPowerStats.totalPower[2] = 0.666f;
+        return;
+    }
+
+    // Update statistics with direct power accumulation results
+    mPowerStats.totalPower[0] = totalPower.x;
+    mPowerStats.totalPower[1] = totalPower.y;
+    mPowerStats.totalPower[2] = totalPower.z;
+    mPowerStats.pixelCount = validPixelCount;
+    mPowerStats.totalPixels = mFrameDim.x * mFrameDim.y;
+
+    // Calculate average power (per valid pixel equivalent)
+    mPowerStats.averagePower[0] = totalPower.x / float(validPixelCount);
+    mPowerStats.averagePower[1] = totalPower.y / float(validPixelCount);
+    mPowerStats.averagePower[2] = totalPower.z / float(validPixelCount);
+
+    // Track peak power from individual pixels for comparison
+    float maxR = 0.0f, maxG = 0.0f, maxB = 0.0f;
     for (uint32_t i = 0; i < mPowerReadbackBuffer.size(); i++)
     {
         const float4& power = mPowerReadbackBuffer[i];
+        maxR = std::max(maxR, power.x);
+        maxG = std::max(maxG, power.y);
+        maxB = std::max(maxB, power.z);
 
-        // Use a small epsilon to filter out nearly-zero values that might be due to precision errors
-        const float epsilon = 1e-6f;
-        if (power.x > epsilon || power.y > epsilon || power.z > epsilon)
+        // Track wavelength distribution (bin by 10nm intervals)
+        if (power.w > 0.0f && power.w < 2000.0f) // Typical wavelength range: 0-2000nm
         {
-            nonZeroPixels++;
-
-            // Track local maximums for validation
-            maxR = std::max(maxR, power.x);
-            maxG = std::max(maxG, power.y);
-            maxB = std::max(maxB, power.z);
-
-            // Track local sums for validation
-            sumR += power.x;
-            sumG += power.y;
-            sumB += power.z;
-
-                        // Log first 10 non-zero pixels for debugging (only in debug mode and at intervals)
-            if (shouldLogThisFrame && nonZeroPixels <= 10)
-            {
-                logInfo(fmt::format("NonZero pixel [{0}]: R={1:.8f}, G={2:.8f}, B={3:.8f}, W={4:.2f}",
-                               i, power.x, power.y, power.z, power.w));
-            }
-
-            // Update stats
-            mPowerStats.pixelCount++;
-
-            // Accumulate power using precise addition to minimize floating point errors
-            mPowerStats.totalPower[0] += power.x;
-            mPowerStats.totalPower[1] += power.y;
-            mPowerStats.totalPower[2] += power.z;
-
-            // Track peak power
-            mPowerStats.peakPower[0] = std::max(mPowerStats.peakPower[0], power.x);
-            mPowerStats.peakPower[1] = std::max(mPowerStats.peakPower[1], power.y);
-            mPowerStats.peakPower[2] = std::max(mPowerStats.peakPower[2], power.z);
-
-            // Track wavelength distribution (bin by 10nm intervals)
-            // Ensure wavelength is valid and within reasonable range before binning
-            if (power.w > 0.0f && power.w < 2000.0f) // Typical wavelength range: 0-2000nm
-            {
-                int wavelengthBin = static_cast<int>(power.w / 10.0f);
-                mPowerStats.wavelengthDistribution[wavelengthBin]++;
-            }
+            int wavelengthBin = static_cast<int>(power.w / 10.0f);
+            mPowerStats.wavelengthDistribution[wavelengthBin]++;
         }
     }
 
-    // Validate consistency of our statistics tracking
-    if (nonZeroPixels > 0)
-    {
-        // Check if peak power tracking is working correctly
-        if (std::abs(maxR - mPowerStats.peakPower[0]) > 1e-5f ||
-            std::abs(maxG - mPowerStats.peakPower[1]) > 1e-5f ||
-            std::abs(maxB - mPowerStats.peakPower[2]) > 1e-5f)
-        {
-            logWarning("Peak power tracking may be inconsistent");
-            // Correct the values if needed
-            mPowerStats.peakPower[0] = std::max(mPowerStats.peakPower[0], maxR);
-            mPowerStats.peakPower[1] = std::max(mPowerStats.peakPower[1], maxG);
-            mPowerStats.peakPower[2] = std::max(mPowerStats.peakPower[2], maxB);
-        }
+    mPowerStats.peakPower[0] = maxR;
+    mPowerStats.peakPower[1] = maxG;
+    mPowerStats.peakPower[2] = maxB;
 
-        // Check if total power tracking is working correctly (with some tolerance for floating point)
-        const float relativeTolerance = 0.01f; // 1% tolerance
-        if (shouldLogThisFrame && mAccumulatedFrames == 0) // Only check for first frame and in debug mode
-        {
-            if (std::abs(sumR - mPowerStats.totalPower[0]) / std::max(sumR, 1e-5f) > relativeTolerance ||
-                std::abs(sumG - mPowerStats.totalPower[1]) / std::max(sumG, 1e-5f) > relativeTolerance ||
-                std::abs(sumB - mPowerStats.totalPower[2]) / std::max(sumB, 1e-5f) > relativeTolerance)
-            {
-                logWarning("Total power tracking may be inconsistent");
-                // Log differences for debugging
-                logInfo(fmt::format("Power sum difference: R={0:.8f}, G={1:.8f}, B={2:.8f}",
-                                   sumR - mPowerStats.totalPower[0],
-                                   sumG - mPowerStats.totalPower[1],
-                                   sumB - mPowerStats.totalPower[2]));
-            }
-        }
-    }
-
-    // Update total pixels count
-    mPowerStats.totalPixels = mFrameDim.x * mFrameDim.y;
-
-    // Calculate averages with safe division to prevent divide-by-zero
-    if (mPowerStats.pixelCount > 0)
+    // Validate final results
+    if (totalPower.x < 0.0f || totalPower.y < 0.0f || totalPower.z < 0.0f)
     {
-        mPowerStats.averagePower[0] = mPowerStats.totalPower[0] / mPowerStats.pixelCount;
-        mPowerStats.averagePower[1] = mPowerStats.totalPower[1] / mPowerStats.pixelCount;
-        mPowerStats.averagePower[2] = mPowerStats.totalPower[2] / mPowerStats.pixelCount;
-    }
-    else
-    {
-        // Reset average power to zero if no pixels passed filtering
-        mPowerStats.averagePower[0] = 0.0f;
-        mPowerStats.averagePower[1] = 0.0f;
-        mPowerStats.averagePower[2] = 0.0f;
+        logError("Calculated negative total power, using error marker");
+        mPowerStats.totalPower[0] = mPowerStats.totalPower[1] = mPowerStats.totalPower[2] = 0.666f;
     }
 
     // Update accumulated frames count
@@ -1594,49 +1857,20 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
         mAccumulatedFrames++;
     }
 
-    // Set default values if calculation results are suspicious
-    if (nonZeroPixels > 0 && (mPowerStats.totalPower[0] <= 0 && mPowerStats.totalPower[1] <= 0 && mPowerStats.totalPower[2] <= 0))
-    {
-        logWarning("Power values suspiciously low, using default minimum values");
-        // Set a small non-zero value
-        for (int i = 0; i < 3; i++)
-        {
-            if (mPowerStats.totalPower[i] <= 0) mPowerStats.totalPower[i] = 0.001f;
-        }
-    }
-
-    // Log detailed statistics summary for debugging (only in debug mode and at intervals)
+    // Debug output for direct power accumulation (only in debug mode and at intervals)
     if (shouldLogThisFrame)
     {
         float percentage = mPowerReadbackBuffer.size() > 0 ?
-                        100.0f * nonZeroPixels / mPowerReadbackBuffer.size() : 0.0f;
+                        100.0f * validPixelCount / mPowerReadbackBuffer.size() : 0.0f;
 
-        logInfo(fmt::format("Statistics: Found {0} non-zero power pixels out of {1} ({2:.2f}%)",
-                        nonZeroPixels,
-                        mPowerReadbackBuffer.size(),
-                        percentage));
-
-        logInfo(fmt::format("Total Power (W): R={0:.8f}, G={1:.8f}, B={2:.8f}",
-                        mPowerStats.totalPower[0],
-                        mPowerStats.totalPower[1],
-                        mPowerStats.totalPower[2]));
-
-        logInfo(fmt::format("Peak Power (W): R={0:.8f}, G={1:.8f}, B={2:.8f}",
-                        mPowerStats.peakPower[0],
-                        mPowerStats.peakPower[1],
-                        mPowerStats.peakPower[2]));
-
-        if (nonZeroPixels == 0 && mPowerReadbackBuffer.size() > 0)
-        {
-            // Log sample pixels to debug when no non-zero pixels are found
-            logWarning("No non-zero pixels found in the current frame");
-            for (uint32_t i = 0; i < std::min(static_cast<size_t>(5), mPowerReadbackBuffer.size()); i++)
-            {
-                const float4& power = mPowerReadbackBuffer[i];
-                logInfo(fmt::format("Sample pixel [{0}]: R={1:.8f}, G={2:.8f}, B={3:.8f}, W={4:.2f}",
-                                i, power.x, power.y, power.z, power.w));
-            }
-        }
+        logInfo(fmt::format("Image sensor direct power accumulation:"));
+        logInfo(fmt::format("  Valid pixels: {0} out of {1} ({2:.2f}%)",
+                           validPixelCount, mPowerReadbackBuffer.size(), percentage));
+        logInfo(fmt::format("  Calculation method: Direct pixel power summation"));
+        logInfo(fmt::format("  Total power: [{:.6e}, {:.6e}, {:.6e}] W",
+                           totalPower.x, totalPower.y, totalPower.z));
+        logInfo(fmt::format("  Peak pixel power: [{:.6e}, {:.6e}, {:.6e}] W",
+                           maxR, maxG, maxB));
 
         // Output wavelength distribution summary if available
         if (!mPowerStats.wavelengthDistribution.empty())
@@ -1649,7 +1883,7 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
                 countedWavelengths += count;
             }
 
-            logInfo(fmt::format("Wavelength distribution: {0} distinct bands, {1} wavelengths counted",
+            logInfo(fmt::format("  Wavelength distribution: {0} distinct bands, {1} wavelengths counted",
                             totalBins, countedWavelengths));
         }
 
@@ -1658,7 +1892,7 @@ void IncomingLightPowerPass::calculateStatistics(RenderContext* pRenderContext, 
         {
             uint64_t endTime = getTimeInMicroseconds();
             float calculationTime = (endTime - startTime) / 1000.0f; // Convert to milliseconds
-            logInfo(fmt::format("Statistics calculation completed in {0:.2f} ms", calculationTime));
+            logInfo(fmt::format("Direct power accumulation completed in {0:.2f} ms", calculationTime));
         }
     }
 
@@ -1925,7 +2159,36 @@ void IncomingLightPowerPass::prepareResources(RenderContext* pRenderContext, con
         mPowerCalculator.setup(mpScene, mFrameDim);
     }
 
-    // Add any buffer initialization or other resource preparation here
+    // Create classification buffer for photodetector analysis if needed
+    if (mEnablePhotodetectorAnalysis)
+    {
+        uint32_t bufferSize = mFrameDim.x * mFrameDim.y;
+
+        // Create or resize power data buffer if needed
+        if (!mpPowerDataBuffer || mpPowerDataBuffer->getElementCount() != bufferSize)
+        {
+            try
+            {
+                mpPowerDataBuffer = mpDevice->createStructuredBuffer(
+                    sizeof(float) * 4,  // 4 floats per entry (incidentAngle, wavelength, power, validFlag)
+                    bufferSize,
+                    ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource,
+                    MemoryType::DeviceLocal,
+                    nullptr,  // No initial data
+                    false     // Not constant buffer
+                );
+
+                logInfo("Created power data buffer with {} entries ({}KB)",
+                        bufferSize, (bufferSize * sizeof(float) * 4) / 1024);
+            }
+            catch (const std::exception& e)
+            {
+                logError("Failed to create power data buffer: {}", e.what());
+                mTotalAccumulatedPower = 0.666f; // Error marker
+                mEnablePhotodetectorAnalysis = false; // Disable PD analysis on error
+            }
+        }
+    }
 }
 
 void IncomingLightPowerPass::startBatchExport()
@@ -2126,5 +2389,241 @@ void IncomingLightPowerPass::processBatchExport()
             setViewpointPosition(mBatchExportCurrentViewpoint);
             mBatchExportFrameCount = mBatchExportFramesToWait;
         }
+    }
+}
+
+// Photodetector data management functions implementation
+void IncomingLightPowerPass::initializePowerData()
+{
+    try
+    {
+        // Clear existing data points
+        mPowerDataPoints.clear();
+        mPowerDataPoints.reserve(mMaxDataPoints);
+
+        // Reset total accumulated power
+        mTotalAccumulatedPower = 0.0f;
+
+        // Calculate expected memory usage
+        const float expectedMemoryMB = (mMaxDataPoints * sizeof(PowerDataPoint)) / (1024.0f * 1024.0f);
+        const float maxAllowedMemoryMB = 100.0f; // Reasonable limit for data storage
+
+        if (expectedMemoryMB > maxAllowedMemoryMB)
+        {
+            logError("Data storage size {} would use {:.2f}MB, exceeding {:.2f}MB limit",
+                    mMaxDataPoints, expectedMemoryMB, maxAllowedMemoryMB);
+            mTotalAccumulatedPower = 0.666f; // Error marker
+            return;
+        }
+
+        logInfo("Power data storage initialized: max {} data points ({:.2f}MB)",
+                mMaxDataPoints, expectedMemoryMB);
+    }
+    catch (const std::exception& e)
+    {
+        logError("Failed to initialize power data storage: {}", e.what());
+        mTotalAccumulatedPower = 0.666f; // Error marker
+
+        // Attempt recovery with smaller data size
+        try
+        {
+            mPowerDataPoints.clear();
+            mMaxDataPoints = 100000; // Fallback to smaller size
+            mPowerDataPoints.reserve(mMaxDataPoints);
+            logInfo("Recovery data storage initialized with {} data points", mMaxDataPoints);
+        }
+        catch (...)
+        {
+            logError("Data storage recovery failed - PD analysis will be disabled");
+            mEnablePhotodetectorAnalysis = false;
+        }
+    }
+}
+
+void IncomingLightPowerPass::resetPowerData()
+{
+    try
+    {
+        // Clear all data points
+        mPowerDataPoints.clear();
+
+        // Reset accumulation counter
+        mTotalAccumulatedPower = 0.0f;
+
+        logInfo("Power data reset successfully - {} data points cleared",
+               mPowerDataPoints.size());
+    }
+    catch (const std::exception& e)
+    {
+        logError("Failed to reset power data: {}", e.what());
+        mTotalAccumulatedPower = 0.666f; // Error marker
+
+        // Attempt recovery by reinitializing
+        try
+        {
+            initializePowerData();
+            logInfo("Power data reset recovery successful");
+        }
+        catch (...)
+        {
+            logError("Power data reset recovery failed - PD analysis may be unstable");
+        }
+    }
+}
+
+bool IncomingLightPowerPass::exportPowerData()
+{
+    try
+    {
+        // Validate data before export
+        if (mPowerDataPoints.empty())
+        {
+            logError("Power data is empty, cannot export");
+            return false;
+        }
+
+        // Generate filename with timestamp
+        std::string filename = mPowerDataExportPath + "power_data_" +
+                              std::to_string(std::time(nullptr)) + ".csv";
+
+        std::ofstream file(filename);
+        if (!file.is_open())
+        {
+            logError("Failed to create export file: {}", filename);
+            return false;
+        }
+
+        // Write CSV header
+        file << "# Photodetector Power Data Export\n";
+        file << "# Data points: " << mPowerDataPoints.size() << "\n";
+        file << "# Total accumulated power: " << mTotalAccumulatedPower << " W\n";
+        file << "# Format: incident_angle_deg,wavelength_nm,power_w\n";
+        file << "incident_angle,wavelength,power\n";
+
+        // Write data points
+        for (const auto& dataPoint : mPowerDataPoints)
+        {
+            file << dataPoint.incidentAngle << ","
+                 << dataPoint.wavelength << ","
+                 << dataPoint.power << "\n";
+        }
+
+        file.close();
+        logInfo("Power data exported to {} ({} data points)", filename, mPowerDataPoints.size());
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        logError("CSV export failed: {}", e.what());
+        return false;
+    }
+}
+
+void IncomingLightPowerPass::accumulatePowerData(RenderContext* pRenderContext)
+{
+    if (!mEnablePhotodetectorAnalysis || !mpPowerDataBuffer)
+    {
+        return;
+    }
+
+    try
+    {
+        // Check if we're approaching data point limit
+        if (mPowerDataPoints.size() >= mMaxDataPoints)
+        {
+            logWarning("Maximum data points reached ({}), skipping accumulation", mMaxDataPoints);
+            return;
+        }
+
+        // Read back power data from GPU buffer
+        uint32_t bufferSize = mFrameDim.x * mFrameDim.y;
+        uint32_t totalBytes = bufferSize * sizeof(float) * 4; // 4 floats per entry
+
+        // Create ReadBack staging buffer if it doesn't exist or is too small
+        if (!mpPowerDataStagingBuffer || mpPowerDataStagingBuffer->getSize() < totalBytes)
+        {
+            mpPowerDataStagingBuffer = mpDevice->createBuffer(
+                totalBytes,
+                ResourceBindFlags::None,
+                MemoryType::ReadBack
+            );
+            if (!mpPowerDataStagingBuffer)
+            {
+                logError("Failed to create power data staging buffer");
+                mTotalAccumulatedPower = 0.666f; // Error marker
+                return;
+            }
+        }
+
+        // Copy data from GPU buffer to staging buffer
+        pRenderContext->copyResource(mpPowerDataStagingBuffer.get(), mpPowerDataBuffer.get());
+
+        // Wait for copy to complete
+        pRenderContext->submit(true);
+
+        // Map staging buffer for reading
+        const float* pData = static_cast<const float*>(mpPowerDataStagingBuffer->map());
+        if (!pData)
+        {
+            logError("Failed to map power data staging buffer for reading");
+            mTotalAccumulatedPower = 0.666f; // Error marker
+            return;
+        }
+
+        uint32_t validPixels = 0;
+        uint32_t invalidPixels = 0;
+
+        // Process each pixel's power data
+        for (uint32_t i = 0; i < bufferSize && mPowerDataPoints.size() < mMaxDataPoints; i++)
+        {
+            uint32_t dataOffset = i * 4; // 4 floats per entry
+
+            float incidentAngle = pData[dataOffset + 0];
+            float wavelength = pData[dataOffset + 1];
+            float power = pData[dataOffset + 2];
+            float validFlag = pData[dataOffset + 3];
+
+            // Check if this pixel has valid data
+            if (validFlag > 0.5f &&
+                incidentAngle >= 0.0f && incidentAngle <= 90.0f &&
+                wavelength >= 300.0f && wavelength <= 1000.0f &&
+                power >= 0.0f && power < 1e6f)
+            {
+                // Store direct data point
+                PowerDataPoint dataPoint;
+                dataPoint.incidentAngle = incidentAngle;
+                dataPoint.wavelength = wavelength;
+                dataPoint.power = power;
+
+                mPowerDataPoints.push_back(dataPoint);
+                mTotalAccumulatedPower += power;
+                validPixels++;
+            }
+            else
+            {
+                invalidPixels++;
+            }
+        }
+
+        // Unmap staging buffer
+        mpPowerDataStagingBuffer->unmap();
+
+        // Log accumulation results for debugging
+        if (mDebugMode && (mFrameCount % mDebugLogFrequency == 0))
+        {
+            logInfo("Power data accumulation: {} valid pixels, {} invalid pixels, {} total data points, {:.6f} W total power",
+                    validPixels, invalidPixels, mPowerDataPoints.size(), mTotalAccumulatedPower);
+        }
+
+        // Check for errors
+        if (validPixels == 0 && mFrameCount > 10) // Allow some startup frames
+        {
+            logWarning("No valid power data accumulated after frame {}", mFrameCount);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        logError("Failed to accumulate power data: {}", e.what());
+        mTotalAccumulatedPower = 0.666f; // Error marker
     }
 }

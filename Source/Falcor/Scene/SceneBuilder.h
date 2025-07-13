@@ -52,6 +52,8 @@
 
 namespace Falcor
 {
+    class SDFGrid;  // Forward declaration
+
     class FALCOR_API SceneBuilder
     {
     public:
@@ -570,7 +572,11 @@ namespace Falcor
         */
         LightID addLight(const ref<Light>& pLight);
 
-        /** DEMO21: Load global light profile.
+        /** Add LED_Emissive to scene.
+        */
+        void addLEDEmissive(const ref<LED_Emissive>& pLEDEmissive);
+
+        /** Load a light profile from file.
         */
         void loadLightProfile(const std::string& filename, bool normalize = true);
 

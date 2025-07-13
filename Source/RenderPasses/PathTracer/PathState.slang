@@ -115,6 +115,12 @@ struct PathState
     float cirReflectanceProduct;        ///< r_i: Accumulated product of surface reflectances [0,1]
     bool hitEmissiveSurface;            ///< Flag indicating if the path has hit an emissive surface
 
+    // === Vertex collection fields for path vertex collection feature ===
+    float3 pathVertices[7];             ///< Temporary storage for vertex coordinates (max 7 vertices)
+    uint pathVertexCount;               ///< Current number of vertices in the path
+    float3 pathBasePosition;            ///< Base position (camera position) for relative coordinate calculation
+    bool vertexCollectionEnabled;       ///< Flag indicating if vertex collection is enabled
+
     // Accessors
 
     bool isTerminated() { return !isActive(); }
@@ -312,9 +318,98 @@ struct PathState
         cirReflectanceProduct = clamp(cirReflectanceProduct, 0.0f, 1.0f);
     }
 
+    // === Vertex collection methods for path vertex collection feature ===
+
+    /** Initialize vertex collection for the path with camera position as base.
+        Sets up the base position and enables vertex collection.
+        \param[in] cameraPos Camera position to use as base for relative coordinates
+    */
+    [mutating] void initPathVertexCollection(float3 cameraPos)
+    {
+        pathBasePosition = cameraPos;
+        pathVertexCount = 0;
+        vertexCollectionEnabled = true;
+
+        // Add camera position as the first vertex
+        addPathVertex(cameraPos);
+    }
+
+    /** Add a vertex to the path vertex collection.
+        Automatically validates vertex coordinates and enforces maximum vertex limit.
+        Collects all vertices including those on emissive surfaces.
+        \param[in] position World space position of the vertex to add
+    */
+    [mutating] void addPathVertex(float3 position)
+    {
+        if (!vertexCollectionEnabled)
+            return;
+
+        // NOTE: Removed check for hitEmissiveSurface to allow collecting vertices on emissive surfaces
+        // This ensures that for ReflectionCount = 1, we can collect both the reflection point and the final emissive hit
+
+        // Check for NaN or infinite values in the input position
+        if (isnan(position.x) || isnan(position.y) || isnan(position.z) ||
+            isinf(position.x) || isinf(position.y) || isinf(position.z))
+        {
+            // Skip invalid vertex coordinates
+            return;
+        }
+
+        if (pathVertexCount < 7)
+        {
+            pathVertices[pathVertexCount] = position;
+            pathVertexCount++;
+        }
+        else
+        {
+            // Reached maximum vertex limit, ignore additional vertices
+            // Note: In a real implementation, this would be logged as a warning
+        }
+    }
+
+    /** Validate the current state of vertex collection.
+        Checks if vertex collection data is valid and ready for use.
+        \return True if vertex collection is valid, false if there are issues
+    */
+    bool isVertexCollectionValid()
+    {
+        if (pathVertexCount == 0)
+        {
+            // No vertices collected
+            return false;
+        }
+
+        // Check that vertex count is within bounds
+        if (pathVertexCount > 7)
+        {
+            return false;
+        }
+
+        // Validate base position
+        if (isnan(pathBasePosition.x) || isnan(pathBasePosition.y) || isnan(pathBasePosition.z) ||
+            isinf(pathBasePosition.x) || isinf(pathBasePosition.y) || isinf(pathBasePosition.z))
+        {
+            return false;
+        }
+
+        // Check validity of collected vertices
+        for (uint i = 0; i < pathVertexCount; i++)
+        {
+            float3 vertex = pathVertices[i];
+            if (isnan(vertex.x) || isnan(vertex.y) || isnan(vertex.z) ||
+                isinf(vertex.x) || isinf(vertex.y) || isinf(vertex.z))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
         /** Generate complete CIR data by combining existing fields with CIR-specific fields.
         This method maximizes data reuse by utilizing existing PathState fields.
         Uses accumulated surface reflectance product for VLC calculations.
+        Extended to include vertex collection data.
         \return Complete CIR data structure ready for output.
     */
     CIRPathData getCIRData()
@@ -337,6 +432,38 @@ struct PathState
         // ❌ Use CIR-specific fields (2/9 parameters)
         cir.emissionAngle = cirEmissionAngle;                                   // CIR-specific field
         cir.receptionAngle = cirReceptionAngle;                                 // CIR-specific field
+
+        // === New: Handle vertex collection data ===
+        if (!isVertexCollectionValid())
+        {
+            // If vertex collection is invalid, use default error values
+            cir.basePosition = float3(0.666, 0.666, 0.666);
+            cir.vertexCount = 1;
+            cir.compressedVertices[0] = uint2(0, 0);
+            for (uint i = 1; i < 7; i++)
+            {
+                cir.compressedVertices[i] = uint2(0, 0);
+            }
+        }
+        else
+        {
+            // Valid vertex collection data
+            cir.basePosition = pathBasePosition;
+            cir.vertexCount = pathVertexCount;
+
+            // Compress vertex data using the compression functions from CIRPathData.slang
+            for (uint i = 0; i < 7; i++)
+            {
+                if (i < pathVertexCount)
+                {
+                    cir.compressedVertices[i] = compressVertex(pathVertices[i], pathBasePosition);
+                }
+                else
+                {
+                    cir.compressedVertices[i] = uint2(0, 0);
+                }
+            }
+        }
 
         // Final validation and error handling
         if (cir.reflectanceProduct <= 0.0f || isnan(cir.reflectanceProduct) || isinf(cir.reflectanceProduct))

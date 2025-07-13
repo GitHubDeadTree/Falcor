@@ -1,4 +1,0 @@
-0, Transform(position = float3(0, 0.3, 10), target = float3(0, 0.3, 0), up = float3(0, 1, 0))
-10, Transform(position = float3(-5.06638, 16.0821, 3.13346), target = float3(-5.05901, 15.1477, 2.77731), up = float3(6.18689e-05, 0.999996, -0.00299113))
-20, Transform(position = float3(5.54697, 16.0821, 3.35299), target = float3(5.55434, 15.1477, 2.99684), up = float3(6.18689e-05, 0.999996, -0.00299113))
-30, Transform(position = float3(0, 0.3, 10), target = float3(0, 0.3, 0), up = float3(0, 1, 0))

@@ -58,6 +58,9 @@ RWTexture2D<float4> gDebugOutput;       ///< Debug output for original calculati
 RWTexture2D<float4> gDebugInputData;    ///< Debug output for input data
 RWTexture2D<float4> gDebugCalculation;  ///< Debug output for calculation steps
 
+// Photodetector analysis buffer
+RWStructuredBuffer<float4> gPowerDataBuffer; ///< Buffer for direct data storage [incidentAngle, wavelength, power, validFlag]
+
 // Parameters
 cbuffer PerFrameCB
 {
@@ -72,17 +75,51 @@ cbuffer PerFrameCB
     float gBandTolerances[MAX_BANDS];  ///< Tolerances for specific wavelength bands
     float gPixelAreaScale;             ///< Scale factor for pixel area (default: 1000.0)
 
+    // Photodetector analysis parameters
+    bool gEnablePhotodetectorAnalysis; ///< Enable photodetector analysis
+    float gDetectorArea;               ///< Photodetector effective area in m²
+    float gSourceSolidAngle;           ///< Source solid angle in sr
+    uint gCurrentNumRays;              ///< Current number of rays
+
     // Camera data
     float4x4 gCameraInvViewProj;       ///< Camera inverse view-projection matrix
     float3 gCameraPosition;            ///< Camera position in world space
     float3 gCameraTarget;              ///< Camera target in world space
     float gCameraFocalLength;          ///< Camera focal length
+    float gCameraFovY;                 ///< Camera field of view Y in radians
 }
 
 // Remove Scene parameter block - we don't need it anymore
 // ParameterBlock<Scene> gScene;
 
 // Utility functions
+
+// Photodetector analysis utility functions
+
+// Calculate incident angle from ray direction (reuses existing computeCosTheta method)
+float calculateIncidentAngle(float3 rayDir)
+{
+    // Use existing computeCosTheta function for consistency
+    float cosTheta = computeCosTheta(rayDir);
+    return acos(cosTheta) * 180.0f / 3.14159f; // Convert to degrees
+}
+
+// Validate power data point
+bool isValidPowerData(float incidentAngle, float wavelength, float power)
+{
+    return (incidentAngle >= 0.0f && incidentAngle <= 90.0f &&
+            wavelength >= 300.0f && wavelength <= 1000.0f &&
+            power >= 0.0f && power < 1e6f);
+}
+
+// Log data validation error
+void logDataError(float wavelength, float angle, float power, uint2 pixel)
+{
+    // Only log errors occasionally to avoid spam
+    if ((pixel.x + pixel.y) % 1000 == 0) {
+        gDebugOutput[pixel] = float4(0.666f, wavelength, angle, power);
+    }
+}
 
 // Check if wavelength is in the visible spectrum range (380-780nm)
 bool isInVisibleSpectrum(float wavelength)
@@ -190,26 +227,39 @@ float3 computeRayDirection(uint2 pixel, uint2 dimensions)
     return rayDir;
 }
 
-// Compute pixel area on the image sensor
+// Compute area for power measurement - returns SINGLE pixel area
 float computePixelArea(uint2 dimensions)
 {
-    // Calculate FOV and aspect ratio
-    float fovY = gCameraFocalLength;  // Camera focal length in Falcor units
+    // If no valid dimensions, return error identifier value
+    if (dimensions.x == 0 || dimensions.y == 0) return 0.666e-8f;
+
+    // For photodetector analysis, use the physical detector area directly
+    if (gEnablePhotodetectorAnalysis)
+    {
+        // Use the configured detector area for photodetector analysis
+        return gDetectorArea;
+    }
+
+    // For camera-based analysis, calculate SINGLE pixel area
+    // Get camera parameters to calculate total sensor area
+    float fovY = gCameraFovY; // Use FoV Y parameter from cbuffer
     float aspectRatio = float(dimensions.x) / float(dimensions.y);
+    float distToImagePlane = 1.0f; // Standard normalized distance
 
-    // Use normalized distance to image plane
-    float distToImagePlane = 1.0f;
-
-    // Calculate sensor dimensions
+    // Calculate total sensor dimensions
     float sensorHeight = 2.0f * distToImagePlane * tan(fovY * 0.5f);
     float sensorWidth = sensorHeight * aspectRatio;
+    float totalSensorArea = sensorWidth * sensorHeight;
 
-    // Calculate pixel dimensions
-    float pixelWidth = sensorWidth / float(dimensions.x);
-    float pixelHeight = sensorHeight / float(dimensions.y);
+    // Calculate SINGLE pixel area by dividing total area by pixel count
+    float pixelArea = totalSensorArea / (float(dimensions.x) * float(dimensions.y));
 
-    // Return pixel area with scaling factor
-    return pixelWidth * pixelHeight * gPixelAreaScale;
+    // Validate calculation result
+    if (pixelArea <= 0.0f || !isfinite(pixelArea)) {
+        return 0.666e-8f; // 0.666 square micrometers, obvious error identifier
+    }
+
+    return pixelArea * gPixelAreaScale; // gPixelAreaScale for unit adjustment
 }
 
 // Define a debug structure to store cosTheta computation details
@@ -332,8 +382,9 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
         }
     }
 
-    // Calculate pixel area
-    pixelArea = computePixelArea(dimensions);
+    // Calculate SINGLE pixel area
+    float area = computePixelArea(dimensions);
+    pixelArea = area; // For backward compatibility with debug code
 
     // Calculate cosine term with debug info for debug pixels
     if (isDebugPixel) {
@@ -353,15 +404,15 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
             cosThetaDebug.dotProduct,           // Raw dot product
             cosThetaDebug.cosTheta,             // Before min clamp
             cosTheta,                           // Final value (after min clamp)
-            pixelArea                           // Pixel area for power calculation
+            area                                // Area used for power calculation
         );
 
         // Special debug for first pixel (0,0)
         if (pixel.x == 0 && pixel.y == 0) {
-            // Calculate power values for the RGB components
-            float rPower = safeRadiance.r * pixelArea * cosTheta;
-            float gPower = safeRadiance.g * pixelArea * cosTheta;
-            float bPower = safeRadiance.b * pixelArea * cosTheta;
+            // Calculate power values for the RGB components using area directly
+            float rPower = safeRadiance.r * area * cosTheta;
+            float gPower = safeRadiance.g * area * cosTheta;
+            float bPower = safeRadiance.b * area * cosTheta;
 
             // Store in a special debug texture slot - we'll use gDebugInputData for pixel (1,1)
             // This avoids overwriting the camera normal information
@@ -372,7 +423,7 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
             // in a special debug texture for verification
             gDebugCalculation[pixel] = float4(
                 safeRadiance.r,              // R component of radiance
-                pixelArea,                   // Pixel area
+                area,                        // Area used for calculation
                 cosTheta,                    // Final cosTheta value
                 rPower                       // R component of calculated power
             );
@@ -384,7 +435,13 @@ float4 computeLightPower(uint2 pixel, uint2 dimensions, float3 rayDir, float4 ra
     }
 
     // Calculate power using the formula: Power = Radiance * Area * cos(θ)
-    float3 power = safeRadiance * pixelArea * cosTheta;
+    // Use single pixel area for proper per-pixel power calculation
+    float3 power = safeRadiance * area * cosTheta;
+
+    // Validate power calculation result
+    if (any(!isfinite(power)) || any(power < 0.0f)) {
+        return float4(0.666f, 0.666f, 0.666f, wavelength);
+    }
 
     // Return power with the wavelength
     return float4(power, wavelength > 0.0f ? wavelength : 550.0f);
@@ -483,7 +540,42 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         wavelength = estimateWavelengthFromRGB(radiance.rgb);
     }
 
-    // Compute power
+    // Photodetector analysis (if enabled)
+    if (gEnablePhotodetectorAnalysis && any(radiance.rgb > 0))
+    {
+        // Use existing angle calculation method for consistency
+        float cosTheta = computeCosTheta(rayDir);
+        float incidentAngle = calculateIncidentAngle(rayDir);
+
+        // Key correction: Use PD physical area instead of pixel area
+        float deltaOmega = gSourceSolidAngle / float(gCurrentNumRays);
+        float3 pdPower = radiance.rgb * gDetectorArea * cosTheta * deltaOmega;
+        float totalPower = pdPower.x + pdPower.y + pdPower.z;
+
+        // Validate data before storing
+        if (isValidPowerData(incidentAngle, wavelength, totalPower))
+        {
+            // Store direct angle-wavelength-power data for CPU processing
+            uint index = pixel.y * dimensions.x + pixel.x;
+            gPowerDataBuffer[index] = float4(
+                incidentAngle,       // Incident angle in degrees
+                wavelength,          // Wavelength in nanometers
+                totalPower,          // Total power in watts
+                1.0f                 // Valid flag
+            );
+        }
+        else
+        {
+            // Record data validation error
+            logDataError(wavelength, incidentAngle, totalPower, pixel);
+
+            // Mark as invalid in data buffer
+            uint index = pixel.y * dimensions.x + pixel.x;
+            gPowerDataBuffer[index] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        }
+    }
+
+    // Existing image sensor power calculation (preserved for compatibility)
     float4 power = computeLightPower(pixel, dimensions, rayDir, radiance, wavelength);
 
     // Write output
