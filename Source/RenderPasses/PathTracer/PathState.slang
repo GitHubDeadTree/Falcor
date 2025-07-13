@@ -336,12 +336,16 @@ struct PathState
 
     /** Add a vertex to the path vertex collection.
         Automatically validates vertex coordinates and enforces maximum vertex limit.
+        Collects all vertices including those on emissive surfaces.
         \param[in] position World space position of the vertex to add
     */
     [mutating] void addPathVertex(float3 position)
     {
         if (!vertexCollectionEnabled)
             return;
+
+        // NOTE: Removed check for hitEmissiveSurface to allow collecting vertices on emissive surfaces
+        // This ensures that for ReflectionCount = 1, we can collect both the reflection point and the final emissive hit
 
         // Check for NaN or infinite values in the input position
         if (isnan(position.x) || isnan(position.y) || isnan(position.z) ||

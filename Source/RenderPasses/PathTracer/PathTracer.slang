@@ -331,12 +331,8 @@ struct PathTracer
             path.setHit(hit);
             path.setVertexIndex(1);
 
-            // === Add first hit vertex ===
-            float3 hitPos = path.origin + path.dir * path.sceneLength;
-            if (!isnan(hitPos.x) && !isnan(hitPos.y) && !isnan(hitPos.z))
-            {
-                path.addPathVertex(hitPos);
-            }
+            // Note: Vertex addition for surface hits is handled by closesthit shaders
+            // to ensure accurate hit positions are used, avoiding duplicate camera positions
         }
     }
 
