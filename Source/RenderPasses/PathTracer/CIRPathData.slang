@@ -46,6 +46,7 @@ struct CIRPathData
     uint pixelX;                ///< Pixel X coordinate
     uint pixelY;                ///< Pixel Y coordinate
     uint pathIndex;             ///< Unique index identifier for this path
+    bool hitEmissiveSurface;    ///< Flag indicating if the path has hit an emissive surface
 
     // New vertex-related fields for path vertex collection feature
     uint2 compressedVertices[7];  ///< Compressed vertex coordinates, each vertex uses 6 bytes

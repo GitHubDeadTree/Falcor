@@ -432,6 +432,7 @@ struct PathState
         // ❌ Use CIR-specific fields (2/9 parameters)
         cir.emissionAngle = cirEmissionAngle;                                   // CIR-specific field
         cir.receptionAngle = cirReceptionAngle;                                 // CIR-specific field
+        cir.hitEmissiveSurface = hitEmissiveSurface;                            // New: Flag indicating if an emissive surface was hit
 
         // === New: Handle vertex collection data ===
         if (!isVertexCollectionValid())

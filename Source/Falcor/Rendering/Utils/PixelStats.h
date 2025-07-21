@@ -62,6 +62,7 @@ namespace Falcor
         uint32_t pixelX;
         uint32_t pixelY;
         uint32_t pathIndex;
+        bool hitEmissiveSurface;
 
         // New vertex-related fields for path vertex collection feature (must match GPU definition)
         struct CompressedVertex
