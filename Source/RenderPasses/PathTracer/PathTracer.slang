@@ -976,6 +976,10 @@ struct PathTracer
         {
             float primaryHitDist = length(sd.posW - path.origin);
             path.sceneLength += primaryHitDist;
+
+            // FIX: Add primary ray hit vertex collection
+            // Primary hits bypass ClosestHit shader vertex collection, so we need to collect here
+            path.addPathVertex(sd.posW);
         }
 
         // === Update CIR data during path tracing ===
