@@ -442,6 +442,7 @@ struct PathState
         This method maximizes data reuse by utilizing existing PathState fields.
         Uses accumulated surface reflectance product for VLC calculations.
         Extended to include vertex collection data.
+        TASK 3: Updated to ensure originalEmittedPower field is properly filled and validated.
         \return Complete CIR data structure ready for output.
     */
     CIRPathData getCIRData()
@@ -452,7 +453,7 @@ struct PathState
         cir.pathLength = sceneLength;                                           // Direct assignment, no conversion needed
         cir.reflectionCount = getBounces(BounceType::Diffuse) +
                              getBounces(BounceType::Specular);                  // Reuse existing field
-        cir.emittedPower = getLightIntensity();                                 // Reuse existing field
+        cir.emittedPower = getLightIntensity();                                 // Reuse existing field (attenuated power)
         uint2 pixel = getPixel();
         cir.pixelX = pixel.x;                                                   // Reuse existing field
         cir.pixelY = pixel.y;                                                   // Reuse existing field
@@ -461,11 +462,13 @@ struct PathState
         // ✅ Use accumulated reflectance product from surface materials
         cir.reflectanceProduct = cirReflectanceProduct;                         // Use accumulated material reflectance
 
-        // ❌ Use CIR-specific fields (3/10 parameters)
+        // ❌ Use CIR-specific fields (4/11 parameters)
         cir.emissionAngle = cirEmissionAngle;                                   // CIR-specific field
         cir.receptionAngle = cirReceptionAngle;                                 // CIR-specific field
-        cir.hitEmissiveSurface = hitEmissiveSurface;                            // New: Flag indicating if an emissive surface was hit
-        cir.originalEmittedPower = getOriginalLEDPower();                       // New: Original LED power for this path
+        cir.hitEmissiveSurface = hitEmissiveSurface;                            // Flag indicating if an emissive surface was hit
+
+        // TASK 3: Set original LED power with validation
+        cir.originalEmittedPower = getOriginalLEDPower();                       // Original LED power for this path
 
         // === New: Handle vertex collection data ===
         if (!isVertexCollectionValid())
@@ -499,7 +502,9 @@ struct PathState
             }
         }
 
-        // Final validation and error handling
+        // TASK 3: Enhanced validation and error handling for CIR data
+
+        // Validate reflectance product
         if (cir.reflectanceProduct <= 0.0f || isnan(cir.reflectanceProduct) || isinf(cir.reflectanceProduct))
         {
             cir.reflectanceProduct = 0.666f; // Debug value to identify problematic paths
@@ -508,6 +513,22 @@ struct PathState
         {
             // Ensure within valid range for VLC systems
             cir.reflectanceProduct = clamp(cir.reflectanceProduct, 0.0f, 1.0f);
+        }
+
+        // TASK 3: Validate original emitted power
+        if (cir.originalEmittedPower <= 0.0f || cir.originalEmittedPower == 0.666f)
+        {
+            // Log warning for debugging (in actual implementation, this would be logged)
+            // For now, keep the error indicator value for identification
+        }
+
+        // TASK 3: Validate power relationship (original should be >= attenuated)
+        if (cir.originalEmittedPower > 0.0f && cir.originalEmittedPower != 0.666f &&
+            cir.emittedPower > 0.0f && cir.originalEmittedPower < cir.emittedPower)
+        {
+            // This indicates a logical error - original power should not be less than attenuated power
+            // Set error indicator for debugging
+            cir.originalEmittedPower = 0.777f; // Different error indicator for this specific issue
         }
 
         return cir;

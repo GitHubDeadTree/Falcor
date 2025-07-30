@@ -1149,6 +1149,30 @@ namespace Falcor
         }
     }
 
+    // TASK 3: Validate CIR data with enhanced originalEmittedPower validation
+    void PixelStats::validateCIRDataForExport(CIRPathData& data, size_t pathIndex) const
+    {
+        // Validate original emitted power
+        if (data.originalEmittedPower <= 0.0f || data.originalEmittedPower == 0.666f)
+        {
+            logWarning("PixelStats: Path {} has invalid originalEmittedPower: {}", pathIndex, data.originalEmittedPower);
+        }
+
+        // Validate power relationship (original should be >= attenuated)
+        if (data.originalEmittedPower > 0.0f && data.originalEmittedPower != 0.666f &&
+            data.emittedPower > 0.0f && data.originalEmittedPower < data.emittedPower)
+        {
+            logWarning("PixelStats: Path {} has originalEmittedPower ({}) < emittedPower ({}), logical error",
+                      pathIndex, data.originalEmittedPower, data.emittedPower);
+        }
+
+        // Validate reasonable power ranges for LED systems
+        if (data.originalEmittedPower > 100.0f)
+        {
+            logWarning("PixelStats: Path {} has unusually high originalEmittedPower: {} W", pathIndex, data.originalEmittedPower);
+        }
+    }
+
     bool PixelStats::exportCIRDataCSV(const std::string& filename, const CIRStaticParameters& staticParams)
     {
         std::ofstream file(filename);
@@ -1169,8 +1193,8 @@ namespace Falcor
         file << "# g_optical_concentration," << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
         file << "#\n";
 
-        // Write CSV header with vertex data support
-        file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W,HitEmissiveSurface,";
+        // TASK 3: Write CSV header with originalEmittedPower field and vertex data support
+        file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W,OriginalEmittedPower_W,HitEmissiveSurface,";
         file << "VertexCount,BasePosition_X,BasePosition_Y,BasePosition_Z,";
         file << "Vertex1_X,Vertex1_Y,Vertex1_Z,Vertex2_X,Vertex2_Y,Vertex2_Z,Vertex3_X,Vertex3_Y,Vertex3_Z,";
         file << "Vertex4_X,Vertex4_Y,Vertex4_Z,Vertex5_X,Vertex5_Y,Vertex5_Z,Vertex6_X,Vertex6_Y,Vertex6_Z,Vertex7_X,Vertex7_Y,Vertex7_Z\n";
@@ -1185,6 +1209,9 @@ namespace Falcor
             // Handle legacy data if needed
             handleLegacyData(data);
 
+            // TASK 3: Validate CIR data including originalEmittedPower
+            validateCIRDataForExport(data, i);
+
             // Validate vertex data integrity (log warnings for invalid data but continue export)
             if (!validateCIRVertexData(data))
             {
@@ -1194,7 +1221,7 @@ namespace Falcor
 
             try
             {
-                // Write basic path data
+                // TASK 3: Write basic path data including originalEmittedPower
                 file << i << ","
                      << data.pixelX << ","
                      << data.pixelY << ","
@@ -1204,6 +1231,7 @@ namespace Falcor
                      << data.reflectanceProduct << ","
                      << data.reflectionCount << ","
                      << data.emittedPower << ","
+                     << data.originalEmittedPower << ","  // TASK 3: New field added
                      << (data.hitEmissiveSurface ? 1 : 0) << ",";
 
                 // Write vertex data
@@ -1231,8 +1259,8 @@ namespace Falcor
             catch (const std::exception& e)
             {
                 logError("PixelStats: Error writing path {} to CSV: {}", i, e.what());
-                // Write error marker row to maintain file structure
-                file << i << ",ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
+                // TASK 3: Write error marker row to maintain file structure (updated for new field)
+                file << i << ",ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
             }
         }
 
@@ -1280,7 +1308,7 @@ namespace Falcor
             {
                 file << "{\"type\":\"path_data\",\"data\":{";
 
-                // Basic path data
+                // TASK 3: Basic path data including originalEmittedPower
                 file << "\"path_index\":" << i << ",";
                 file << "\"pixel_x\":" << data.pixelX << ",";
                 file << "\"pixel_y\":" << data.pixelY << ",";
@@ -1290,6 +1318,7 @@ namespace Falcor
                 file << "\"reflectance_product\":" << data.reflectanceProduct << ",";
                 file << "\"reflection_count\":" << data.reflectionCount << ",";
                 file << "\"emitted_power_w\":" << data.emittedPower << ",";
+                file << "\"original_emitted_power_w\":" << data.originalEmittedPower << ",";  // TASK 3: New field added
                 file << "\"hit_emissive_surface\":" << (data.hitEmissiveSurface ? "true" : "false") << ",";
 
                 // Vertex data
@@ -1340,8 +1369,9 @@ namespace Falcor
         file << "# T_s_optical_filter_gain=" << std::fixed << std::setprecision(1) << staticParams.opticalFilterGain << "\n";
         file << "# g_optical_concentration=" << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
         file << "#\n";
+        // TASK 3: Path Data Format Extended with Vertex Collection and originalEmittedPower
         file << "# Path Data Format Extended with Vertex Collection:\n";
-        file << "# PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W),HitEmissiveSurface,\n";
+        file << "# PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W),OriginalEmittedPower(W),HitEmissiveSurface,\n";
         file << "# VertexCount,BasePosition(X,Y,Z),Vertices(X,Y,Z for each vertex up to 7)\n";
         file << "#\n";
         file << "# Vertex Collection Feature: Each path contains up to 7 collected vertices representing the light path trajectory\n";
@@ -1367,7 +1397,7 @@ namespace Falcor
 
             try
             {
-                // Basic path data
+                // TASK 3: Basic path data including originalEmittedPower
                 file << i << ","
                      << data.pixelX << ","
                      << data.pixelY << ","
@@ -1377,6 +1407,7 @@ namespace Falcor
                      << data.reflectanceProduct << ","
                      << data.reflectionCount << ","
                      << data.emittedPower << ","
+                     << data.originalEmittedPower << ","  // TASK 3: New field added
                      << (data.hitEmissiveSurface ? 1 : 0) << ",";
 
                 // Vertex data
@@ -1396,8 +1427,8 @@ namespace Falcor
             catch (const std::exception& e)
             {
                 logError("PixelStats: Error writing path {} to TXT: {}", i, e.what());
-                // Write error marker row to maintain file structure
-                file << i << ",ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,0,0,0\n";
+                // TASK 3: Write error marker row to maintain file structure (updated for new field)
+                file << i << ",ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,0,0,0\n";
             }
         }
 

@@ -1533,7 +1533,7 @@ struct PathTracer
         if (light.surfaceArea > 0.0f)
         {
             // Use actual surface area if available
-            solidAngleToPower = light.surfaceArea / (4.0f * M_PI);
+            solidAngleToPower = light.surfaceArea / (4.0f * 3.14159265359f);
         }
         else
         {

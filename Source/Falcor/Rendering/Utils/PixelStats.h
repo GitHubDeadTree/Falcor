@@ -59,6 +59,7 @@ namespace Falcor
         float reflectanceProduct;
         uint32_t reflectionCount;
         float emittedPower;
+        float originalEmittedPower;  // TASK 3: Original LED emitted power before attenuation (watts)
         uint32_t pixelX;
         uint32_t pixelY;
         uint32_t pathIndex;
@@ -327,6 +328,14 @@ namespace Falcor
             \return True if vertex data is valid, false with error logging if invalid
         */
         bool validateCIRVertexData(const CIRPathData& cirData) const;
+
+        /** TASK 3: Validate CIR data with enhanced originalEmittedPower validation.
+            Validates CIR data fields including the new originalEmittedPower field,
+            checking for logical consistency and reasonable value ranges.
+            \param[in,out] data CIR path data to validate (may be modified for error correction)
+            \param[in] pathIndex Path index for error reporting
+        */
+        void validateCIRDataForExport(CIRPathData& data, size_t pathIndex) const;
 
         // Backward compatibility support functions
         /** Check if CIR data version supports vertex collection feature.
