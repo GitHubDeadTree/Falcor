@@ -42,7 +42,8 @@ struct CIRPathData
     float receptionAngle;       ///< θ_i: Reception angle at photodiode surface (radians, range [0, π])
     float reflectanceProduct;   ///< r_i product: Product of all surface reflectances along the path [0,1]
     uint reflectionCount;       ///< K_i: Number of reflections in the path
-    float emittedPower;         ///< P_t: Emitted optical power (watts)
+    float emittedPower;         ///< P_t: Emitted optical power after attenuation (watts)
+    float originalEmittedPower; ///< P_t_orig: Original LED emitted power before attenuation (watts)
     uint pixelX;                ///< Pixel X coordinate
     uint pixelY;                ///< Pixel Y coordinate
     uint pathIndex;             ///< Unique index identifier for this path
