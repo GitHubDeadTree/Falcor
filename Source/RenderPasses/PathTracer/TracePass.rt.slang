@@ -57,6 +57,7 @@ struct PathPayload
     uint4 packed[5];
     uint  packed_extra;        ///< Additional data: x component stores wavelength
     uint  packed_cir;          ///< CIR data: pack emission angle, reception angle, and reflectance product
+    uint  packed_cir_power;    ///< CIR original LED power: pack cirOriginalLEDPower as 32-bit float
 
     PackedHitInfo hit;
     GuideData guideData;
@@ -115,6 +116,9 @@ struct PathPayload
                        (reflectanceProduct8 << 20) |
                        (initialDirY3 << 28) |
                        (hitEmissiveBit << 31);  // Use highest bit for hitEmissiveSurface
+
+        // Pack original LED power as 32-bit float
+        p.packed_cir_power = asuint(path.cirOriginalLEDPower);
 
         p.hit = path.hit.pack();
         p.guideData = path.guideData;
@@ -206,6 +210,15 @@ struct PathPayload
         // Initialize initialDir.z to zero since we don't have space for it
         // This field is used for irradiance calculation but has lower priority
         path.initialDir.z = 0.0f;
+
+        // Unpack original LED power from 32-bit float
+        path.cirOriginalLEDPower = asfloat(p.packed_cir_power);
+
+        // Validate unpacked original LED power
+        if (isnan(path.cirOriginalLEDPower) || isinf(path.cirOriginalLEDPower) || path.cirOriginalLEDPower < 0.0f)
+        {
+            path.cirOriginalLEDPower = 0.666f;  // Error indicator for invalid power
+        }
 
         path.hit = unpackHitInfo(p.hit);
         path.guideData = p.guideData;
