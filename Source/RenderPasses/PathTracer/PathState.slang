@@ -109,11 +109,12 @@ struct PathState
 
     float       wavelength;             ///< Light wavelength in nm (0 = not determined or white light)
 
-    // === CIR (Channel Impulse Response) specific fields (13 bytes) ===
+    // === CIR (Channel Impulse Response) specific fields (17 bytes) ===
     float cirEmissionAngle;             ///< φ_i: Emission angle at LED surface (radians)
     float cirReceptionAngle;            ///< θ_i: Reception angle at receiver surface (radians)
     float cirReflectanceProduct;        ///< r_i: Accumulated product of surface reflectances [0,1]
     bool hitEmissiveSurface;            ///< Flag indicating if the path has hit an emissive surface
+    float cirOriginalLEDPower;          ///< P_t_orig: Single path effective emitted power (watts)
 
     // === Vertex collection fields for path vertex collection feature ===
     float3 pathVertices[7];             ///< Temporary storage for vertex coordinates (max 7 vertices)
@@ -248,6 +249,7 @@ struct PathState
         cirReceptionAngle = 0.0f;     // Default: perpendicular reception
         cirReflectanceProduct = 1.0f; // Initial value: no attenuation, will be multiplied by reflectances
         hitEmissiveSurface = false;   // Default: not hit emissive surface
+        cirOriginalLEDPower = 0.0f;   // Default: no power assigned yet
     }
 
     /** Update emission angle based on surface normal and ray direction.
@@ -316,6 +318,36 @@ struct PathState
 
         // Ensure within valid range for VLC systems
         cirReflectanceProduct = clamp(cirReflectanceProduct, 0.0f, 1.0f);
+    }
+
+    /** Set the original LED power for this path.
+        This represents the effective power share of this single path from the LED source.
+        \param[in] power Effective power share for this path (watts).
+    */
+    [mutating] void setOriginalLEDPower(float power)
+    {
+        // Error checking: validate power value
+        if (power <= 0.0f || isnan(power) || isinf(power))
+        {
+            // Use error indicator value for debugging
+            cirOriginalLEDPower = 0.666f;
+            return;
+        }
+
+        cirOriginalLEDPower = power;
+    }
+
+    /** Get the original LED power for this path.
+        \return Original LED power, or error indicator if not set properly.
+    */
+    float getOriginalLEDPower()
+    {
+        if (cirOriginalLEDPower <= 0.0f)
+        {
+            // Return error indicator value for debugging
+            return 0.666f;
+        }
+        return cirOriginalLEDPower;
     }
 
     // === Vertex collection methods for path vertex collection feature ===
@@ -429,10 +461,11 @@ struct PathState
         // ✅ Use accumulated reflectance product from surface materials
         cir.reflectanceProduct = cirReflectanceProduct;                         // Use accumulated material reflectance
 
-        // ❌ Use CIR-specific fields (2/9 parameters)
+        // ❌ Use CIR-specific fields (3/10 parameters)
         cir.emissionAngle = cirEmissionAngle;                                   // CIR-specific field
         cir.receptionAngle = cirReceptionAngle;                                 // CIR-specific field
         cir.hitEmissiveSurface = hitEmissiveSurface;                            // New: Flag indicating if an emissive surface was hit
+        cir.originalEmittedPower = getOriginalLEDPower();                       // New: Original LED power for this path
 
         // === New: Handle vertex collection data ===
         if (!isVertexCollectionValid())

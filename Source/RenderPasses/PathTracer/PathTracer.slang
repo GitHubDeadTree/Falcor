@@ -318,6 +318,9 @@ struct PathTracer
         // === Initialize vertex collection ===
         path.initPathVertexCollection(cameraRay.origin);
 
+        // === Initialize CIR data ===
+        path.initCIRData();
+
         // Create sample generator.
         const uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
         path.sg = SampleGenerator(pixel, params.seed * maxSpp + path.getSampleIdx());
@@ -1146,6 +1149,14 @@ struct PathTracer
                 validSample = generateLightSample(pathVertex, sampleUpperHemisphere, sampleLowerHemisphere, path.sg, ls);
                 path.setLightSampled(sampleUpperHemisphere, sampleLowerHemisphere);
 
+                // Set original LED power based on light sample
+                if (validSample)
+                {
+                    // Calculate power share for this path based on light sample
+                    float pathPower = calculatePathPowerFromLightSample(ls);
+                    path.setOriginalLEDPower(pathPower);
+                }
+
                 // Additional LED spectral sampling if needed
                 if (validSample && ls.lightType == (uint)LightType::Analytic)
                 {
@@ -1412,6 +1423,10 @@ struct PathTracer
         {
             path.hitEmissiveSurface = true;  // Set flag when hitting emissive surface
             path.updateCIREmissionAngle(surfaceNormal);
+
+            // Calculate single path effective emitted power from emission
+            float emissionPower = calculateEmissionPower(bsdfProperties.emission, path);
+            path.setOriginalLEDPower(emissionPower);
         }
         // Strategy 2: For VLC systems, calculate emission angle at primary hit
         else if (isPrimaryHit && path.cirEmissionAngle == 0.0f)
@@ -1486,6 +1501,141 @@ struct PathTracer
         logCIRPathComplete(cirData);
     }
 
+    /** Convert radiance to single path power share.
+        Converts the sampled radiance from light sampling to the effective power
+        share that this single path represents from the LED source.
+        \param[in] radiance Sampled radiance from light sampling (Li).
+        \param[in] light LED light data structure.
+        \param[in] samplingPdf PDF used for light sampling.
+        \return Effective power share for this single path (watts).
+    */
+    float convertRadianceToPower(float3 radiance, LightData light, float samplingPdf)
+    {
+        // Calculate radiance magnitude
+        float radianceValue = luminance(radiance);
+
+        // Error checking for invalid inputs
+        if (radianceValue <= 0.0f || samplingPdf <= 0.0f || isnan(radianceValue) || isinf(radianceValue))
+        {
+            return 0.666f; // Error indicator value
+        }
+
+        // Calculate sampling weight (inverse of PDF)
+        float samplingWeight = 1.0f / samplingPdf;
+
+        // Estimate solid angle to power conversion factor
+        // This is a simplified conversion based on LED characteristics
+        // In a real implementation, this would use the actual LED surface area and emission pattern
+        float solidAngleToPower = 1.0f; // Simplified factor
+
+        // For LED lights, we can estimate the surface area from light properties
+        // This is a heuristic based on typical LED configurations
+        if (light.surfaceArea > 0.0f)
+        {
+            // Use actual surface area if available
+            solidAngleToPower = light.surfaceArea / (4.0f * M_PI);
+        }
+        else
+        {
+            // Fallback: estimate based on light intensity
+            // Typical LED surface area ranges from 1mm² to 100mm²
+            solidAngleToPower = 0.001f; // Default to 10mm² equivalent
+        }
+
+        // Calculate effective power share for this path
+        // This represents the portion of LED power that this single ray carries
+        float pathPower = radianceValue * samplingWeight * solidAngleToPower;
+
+        // Clamp to reasonable range for LED power shares
+        // Single path should be a small fraction of total LED power
+        pathPower = clamp(pathPower, 0.001f, 10.0f); // 1mW to 10W range
+
+        return pathPower;
+    }
+
+    /** Calculate emission power from emissive surface properties.
+        Estimates the effective power share for a single path based on the
+        emissive surface's emission properties.
+        \param[in] emission Emission radiance from BSDF properties.
+        \param[in] path Current path state for context.
+        \return Effective power share for this single path (watts).
+    */
+    float calculateEmissionPower(float3 emission, PathState path)
+    {
+        // Calculate emission magnitude
+        float emissionValue = luminance(emission);
+
+        // Error checking
+        if (emissionValue <= 0.0f || isnan(emissionValue) || isinf(emissionValue))
+        {
+            return 0.666f; // Error indicator value
+        }
+
+        // Estimate power conversion based on path throughput and sampling
+        // This is a heuristic conversion from radiance to power
+        float pathThroughput = luminance(path.thp);
+
+        // Simple conversion factor based on typical LED characteristics
+        // In practice, this would be calibrated based on actual LED specifications
+        float conversionFactor = 0.1f; // Heuristic factor
+
+        // Calculate effective power share
+        float pathPower = emissionValue * conversionFactor * max(pathThroughput, 0.001f);
+
+        // Clamp to reasonable range for single path power shares
+        pathPower = clamp(pathPower, 0.001f, 5.0f); // 1mW to 5W range
+
+        return pathPower;
+    }
+
+    /** Calculate path power from light sample.
+        Estimates the effective power share for a single path based on the
+        light sampling result.
+        \param[in] ls Light sample containing radiance and PDF information.
+        \return Effective power share for this single path (watts).
+    */
+    float calculatePathPowerFromLightSample(LightSample ls)
+    {
+        // Calculate radiance magnitude
+        float radianceValue = luminance(ls.Li);
+
+        // Error checking
+        if (radianceValue <= 0.0f || ls.pdf <= 0.0f || isnan(radianceValue) || isinf(radianceValue))
+        {
+            return 0.666f; // Error indicator value
+        }
+
+        // Calculate sampling weight (inverse of PDF)
+        float samplingWeight = 1.0f / ls.pdf;
+
+        // Different conversion factors based on light type
+        float conversionFactor = 0.1f; // Default factor
+
+        if (ls.lightType == (uint)LightType::Emissive)
+        {
+            // Emissive surfaces: use area-based conversion
+            conversionFactor = 0.05f; // Smaller factor for emissive surfaces
+        }
+        else if (ls.lightType == (uint)LightType::Analytic)
+        {
+            // Analytic lights (including LEDs): use intensity-based conversion
+            conversionFactor = 0.2f; // Larger factor for point/directional lights
+        }
+        else if (ls.lightType == (uint)LightType::EnvMap)
+        {
+            // Environment map: very small contribution per path
+            conversionFactor = 0.01f;
+        }
+
+        // Calculate effective power share
+        float pathPower = radianceValue * samplingWeight * conversionFactor;
+
+        // Clamp to reasonable range for single path power shares
+        pathPower = clamp(pathPower, 0.001f, 8.0f); // 1mW to 8W range
+
+        return pathPower;
+    }
+
     /** Handle LED light sampling with spectral sampling support.
         This function performs spectral-aware sampling of LED lights, updating the path wavelength
         based on the LED's spectral distribution.
@@ -1541,6 +1691,10 @@ struct PathTracer
                             path.setWavelength(550.0f); // Default green wavelength
                         }
                     }
+
+                    // Calculate single path effective emitted power
+                    float pathEmittedPower = convertRadianceToPower(ls.Li, light, ls.pdf);
+                    path.setOriginalLEDPower(pathEmittedPower);
 
                     // Add light contribution to path
                     // Note: BSDF evaluation would be handled by the calling code
