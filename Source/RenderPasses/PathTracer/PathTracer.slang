@@ -412,6 +412,12 @@ struct PathTracer
     */
     void addToPathContribution(inout PathState path, const float3 radiance)
     {
+        // Record initial L value for the first non-zero contribution (used for power calculation)
+        if (all(path.L == float3(0.0f)) && any(radiance > 0.0f))
+        {
+            path.setInitialL(radiance);
+        }
+        
         path.L += path.thp * radiance;
     }
 
@@ -1149,12 +1155,10 @@ struct PathTracer
                 validSample = generateLightSample(pathVertex, sampleUpperHemisphere, sampleLowerHemisphere, path.sg, ls);
                 path.setLightSampled(sampleUpperHemisphere, sampleLowerHemisphere);
 
-                // Set original LED power based on light sample
-                if (validSample)
+                // Record initial L value from light sample for power calculation
+                if (validSample && all(path.cirInitialL == float3(0.0f)) && any(ls.Li > 0.0f))
                 {
-                    // Calculate power share for this path based on light sample
-                    float pathPower = calculatePathPowerFromLightSample(ls);
-                    path.setOriginalLEDPower(pathPower);
+                    path.setInitialL(ls.Li);
                 }
 
                 // Additional LED spectral sampling if needed
@@ -1692,9 +1696,7 @@ struct PathTracer
                         }
                     }
 
-                    // Calculate single path effective emitted power
-                    float pathEmittedPower = convertRadianceToPower(ls.Li, light, ls.pdf);
-                    path.setOriginalLEDPower(pathEmittedPower);
+                    // Original LED power is now handled by initial L value recording in addToPathContribution
 
                     // Add light contribution to path
                     // Note: BSDF evaluation would be handled by the calling code

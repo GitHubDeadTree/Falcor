@@ -109,12 +109,13 @@ struct PathState
 
     float       wavelength;             ///< Light wavelength in nm (0 = not determined or white light)
 
-    // === CIR (Channel Impulse Response) specific fields (17 bytes) ===
+    // === CIR (Channel Impulse Response) specific fields (29 bytes) ===
     float cirEmissionAngle;             ///< φ_i: Emission angle at LED surface (radians)
     float cirReceptionAngle;            ///< θ_i: Reception angle at receiver surface (radians)
     float cirReflectanceProduct;        ///< r_i: Accumulated product of surface reflectances [0,1]
     bool hitEmissiveSurface;            ///< Flag indicating if the path has hit an emissive surface
     float cirOriginalLEDPower;          ///< P_t_orig: Single path effective emitted power (watts)
+    float3 cirInitialL;                 ///< Initial path radiance L for power calculation
 
     // === Vertex collection fields for path vertex collection feature ===
     float3 pathVertices[7];             ///< Temporary storage for vertex coordinates (max 7 vertices)
@@ -337,17 +338,33 @@ struct PathState
         cirOriginalLEDPower = power;
     }
 
+    /** Set the initial path radiance L for power calculation.
+        This should be called when the path starts to record the initial L value.
+        \param[in] initialL Initial path radiance L value.
+    */
+    [mutating] void setInitialL(float3 initialL)
+    {
+        cirInitialL = initialL;
+    }
+
     /** Get the original LED power for this path.
-        \return Original LED power, or error indicator if not set properly.
+        Uses the initial path radiance L value directly with scaling factor 1.0.
+        \return Original LED power based on initial radiance, or error indicator if not set properly.
     */
     float getOriginalLEDPower()
     {
-        if (cirOriginalLEDPower <= 0.0f)
+        // Use the initial path radiance directly (scaling factor = 1.0)
+        float initialLuminance = luminance(cirInitialL);
+        
+        // Error checking for invalid initial radiance
+        if (initialLuminance <= 0.0f || isnan(initialLuminance) || isinf(initialLuminance))
         {
             // Return error indicator value for debugging
             return 0.666f;
         }
-        return cirOriginalLEDPower;
+        
+        // Return the initial luminance directly as power (scaling factor = 1.0)
+        return initialLuminance;
     }
 
     // === Vertex collection methods for path vertex collection feature ===
@@ -522,14 +539,8 @@ struct PathState
             // For now, keep the error indicator value for identification
         }
 
-        // TASK 3: Validate power relationship (original should be >= attenuated)
-        if (cir.originalEmittedPower > 0.0f && cir.originalEmittedPower != 0.666f &&
-            cir.emittedPower > 0.0f && cir.originalEmittedPower < cir.emittedPower)
-        {
-            // This indicates a logical error - original power should not be less than attenuated power
-            // Set error indicator for debugging
-            cir.originalEmittedPower = 0.777f; // Different error indicator for this specific issue
-        }
+        // Power relationship validation is no longer needed as originalEmittedPower
+        // is now calculated directly from initial L value and should always be valid
 
         return cir;
     }

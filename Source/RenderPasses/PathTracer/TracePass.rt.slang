@@ -58,6 +58,7 @@ struct PathPayload
     uint  packed_extra;        ///< Additional data: x component stores wavelength
     uint  packed_cir;          ///< CIR data: pack emission angle, reception angle, and reflectance product
     uint  packed_cir_power;    ///< CIR original LED power: pack cirOriginalLEDPower as 32-bit float
+    float3 packed_cir_initialL; ///< CIR initial L value: pack cirInitialL as 3 32-bit floats
 
     PackedHitInfo hit;
     GuideData guideData;
@@ -119,6 +120,9 @@ struct PathPayload
 
         // Pack original LED power as 32-bit float
         p.packed_cir_power = asuint(path.cirOriginalLEDPower);
+
+        // Pack initial L value as 3 32-bit floats
+        p.packed_cir_initialL = path.cirInitialL;
 
         p.hit = path.hit.pack();
         p.guideData = path.guideData;
@@ -218,6 +222,15 @@ struct PathPayload
         if (isnan(path.cirOriginalLEDPower) || isinf(path.cirOriginalLEDPower) || path.cirOriginalLEDPower < 0.0f)
         {
             path.cirOriginalLEDPower = 0.666f;  // Error indicator for invalid power
+        }
+
+        // Unpack initial L value from 3 32-bit floats
+        path.cirInitialL = p.packed_cir_initialL;
+
+        // Validate unpacked initial L value
+        if (any(isnan(path.cirInitialL)) || any(isinf(path.cirInitialL)) || any(path.cirInitialL < 0.0f))
+        {
+            path.cirInitialL = float3(0.0f);  // Reset to zero for invalid values
         }
 
         path.hit = unpackHitInfo(p.hit);
