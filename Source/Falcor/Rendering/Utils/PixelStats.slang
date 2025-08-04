@@ -56,6 +56,17 @@ RWByteAddressBuffer gCIRCounterBuffer;              // Counter for number of sto
 cbuffer PerFrameCB
 {
     uint gMaxCIRPaths;                              // Maximum number of paths that can be stored
+    
+    // GPU-side CIR filtering parameters for real-time filtering
+    bool gCIRFilteringEnabled;                      // Enable/disable CIR filtering on GPU
+    float gCIRMinPathLength;                        // Minimum path length for filtering (meters)
+    float gCIRMaxPathLength;                        // Maximum path length for filtering (meters)
+    float gCIRMinEmittedPower;                      // Minimum emitted power for filtering (watts)
+    float gCIRMaxEmittedPower;                      // Maximum emitted power for filtering (watts)
+    float gCIRMinAngle;                             // Minimum angle for filtering (radians)
+    float gCIRMaxAngle;                             // Maximum angle for filtering (radians)
+    float gCIRMinReflectance;                       // Minimum reflectance for filtering
+    float gCIRMaxReflectance;                       // Maximum reflectance for filtering
 }
 
 #ifdef _PIXEL_STATS_ENABLED
@@ -212,18 +223,50 @@ void logCIRRawPath(CIRPathData pathData)
 #endif
 }
 
-// Unified CIR logging function - MODIFIED: Added path filtering to remove invalid paths
+// GPU-side CIR data filtering function for real-time filtering
+// This function applies user-configured filtering parameters on GPU to ensure only valid data is stored
+bool isValidCIRDataGPU(CIRPathData data)
+{
+    // If filtering is disabled, accept all data (except NaN/inf checks in logCIRPathComplete)
+    if (!gCIRFilteringEnabled) return true;
+    
+    // Basic data validity checks - reject clearly invalid data
+    if (data.pathLength < 0.0f || data.emittedPower < 0.0f ||
+        data.emissionAngle < 0.0f || data.receptionAngle < 0.0f ||
+        data.reflectanceProduct < 0.0f)
+    {
+        return false;
+    }
+    
+    // Apply user-configured filtering criteria
+    bool validPathLength = data.pathLength >= gCIRMinPathLength && data.pathLength <= gCIRMaxPathLength;
+    bool validEmittedPower = data.emittedPower >= gCIRMinEmittedPower && data.emittedPower <= gCIRMaxEmittedPower;
+    bool validEmissionAngle = data.emissionAngle >= gCIRMinAngle && data.emissionAngle <= gCIRMaxAngle;
+    bool validReceptionAngle = data.receptionAngle >= gCIRMinAngle && data.receptionAngle <= gCIRMaxAngle;
+    bool validReflectance = data.reflectanceProduct >= gCIRMinReflectance && data.reflectanceProduct <= gCIRMaxReflectance;
+    
+    return validPathLength && validEmittedPower && validEmissionAngle && validReceptionAngle && validReflectance;
+}
+
+// Unified CIR logging function - MODIFIED: Added GPU-side real-time filtering
 void logCIRPathComplete(CIRPathData pathData)
 {
-    // 只检查路径长度的NaN/无穷大值，如果异常则直接丢弃整条光路
+    // Basic sanity check - reject NaN/infinite path lengths
     if (isnan(pathData.pathLength) || isinf(pathData.pathLength))
     {
-        // 直接返回，不记录任何数据到缓冲区
+        // Discard invalid data immediately - do not store in buffer
+        return;
+    }
+    
+    // Apply GPU-side real-time filtering using user-configured parameters
+    if (!isValidCIRDataGPU(pathData))
+    {
+        // Path does not meet user filtering criteria - discard to save buffer space
         return;
     }
 
-    // 对于路径长度有效的数据，直接记录而不进行任何修改
-    // 其他字段的验证交给CPU端处理
+    // Only store data that passes both sanity checks and user filtering criteria
+    // This ensures buffer contains only data the user actually wants
     logCIRStatisticsInternal(pathData);
     logCIRRawPathInternal(pathData);
 }

@@ -220,6 +220,17 @@ namespace Falcor
                     var["gStatsCIRData"][i] = mpStatsCIRData[i];
                 }
                 var["gStatsCIRValidSamples"] = mpStatsCIRValidSamples;
+
+                // Bind GPU-side CIR filtering parameters for real-time filtering (statistics mode)
+                var["PerFrameCB"]["gCIRFilteringEnabled"] = mCIRFilteringEnabled;
+                var["PerFrameCB"]["gCIRMinPathLength"] = mCIRMinPathLength;
+                var["PerFrameCB"]["gCIRMaxPathLength"] = mCIRMaxPathLength;
+                var["PerFrameCB"]["gCIRMinEmittedPower"] = mCIRMinEmittedPower;
+                var["PerFrameCB"]["gCIRMaxEmittedPower"] = mCIRMaxEmittedPower;
+                var["PerFrameCB"]["gCIRMinAngle"] = mCIRMinAngle;
+                var["PerFrameCB"]["gCIRMaxAngle"] = mCIRMaxAngle;
+                var["PerFrameCB"]["gCIRMinReflectance"] = mCIRMinReflectance;
+                var["PerFrameCB"]["gCIRMaxReflectance"] = mCIRMaxReflectance;
             }
 
             // Bind raw CIR data buffers if raw data collection is enabled
@@ -264,7 +275,18 @@ namespace Falcor
                 var["gCIRCounterBuffer"] = mpCIRCounterBuffer;
                 var["PerFrameCB"]["gMaxCIRPaths"] = mMaxCIRPathsPerFrame;
 
-                logDebug("Successfully bound CIR raw data buffers to shader variables");
+                // Bind GPU-side CIR filtering parameters for real-time filtering
+                var["PerFrameCB"]["gCIRFilteringEnabled"] = mCIRFilteringEnabled;
+                var["PerFrameCB"]["gCIRMinPathLength"] = mCIRMinPathLength;
+                var["PerFrameCB"]["gCIRMaxPathLength"] = mCIRMaxPathLength;
+                var["PerFrameCB"]["gCIRMinEmittedPower"] = mCIRMinEmittedPower;
+                var["PerFrameCB"]["gCIRMaxEmittedPower"] = mCIRMaxEmittedPower;
+                var["PerFrameCB"]["gCIRMinAngle"] = mCIRMinAngle;
+                var["PerFrameCB"]["gCIRMaxAngle"] = mCIRMaxAngle;
+                var["PerFrameCB"]["gCIRMinReflectance"] = mCIRMinReflectance;
+                var["PerFrameCB"]["gCIRMaxReflectance"] = mCIRMaxReflectance;
+
+                logDebug("Successfully bound CIR raw data buffers and filtering parameters to shader variables");
             }
             else
             {
