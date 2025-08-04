@@ -338,12 +338,12 @@ namespace Falcor
                     float bufferUsage = (float)mCollectedCIRPaths / (float)mMaxCIRPathsPerFrame * 100.0f;
                     if (bufferUsage >= 100.0f)
                     {
-                        widget.textColored(float4(1.0f, 0.0f, 0.0f, 1.0f), fmt::format("Buffer usage: {:.1f}% (OVERFLOW)", bufferUsage));
+                        widget.text(fmt::format("Buffer usage: {:.1f}% (OVERFLOW)", bufferUsage));
                         widget.tooltip("CIR buffer is full! Some NEE-CIR paths may be lost. Consider increasing buffer size.");
                     }
                     else if (bufferUsage >= 90.0f)
                     {
-                        widget.textColored(float4(1.0f, 0.8f, 0.0f, 1.0f), fmt::format("Buffer usage: {:.1f}% (HIGH)", bufferUsage));
+                        widget.text(fmt::format("Buffer usage: {:.1f}% (HIGH)", bufferUsage));
                         widget.tooltip("CIR buffer usage is high. Monitor for potential overflow.");
                     }
                     else
