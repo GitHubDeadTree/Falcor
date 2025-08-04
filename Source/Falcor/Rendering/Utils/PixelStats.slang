@@ -164,12 +164,9 @@ void logCIRRawPathInternal(CIRPathData pathData)
     }
     else
     {
-        // Buffer overflow detected - log warning periodically to avoid performance impact
-        // Only log every 1000th overflow to reduce atomic operation overhead
-        if ((index - gMaxCIRPaths) % 1000 == 0)
-        {
-            logWarning("CIR buffer overflow: attempted index " + index + " >= max " + gMaxCIRPaths);
-        }
+        // Buffer overflow detected - GPU shaders cannot use logWarning
+        // Overflow is detected but not logged to avoid compilation errors
+        // CPU side monitoring through PixelStats handles overflow reporting
     }
 #endif
 }
@@ -205,8 +202,11 @@ void logCIRRawPath(CIRPathData pathData)
 {
 #ifdef _PIXEL_STATS_RAW_DATA_ENABLED
     // Maintain legacy behavior with validation for compatibility
-    pathData.sanitize();
-    if (!pathData.isValid()) return;
+    // Copy to local variable to avoid mutation warning on 'in' parameter
+    CIRPathData localPathData = pathData;
+    localPathData.sanitize();
+    if (!localPathData.isValid()) return;
+    pathData = localPathData;
 
     logCIRRawPathInternal(pathData);
 #endif
