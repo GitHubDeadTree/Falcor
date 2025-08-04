@@ -162,6 +162,15 @@ void logCIRRawPathInternal(CIRPathData pathData)
     {
         gCIRRawDataBuffer[index] = pathData;
     }
+    else
+    {
+        // Buffer overflow detected - log warning periodically to avoid performance impact
+        // Only log every 1000th overflow to reduce atomic operation overhead
+        if ((index - gMaxCIRPaths) % 1000 == 0)
+        {
+            logWarning("CIR buffer overflow: attempted index " + index + " >= max " + gMaxCIRPaths);
+        }
+    }
 #endif
 }
 

@@ -1196,7 +1196,13 @@ struct PathTracer
 
                     logTraceRay(PixelStatsRayType::Visibility);
                     bool visible = visibilityQuery.traceVisibilityRay(ray);
-                    if (visible) addToPathContribution(path, Lr);
+                    if (visible)
+                    {
+                        addToPathContribution(path, Lr);
+                        
+                        // === NEE-CIR: Record CIR data for NEE path ===
+                        recordNEECIRPath(path, ls, pathVertex, sd);
+                    }
                 }
             }
         }
@@ -1503,6 +1509,271 @@ struct PathTracer
         // UNIFIED VALIDATION: Use single validation point for both statistics and raw data
         // This ensures consistency between statistical aggregation and file output
         logCIRPathComplete(cirData);
+    }
+
+    /** Get surface normal for light source based on light sampling data.
+        Used for calculating emission angle in NEE-CIR paths.
+        \param[in] ls Light sample data containing light information
+        \return Surface normal vector for the light source
+    */
+    float3 getLightSurfaceNormal(LightSample ls)
+    {
+        // Default normal (upward)
+        float3 defaultNormal = float3(0.0f, 0.0f, 1.0f);
+        
+        // Method 1: Try to get normal from light sample if available
+        if (length(ls.normalW) > 0.1f)
+        {
+            return normalize(ls.normalW);
+        }
+        
+        // Method 2: Infer normal based on light geometry
+        // For point lights: use radial direction as normal
+        // For area lights: use default or try to infer from geometry
+        
+        // Get direction from light to sample point
+        float3 lightToSample = normalize(ls.dir);
+        
+        // Assume point light if distance is significant
+        if (ls.distance > 1.0f)
+        {
+            // Point light: normal is radial outward direction
+            return -lightToSample; // Negative because ls.dir points from light to sample
+        }
+        else
+        {
+            // Area light or close light: use default normal
+            return defaultNormal;
+        }
+    }
+
+    /** Enhanced version with error handling for light surface normal calculation.
+        \param[in] ls Light sample data
+        \return Normalized surface normal, or default normal if invalid
+    */
+    float3 getLightSurfaceNormalSafe(LightSample ls)
+    {
+        float3 defaultNormal = float3(0.0f, 0.0f, 1.0f);
+        
+        // Input validation
+        if (length(ls.dir) < 0.001f)
+        {
+            logError("Invalid light direction in getLightSurfaceNormal: length=" + length(ls.dir));
+            return defaultNormal;
+        }
+        
+        float3 normal = getLightSurfaceNormal(ls);
+        
+        // Normal validity check
+        if (length(normal) < 0.1f || isnan(normal.x) || isnan(normal.y) || isnan(normal.z))
+        {
+            logWarning("Invalid normal from getLightSurfaceNormal, using default");
+            return defaultNormal;
+        }
+        
+        return normalize(normal);
+    }
+
+    /** Record CIR data for NEE (Next Event Estimation) paths.
+        This creates a new CIR path from light source through current vertex to camera.
+        \param[in] path Current path state
+        \param[in] ls Light sample data
+        \param[in] pathVertex Current path vertex
+        \param[in] sd Shading data at current vertex
+    */
+    void recordNEECIRPath(PathState path, LightSample ls, PathVertex pathVertex, ShadingData sd)
+    {
+        // Input validation
+        if (ls.pdf <= 0.0f || ls.distance <= 0.0f)
+        {
+            logWarning("Invalid light sample in NEE-CIR: pdf=" + ls.pdf + ", distance=" + ls.distance);
+            return;
+        }
+        
+        // Create NEE path's CIR data
+        CIRPathData neePathData = {};
+        
+        // 1. Calculate path length: light source to current vertex + current vertex to camera
+        neePathData.pathLength = ls.distance + path.sceneLength;
+        if (neePathData.pathLength <= 0.0f || isnan(neePathData.pathLength) || isinf(neePathData.pathLength))
+        {
+            logError("Invalid NEE path length: " + neePathData.pathLength);
+            neePathData.pathLength = 0.666f; // Error indicator value
+        }
+        
+        // 2. Calculate emission angle (angle between light surface normal and light ray direction)
+        float3 lightNormal = getLightSurfaceNormalSafe(ls);
+        float cosEmissionAngle = dot(lightNormal, normalize(ls.dir));
+        neePathData.emissionAngle = acos(clamp(cosEmissionAngle, 0.0f, 1.0f));
+        
+        if (neePathData.emissionAngle < 0.0f || neePathData.emissionAngle > M_PI)
+        {
+            logWarning("Invalid emission angle: " + neePathData.emissionAngle);
+            neePathData.emissionAngle = 0.666f; // Error indicator value
+        }
+        
+        // 3. Calculate reception angle (angle between camera surface normal and incident ray)
+        if (path.getVertexIndex() == 1) // Direct path
+        {
+            float3 cameraDir = normalize(path.origin - sd.posW);
+            neePathData.receptionAngle = acos(clamp(dot(sd.faceN, cameraDir), 0.0f, 1.0f));
+        }
+        else // Indirect path, use path's final reception angle
+        {
+            neePathData.receptionAngle = path.cirReceptionAngle;
+        }
+        
+        // 4. Reflection count: current path's reflection count
+        neePathData.reflectionCount = path.getVertexIndex() - 1;
+        
+        // 5. Reflectance product: use current path's accumulated reflectance
+        neePathData.reflectanceProduct = path.cirReflectanceProduct;
+        if (neePathData.reflectanceProduct < 0.0f || neePathData.reflectanceProduct > 1.0f)
+        {
+            if (neePathData.reflectanceProduct != 0.666f) // Don't warn about error indicator
+            {
+                logWarning("Invalid reflectance product in NEE-CIR: " + neePathData.reflectanceProduct);
+            }
+            neePathData.reflectanceProduct = 0.666f;
+        }
+        
+        // 6. Emitted power: from light sampling
+        neePathData.emittedPower = luminance(ls.Li);
+        if (neePathData.emittedPower < 0.0f || isnan(neePathData.emittedPower))
+        {
+            logWarning("Invalid emitted power in NEE-CIR: " + neePathData.emittedPower);
+            neePathData.emittedPower = 0.666f;
+        }
+        
+        // Set original emitted power same as emitted power for NEE paths
+        neePathData.originalEmittedPower = neePathData.emittedPower;
+        
+        // 7. Pixel coordinates
+        uint2 pixel = path.getPixel();
+        neePathData.pixelX = pixel.x;
+        neePathData.pixelY = pixel.y;
+        
+        // 8. Path index and flags
+        neePathData.pathIndex = path.getSampleIdx();
+        neePathData.hitEmissiveSurface = true; // NEE paths always connect to light source
+        
+        // 9. Vertex data: copy current path vertices and add light source position
+        neePathData.vertexCount = min(path.pathVertexCount + 1, 7); // Limit to max 7 vertices
+        neePathData.basePosition = path.pathBasePosition;
+        
+        // Check for vertex overflow
+        if (path.pathVertexCount >= 6)
+        {
+            logWarning("NEE-CIR vertex overflow: original=" + path.pathVertexCount + ", limited to 6");
+        }
+        
+        // Copy existing vertices from path state
+        for (uint i = 0; i < path.pathVertexCount && i < 6; ++i)
+        {
+            neePathData.compressedVertices[i] = compressVertex(path.pathVertices[i], neePathData.basePosition);
+        }
+        
+        // Add light source position as the last vertex
+        if (neePathData.vertexCount <= 7)
+        {
+            float3 lightPos = ls.origin; // Light source position
+            uint2 compressed = compressVertex(lightPos, neePathData.basePosition);
+            neePathData.compressedVertices[neePathData.vertexCount - 1] = compressed;
+        }
+        
+        // Record CIR data using existing logging mechanism
+        logCIRPathComplete(neePathData);
+    }
+
+    /** Validate NEE-CIR data for debugging and verification.
+        Checks if NEE-CIR path data meets expected physical constraints.
+        \param[in] neeData NEE-CIR path data to validate
+        \param[in] originalPath Original path state for comparison
+        \param[in] ls Light sample used for NEE
+        \return True if data is valid, false with error logging if invalid
+    */
+    bool validateNEECIRData(CIRPathData neeData, PathState originalPath, LightSample ls)
+    {
+        bool isValid = true;
+        
+        // 1. Check path length consistency
+        float expectedLength = originalPath.sceneLength + ls.distance;
+        if (abs(neeData.pathLength - expectedLength) > 0.001f && neeData.pathLength != 0.666f)
+        {
+            logError("NEE-CIR path length mismatch: expected=" + expectedLength + ", got=" + neeData.pathLength);
+            isValid = false;
+        }
+        
+        // 2. Check vertex count
+        if (neeData.vertexCount != originalPath.pathVertexCount + 1)
+        {
+            logError("NEE-CIR vertex count mismatch: expected=" + (originalPath.pathVertexCount + 1) + ", got=" + neeData.vertexCount);
+            isValid = false;
+        }
+        
+        // 3. Check angle ranges
+        if (neeData.emissionAngle < 0.0f || neeData.emissionAngle > M_PI)
+        {
+            logError("NEE-CIR emission angle out of range: " + neeData.emissionAngle + " (should be [0, π])");
+            isValid = false;
+        }
+        
+        if (neeData.receptionAngle < 0.0f || neeData.receptionAngle > M_PI)
+        {
+            logError("NEE-CIR reception angle out of range: " + neeData.receptionAngle + " (should be [0, π])");
+            isValid = false;
+        }
+        
+        // 4. Check reflectance product
+        if (neeData.reflectanceProduct < 0.0f || neeData.reflectanceProduct > 1.0f)
+        {
+            if (neeData.reflectanceProduct != 0.666f) // Skip error indicator values
+            {
+                logError("NEE-CIR reflectance product out of range: " + neeData.reflectanceProduct + " (should be [0, 1])");
+                isValid = false;
+            }
+        }
+        
+        // 5. Check emitted power
+        if (neeData.emittedPower < 0.0f || isnan(neeData.emittedPower) || isinf(neeData.emittedPower))
+        {
+            if (neeData.emittedPower != 0.666f) // Skip error indicator values
+            {
+                logError("NEE-CIR emitted power invalid: " + neeData.emittedPower);
+                isValid = false;
+            }
+        }
+        
+        // 6. Check NEE-specific flags
+        if (!neeData.hitEmissiveSurface)
+        {
+            logError("NEE-CIR path should always hit emissive surface");
+            isValid = false;
+        }
+        
+        // 7. Check reflection count consistency
+        if (neeData.reflectionCount != originalPath.getVertexIndex() - 1)
+        {
+            logError("NEE-CIR reflection count mismatch: expected=" + (originalPath.getVertexIndex() - 1) + ", got=" + neeData.reflectionCount);
+            isValid = false;
+        }
+        
+        return isValid;
+    }
+
+    /** Output NEE-CIR debug statistics summary.
+        This function can be called periodically to output NEE-CIR performance metrics.
+        Should be called sparingly to avoid performance impact.
+    */
+    void outputNEECIRDebugInfo()
+    {
+        // This would typically be implemented on the CPU side 
+        // where we have access to frame statistics
+        logInfo("=== NEE-CIR Debug Summary ===");
+        logInfo("NEE-CIR paths recorded this frame");
+        logInfo("Buffer usage and overflow information");
+        logInfo("Average path characteristics");
+        logInfo("=============================");
     }
 
     /** Convert radiance to single path power share.

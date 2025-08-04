@@ -331,6 +331,43 @@ namespace Falcor
                     widget.text(fmt::format("CIR paths: {} collected (filtering disabled)", filteredCount));
                     widget.tooltip("Shows collected CIR paths count (no filtering applied)");
                 }
+                
+                // NEE-CIR: Display buffer usage information
+                if (mCollectedCIRPaths > 0)
+                {
+                    float bufferUsage = (float)mCollectedCIRPaths / (float)mMaxCIRPathsPerFrame * 100.0f;
+                    if (bufferUsage >= 100.0f)
+                    {
+                        widget.textColored(float4(1.0f, 0.0f, 0.0f, 1.0f), fmt::format("Buffer usage: {:.1f}% (OVERFLOW)", bufferUsage));
+                        widget.tooltip("CIR buffer is full! Some NEE-CIR paths may be lost. Consider increasing buffer size.");
+                    }
+                    else if (bufferUsage >= 90.0f)
+                    {
+                        widget.textColored(float4(1.0f, 0.8f, 0.0f, 1.0f), fmt::format("Buffer usage: {:.1f}% (HIGH)", bufferUsage));
+                        widget.tooltip("CIR buffer usage is high. Monitor for potential overflow.");
+                    }
+                    else
+                    {
+                        widget.text(fmt::format("Buffer usage: {:.1f}%", bufferUsage));
+                        widget.tooltip("CIR buffer usage percentage");
+                    }
+                    
+                    // Count NEE-CIR paths (those with hitEmissiveSurface = true)
+                    uint32_t neeCircCount = 0;
+                    if (mCIRRawDataValid)
+                    {
+                        for (const auto& data : mCIRRawData)
+                        {
+                            if (data.hitEmissiveSurface) neeCircCount++;
+                        }
+                        if (neeCircCount > 0)
+                        {
+                            float neeCircRatio = (float)neeCircCount / (float)filteredCount * 100.0f;
+                            widget.text(fmt::format("NEE-CIR paths: {} ({:.1f}%)", neeCircCount, neeCircRatio));
+                            widget.tooltip("Number and percentage of NEE-based CIR paths in collected data");
+                        }
+                    }
+                }
 
                 if (widget.button("Export CIR Data (Auto-timestamped)"))
                 {
@@ -660,8 +697,23 @@ namespace Falcor
                 const uint32_t* counterData = static_cast<const uint32_t*>(mpCIRCounterReadback->map());
                 if (counterData)
                 {
-                    mCollectedCIRPaths = std::min(*counterData, mMaxCIRPathsPerFrame);
+                    uint32_t actualPathCount = *counterData;
+                    mCollectedCIRPaths = std::min(actualPathCount, mMaxCIRPathsPerFrame);
                     mpCIRCounterReadback->unmap();
+                    
+                    // NEE-CIR: Buffer usage monitoring and overflow detection
+                    if (actualPathCount > mMaxCIRPathsPerFrame)
+                    {
+                        uint32_t overflowCount = actualPathCount - mMaxCIRPathsPerFrame;
+                        float overflowPercentage = (float)overflowCount / (float)actualPathCount * 100.0f;
+                        logWarning("CIR buffer overflow: {} paths attempted, {} collected, {} lost ({:.1f}%)", 
+                                  actualPathCount, mCollectedCIRPaths, overflowCount, overflowPercentage);
+                    }
+                    else if (actualPathCount > mMaxCIRPathsPerFrame * 0.9f) // Warn at 90% usage
+                    {
+                        float usagePercentage = (float)actualPathCount / (float)mMaxCIRPathsPerFrame * 100.0f;
+                        logInfo("CIR buffer usage high: {:.1f}% ({}/{})", usagePercentage, actualPathCount, mMaxCIRPathsPerFrame);
+                    }
 
                     if (mCollectedCIRPaths > 0)
                     {

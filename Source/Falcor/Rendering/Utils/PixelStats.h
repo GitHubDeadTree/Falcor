@@ -193,6 +193,15 @@ namespace Falcor
             float    avgCIREmittedPower = 0.f;
             float    avgCIRReflectionCount = 0.f;
             float    avgRayWavelength = 0.f;
+            
+            // NEE-CIR statistics (for monitoring NEE-based light path collection)
+            uint32_t neeAttempts = 0;           ///< Total NEE visibility queries attempted
+            uint32_t neeSuccessful = 0;         ///< Successful NEE visibility queries
+            uint32_t neeCircRecords = 0;        ///< NEE-CIR paths recorded
+            uint32_t neeCircErrors = 0;         ///< NEE-CIR recording errors
+            float    neeSuccessRate = 0.f;      ///< NEE success rate (successful/attempts)
+            float    avgNEEPathLength = 0.f;    ///< Average NEE path length
+            float    avgNEEEmissionAngle = 0.f; ///< Average NEE emission angle
         };
 
         PixelStats(ref<Device> pDevice);
@@ -363,7 +372,7 @@ namespace Falcor
         bool                                mEnabled = false;               ///< Enable pixel statistics.
         bool                                mEnableLogging = false;         ///< Enable printing to logfile.
         CollectionMode                      mCollectionMode = CollectionMode::Both;  ///< Data collection mode.
-        uint32_t                            mMaxCIRPathsPerFrame = 10000;   ///< Maximum CIR paths to collect per frame.
+        uint32_t                            mMaxCIRPathsPerFrame = 50000;   ///< Maximum CIR paths to collect per frame (increased for NEE-CIR).
 
         // CIR export configuration
         CIRExportFormat                     mCIRExportFormat = CIRExportFormat::CSV; ///< Selected CIR export format.
