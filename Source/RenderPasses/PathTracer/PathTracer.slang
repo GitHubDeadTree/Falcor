@@ -1592,6 +1592,7 @@ struct PathTracer
         
         // Create NEE path's CIR data
         CIRPathData neePathData = {};
+        neePathData.setIsNEEPath(true);  // Initialize immediately to avoid validation issues
         
         // 1. Calculate path length: light source to current vertex + current vertex to camera
         neePathData.pathLength = ls.distance + path.sceneLength;
@@ -1656,7 +1657,8 @@ struct PathTracer
         
         // 8. Path index and flags
         neePathData.pathIndex = path.getSampleIdx();
-        neePathData.hitEmissiveSurface = true; // NEE paths always connect to light source
+        neePathData.setHitEmissiveSurface(true); // NEE paths always connect to light source
+        // isNEEPath already set at initialization
         
         // 9. Vertex data: copy current path vertices and add light source position
         neePathData.vertexCount = min(path.pathVertexCount + 1, 7); // Limit to max 7 vertices
@@ -1747,7 +1749,7 @@ struct PathTracer
         }
         
         // 6. Check NEE-specific flags
-        if (!neeData.hitEmissiveSurface)
+        if (!neeData.getHitEmissiveSurface())
         {
             // GPU shaders cannot use logError - mark as invalid
             isValid = false;

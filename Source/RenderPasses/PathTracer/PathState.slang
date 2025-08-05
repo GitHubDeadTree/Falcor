@@ -464,7 +464,8 @@ struct PathState
     */
     CIRPathData getCIRData()
     {
-        CIRPathData cir;
+        CIRPathData cir = {};  // Zero-initialize all fields
+        cir.setIsNEEPath(false); // Explicitly set for regular paths
 
         // ✅ Reuse existing fields (7/9 parameters - 77.8% reuse rate)
         cir.pathLength = sceneLength;                                           // Direct assignment, no conversion needed
@@ -482,7 +483,8 @@ struct PathState
         // ❌ Use CIR-specific fields (4/11 parameters)
         cir.emissionAngle = cirEmissionAngle;                                   // CIR-specific field
         cir.receptionAngle = cirReceptionAngle;                                 // CIR-specific field
-        cir.hitEmissiveSurface = hitEmissiveSurface;                            // Flag indicating if an emissive surface was hit
+        cir.setHitEmissiveSurface(hitEmissiveSurface);                          // Flag indicating if an emissive surface was hit
+        cir.setIsNEEPath(false);                                               // Regular paths are not NEE paths
 
         // TASK 3: Set original LED power with validation
         cir.originalEmittedPower = getOriginalLEDPower();                       // Original LED power for this path

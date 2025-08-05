@@ -63,7 +63,13 @@ namespace Falcor
         uint32_t pixelX;
         uint32_t pixelY;
         uint32_t pathIndex;
-        bool hitEmissiveSurface;
+        uint32_t flags;                  // Bit 0: hitEmissiveSurface, Bit 1: isNEEPath, Bits 2-31: reserved
+
+        // Helper functions for flag access
+        bool getHitEmissiveSurface() const { return (flags & 0x1) != 0; }
+        bool getIsNEEPath() const { return (flags & 0x2) != 0; }
+        void setHitEmissiveSurface(bool value) { flags = value ? (flags | 0x1) : (flags & ~0x1); }
+        void setIsNEEPath(bool value) { flags = value ? (flags | 0x2) : (flags & ~0x2); }
 
         // New vertex-related fields for path vertex collection feature (must match GPU definition)
         struct CompressedVertex
@@ -372,7 +378,7 @@ namespace Falcor
         bool                                mEnabled = false;               ///< Enable pixel statistics.
         bool                                mEnableLogging = false;         ///< Enable printing to logfile.
         CollectionMode                      mCollectionMode = CollectionMode::Both;  ///< Data collection mode.
-        uint32_t                            mMaxCIRPathsPerFrame = 500000;  ///< Maximum CIR paths to collect per frame (increased for NEE-CIR).
+        uint32_t                            mMaxCIRPathsPerFrame = 50000;   ///< Maximum CIR paths to collect per frame (increased for NEE-CIR).
 
         // CIR export configuration
         CIRExportFormat                     mCIRExportFormat = CIRExportFormat::CSV; ///< Selected CIR export format.

@@ -380,7 +380,7 @@ namespace Falcor
                     {
                         for (const auto& data : mCIRRawData)
                         {
-                            if (data.hitEmissiveSurface) neeCircCount++;
+                            if (data.getHitEmissiveSurface()) neeCircCount++;
                         }
                         if (neeCircCount > 0)
                         {
@@ -1268,7 +1268,7 @@ namespace Falcor
         file << "#\n";
 
         // TASK 3: Write CSV header with originalEmittedPower field and vertex data support
-        file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W,OriginalEmittedPower_W,HitEmissiveSurface,";
+        file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W,OriginalEmittedPower_W,HitEmissiveSurface,IsNEEPath,";
         file << "VertexCount,BasePosition_X,BasePosition_Y,BasePosition_Z,";
         file << "Vertex1_X,Vertex1_Y,Vertex1_Z,Vertex2_X,Vertex2_Y,Vertex2_Z,Vertex3_X,Vertex3_Y,Vertex3_Z,";
         file << "Vertex4_X,Vertex4_Y,Vertex4_Z,Vertex5_X,Vertex5_Y,Vertex5_Z,Vertex6_X,Vertex6_Y,Vertex6_Z,Vertex7_X,Vertex7_Y,Vertex7_Z\n";
@@ -1306,7 +1306,8 @@ namespace Falcor
                      << data.reflectionCount << ","
                      << data.emittedPower << ","
                      << data.originalEmittedPower << ","  // TASK 3: New field added
-                     << (data.hitEmissiveSurface ? 1 : 0) << ",";
+                     << (data.getHitEmissiveSurface() ? 1 : 0) << ","
+                     << (data.getIsNEEPath() ? 1 : 0) << ",";
 
                 // Write vertex data
                 file << data.vertexCount << ","
@@ -1393,7 +1394,8 @@ namespace Falcor
                 file << "\"reflection_count\":" << data.reflectionCount << ",";
                 file << "\"emitted_power_w\":" << data.emittedPower << ",";
                 file << "\"original_emitted_power_w\":" << data.originalEmittedPower << ",";  // TASK 3: New field added
-                file << "\"hit_emissive_surface\":" << (data.hitEmissiveSurface ? "true" : "false") << ",";
+                file << "\"hit_emissive_surface\":" << (data.getHitEmissiveSurface() ? "true" : "false") << ",";
+                file << "\"is_nee_path\":" << (data.getIsNEEPath() ? "true" : "false") << ",";
 
                 // Vertex data
                 file << "\"vertex_data\":{";
@@ -1445,7 +1447,7 @@ namespace Falcor
         file << "#\n";
         // TASK 3: Path Data Format Extended with Vertex Collection and originalEmittedPower
         file << "# Path Data Format Extended with Vertex Collection:\n";
-        file << "# PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W),OriginalEmittedPower(W),HitEmissiveSurface,\n";
+        file << "# PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W),OriginalEmittedPower(W),HitEmissiveSurface,IsNEEPath,\n";
         file << "# VertexCount,BasePosition(X,Y,Z),Vertices(X,Y,Z for each vertex up to 7)\n";
         file << "#\n";
         file << "# Vertex Collection Feature: Each path contains up to 7 collected vertices representing the light path trajectory\n";
@@ -1482,7 +1484,8 @@ namespace Falcor
                      << data.reflectionCount << ","
                      << data.emittedPower << ","
                      << data.originalEmittedPower << ","  // TASK 3: New field added
-                     << (data.hitEmissiveSurface ? 1 : 0) << ",";
+                     << (data.getHitEmissiveSurface() ? 1 : 0) << ","
+                     << (data.getIsNEEPath() ? 1 : 0) << ",";
 
                 // Vertex data
                 file << data.vertexCount << ","
