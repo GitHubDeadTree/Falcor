@@ -372,7 +372,7 @@ namespace Falcor
         bool                                mEnabled = false;               ///< Enable pixel statistics.
         bool                                mEnableLogging = false;         ///< Enable printing to logfile.
         CollectionMode                      mCollectionMode = CollectionMode::Both;  ///< Data collection mode.
-        uint32_t                            mMaxCIRPathsPerFrame = 50000;   ///< Maximum CIR paths to collect per frame (increased for NEE-CIR).
+        uint32_t                            mMaxCIRPathsPerFrame = 500000;  ///< Maximum CIR paths to collect per frame (increased for NEE-CIR).
 
         // CIR export configuration
         CIRExportFormat                     mCIRExportFormat = CIRExportFormat::CSV; ///< Selected CIR export format.
