@@ -59,6 +59,13 @@ struct CIRPathData
     uint2 compressedVertices[7];  ///< Compressed vertex coordinates, each vertex uses 6 bytes
     uint vertexCount;             ///< Actual number of vertices in the path
     float3 basePosition;          ///< Base position (camera position) for relative coordinate calculation
+    
+    // NEE-specific fields - placed at end to avoid disrupting existing memory layout
+    float4 lightSourcePosition;  ///< World space position of light source (for NEE paths only), w component unused
+    
+    // Light source position accessor functions (float4 with unused w component for alignment)
+    float3 getLightSourcePosition() { return lightSourcePosition.xyz; }
+    [mutating] void setLightSourcePosition(float3 position) { lightSourcePosition = float4(position, 0.0f); }
 
     /** Validate that all CIR parameters are within expected physical ranges.
         MODIFIED: Relaxed emittedPower validation to allow zero values for better data preservation.

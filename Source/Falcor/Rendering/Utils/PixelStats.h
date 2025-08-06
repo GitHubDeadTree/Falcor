@@ -70,6 +70,10 @@ namespace Falcor
         bool getIsNEEPath() const { return (flags & 0x2) != 0; }
         void setHitEmissiveSurface(bool value) { flags = value ? (flags | 0x1) : (flags & ~0x1); }
         void setIsNEEPath(bool value) { flags = value ? (flags | 0x2) : (flags & ~0x2); }
+        
+        // Light source position accessor functions (must match GPU interface)
+        float3 getLightSourcePosition() const { return float3(lightSourcePosition.x, lightSourcePosition.y, lightSourcePosition.z); }
+        void setLightSourcePosition(const float3& position) { lightSourcePosition = float4(position.x, position.y, position.z, 0.0f); }
 
         // New vertex-related fields for path vertex collection feature (must match GPU definition)
         struct CompressedVertex
@@ -79,6 +83,9 @@ namespace Falcor
         } compressedVertices[7];  // Compressed vertex coordinates, each vertex uses 6 bytes
         uint32_t vertexCount;     // Actual number of vertices in the path
         float3 basePosition;      // Base position (camera position) for relative coordinate calculation
+        
+        // NEE-specific fields - must match GPU structure exactly
+        float4 lightSourcePosition;  // World space position of light source (for NEE paths only), w component unused
 
         bool isValid(float minPathLength, float maxPathLength,
                     float minEmittedPower, float maxEmittedPower,

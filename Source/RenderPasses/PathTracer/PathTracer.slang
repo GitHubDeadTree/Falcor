@@ -1660,28 +1660,27 @@ struct PathTracer
         neePathData.setHitEmissiveSurface(true); // NEE paths always connect to light source
         // isNEEPath already set at initialization
         
-        // 9. Vertex data: copy current path vertices and add light source position
-        neePathData.vertexCount = min(path.pathVertexCount + 1, 7); // Limit to max 7 vertices
-        neePathData.basePosition = path.pathBasePosition;
+        // 9. Light source position: calculate and set directly
+        float3 lightPos = ls.origin + ls.dir * ls.distance; // Compute actual light position
         
-        // Check for vertex overflow
-        if (path.pathVertexCount >= 6)
+        // Validate light source position before setting
+        if (!isnan(lightPos.x) && !isnan(lightPos.y) && !isnan(lightPos.z) &&
+            !isinf(lightPos.x) && !isinf(lightPos.y) && !isinf(lightPos.z))
         {
-            // GPU shaders cannot use logWarning or string concatenation - vertex count will be limited
+            neePathData.setLightSourcePosition(lightPos);
+        }
+        else
+        {
+            // Set default position for invalid light position
+            neePathData.setLightSourcePosition(float3(0.666, 0.666, 0.666)); // Error indicator
         }
         
-        // Copy existing vertices from path state
-        for (uint i = 0; i < path.pathVertexCount && i < 6; ++i)
+        // Copy existing path vertex data (simplified)
+        neePathData.vertexCount = path.pathVertexCount;
+        neePathData.basePosition = path.pathBasePosition;
+        for (uint i = 0; i < path.pathVertexCount && i < 7; ++i)
         {
             neePathData.compressedVertices[i] = compressVertex(path.pathVertices[i], neePathData.basePosition);
-        }
-        
-        // Add light source position as the last vertex
-        if (neePathData.vertexCount <= 7)
-        {
-            float3 lightPos = ls.origin; // Light source position
-            uint2 compressed = compressVertex(lightPos, neePathData.basePosition);
-            neePathData.compressedVertices[neePathData.vertexCount - 1] = compressed;
         }
         
         // Record CIR data using existing logging mechanism
