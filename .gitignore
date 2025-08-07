@@ -31,3 +31,8 @@
 *.tlog
 *.bak
 *.swp
+*.md
+
+# Ignore zReadme directory and all its contents
+zReadme/
+/zReadme/

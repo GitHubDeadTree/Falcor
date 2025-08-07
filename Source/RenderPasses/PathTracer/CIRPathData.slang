@@ -42,16 +42,30 @@ struct CIRPathData
     float receptionAngle;       ///< θ_i: Reception angle at photodiode surface (radians, range [0, π])
     float reflectanceProduct;   ///< r_i product: Product of all surface reflectances along the path [0,1]
     uint reflectionCount;       ///< K_i: Number of reflections in the path
-    float emittedPower;         ///< P_t: Emitted optical power (watts)
+    float emittedPower;         ///< P_t: Emitted optical power after attenuation (watts)
+    float originalEmittedPower; ///< P_t_orig: Original LED emitted power before attenuation (watts)
     uint pixelX;                ///< Pixel X coordinate
     uint pixelY;                ///< Pixel Y coordinate
     uint pathIndex;             ///< Unique index identifier for this path
-    bool hitEmissiveSurface;    ///< Flag indicating if the path has hit an emissive surface
+    uint flags;                 ///< Bit 0: hitEmissiveSurface, Bit 1: isNEEPath, Bits 2-31: reserved
+
+    // Helper functions for flag access
+    bool getHitEmissiveSurface() { return (flags & 0x1) != 0; }
+    bool getIsNEEPath() { return (flags & 0x2) != 0; }
+    [mutating] void setHitEmissiveSurface(bool value) { flags = value ? (flags | 0x1) : (flags & ~0x1); }
+    [mutating] void setIsNEEPath(bool value) { flags = value ? (flags | 0x2) : (flags & ~0x2); }
 
     // New vertex-related fields for path vertex collection feature
     uint2 compressedVertices[7];  ///< Compressed vertex coordinates, each vertex uses 6 bytes
     uint vertexCount;             ///< Actual number of vertices in the path
     float3 basePosition;          ///< Base position (camera position) for relative coordinate calculation
+    
+    // NEE-specific fields - placed at end to avoid disrupting existing memory layout
+    float4 lightSourcePosition;  ///< World space position of light source (for NEE paths only), w component unused
+    
+    // Light source position accessor functions (float4 with unused w component for alignment)
+    float3 getLightSourcePosition() { return lightSourcePosition.xyz; }
+    [mutating] void setLightSourcePosition(float3 position) { lightSourcePosition = float4(position, 0.0f); }
 
     /** Validate that all CIR parameters are within expected physical ranges.
         MODIFIED: Relaxed emittedPower validation to allow zero values for better data preservation.

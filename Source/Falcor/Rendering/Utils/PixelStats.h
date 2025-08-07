@@ -59,10 +59,21 @@ namespace Falcor
         float reflectanceProduct;
         uint32_t reflectionCount;
         float emittedPower;
+        float originalEmittedPower;  // TASK 3: Original LED emitted power before attenuation (watts)
         uint32_t pixelX;
         uint32_t pixelY;
         uint32_t pathIndex;
-        bool hitEmissiveSurface;
+        uint32_t flags;                  // Bit 0: hitEmissiveSurface, Bit 1: isNEEPath, Bits 2-31: reserved
+
+        // Helper functions for flag access
+        bool getHitEmissiveSurface() const { return (flags & 0x1) != 0; }
+        bool getIsNEEPath() const { return (flags & 0x2) != 0; }
+        void setHitEmissiveSurface(bool value) { flags = value ? (flags | 0x1) : (flags & ~0x1); }
+        void setIsNEEPath(bool value) { flags = value ? (flags | 0x2) : (flags & ~0x2); }
+        
+        // Light source position accessor functions (must match GPU interface)
+        float3 getLightSourcePosition() const { return float3(lightSourcePosition.x, lightSourcePosition.y, lightSourcePosition.z); }
+        void setLightSourcePosition(const float3& position) { lightSourcePosition = float4(position.x, position.y, position.z, 0.0f); }
 
         // New vertex-related fields for path vertex collection feature (must match GPU definition)
         struct CompressedVertex
@@ -72,6 +83,9 @@ namespace Falcor
         } compressedVertices[7];  // Compressed vertex coordinates, each vertex uses 6 bytes
         uint32_t vertexCount;     // Actual number of vertices in the path
         float3 basePosition;      // Base position (camera position) for relative coordinate calculation
+        
+        // NEE-specific fields - must match GPU structure exactly
+        float4 lightSourcePosition;  // World space position of light source (for NEE paths only), w component unused
 
         bool isValid(float minPathLength, float maxPathLength,
                     float minEmittedPower, float maxEmittedPower,
@@ -192,6 +206,15 @@ namespace Falcor
             float    avgCIREmittedPower = 0.f;
             float    avgCIRReflectionCount = 0.f;
             float    avgRayWavelength = 0.f;
+            
+            // NEE-CIR statistics (for monitoring NEE-based light path collection)
+            uint32_t neeAttempts = 0;           ///< Total NEE visibility queries attempted
+            uint32_t neeSuccessful = 0;         ///< Successful NEE visibility queries
+            uint32_t neeCircRecords = 0;        ///< NEE-CIR paths recorded
+            uint32_t neeCircErrors = 0;         ///< NEE-CIR recording errors
+            float    neeSuccessRate = 0.f;      ///< NEE success rate (successful/attempts)
+            float    avgNEEPathLength = 0.f;    ///< Average NEE path length
+            float    avgNEEEmissionAngle = 0.f; ///< Average NEE emission angle
         };
 
         PixelStats(ref<Device> pDevice);
@@ -328,6 +351,14 @@ namespace Falcor
         */
         bool validateCIRVertexData(const CIRPathData& cirData) const;
 
+        /** TASK 3: Validate CIR data with enhanced originalEmittedPower validation.
+            Validates CIR data fields including the new originalEmittedPower field,
+            checking for logical consistency and reasonable value ranges.
+            \param[in,out] data CIR path data to validate (may be modified for error correction)
+            \param[in] pathIndex Path index for error reporting
+        */
+        void validateCIRDataForExport(CIRPathData& data, size_t pathIndex) const;
+
         // Backward compatibility support functions
         /** Check if CIR data version supports vertex collection feature.
             \param cirData CIR path data to check
@@ -354,7 +385,7 @@ namespace Falcor
         bool                                mEnabled = false;               ///< Enable pixel statistics.
         bool                                mEnableLogging = false;         ///< Enable printing to logfile.
         CollectionMode                      mCollectionMode = CollectionMode::Both;  ///< Data collection mode.
-        uint32_t                            mMaxCIRPathsPerFrame = 10000;   ///< Maximum CIR paths to collect per frame.
+        uint32_t                            mMaxCIRPathsPerFrame = 50000;   ///< Maximum CIR paths to collect per frame (increased for NEE-CIR).
 
         // CIR export configuration
         CIRExportFormat                     mCIRExportFormat = CIRExportFormat::CSV; ///< Selected CIR export format.

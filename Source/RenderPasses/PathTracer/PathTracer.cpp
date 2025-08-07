@@ -400,7 +400,7 @@ RenderPassReflection PathTracer::reflect(const CompileData& compileData)
     try
     {
         const uint32_t maxSamples = sz.x * sz.y * mStaticParams.samplesPerPixel;
-        const uint32_t cirDataSize = maxSamples * 36; // 36 bytes = size of CIRPathData structure
+        const uint32_t cirDataSize = maxSamples * 40; // TASK 3: 40 bytes = size of CIRPathData structure (added originalEmittedPower)
         reflector.addOutput(kOutputCIRData, "CIR path data buffer for VLC analysis")
             .bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource)
             .rawBuffer(cirDataSize)

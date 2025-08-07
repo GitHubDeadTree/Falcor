@@ -220,6 +220,17 @@ namespace Falcor
                     var["gStatsCIRData"][i] = mpStatsCIRData[i];
                 }
                 var["gStatsCIRValidSamples"] = mpStatsCIRValidSamples;
+
+                // Bind GPU-side CIR filtering parameters for real-time filtering (statistics mode)
+                var["PerFrameCB"]["gCIRFilteringEnabled"] = mCIRFilteringEnabled;
+                var["PerFrameCB"]["gCIRMinPathLength"] = mCIRMinPathLength;
+                var["PerFrameCB"]["gCIRMaxPathLength"] = mCIRMaxPathLength;
+                var["PerFrameCB"]["gCIRMinEmittedPower"] = mCIRMinEmittedPower;
+                var["PerFrameCB"]["gCIRMaxEmittedPower"] = mCIRMaxEmittedPower;
+                var["PerFrameCB"]["gCIRMinAngle"] = mCIRMinAngle;
+                var["PerFrameCB"]["gCIRMaxAngle"] = mCIRMaxAngle;
+                var["PerFrameCB"]["gCIRMinReflectance"] = mCIRMinReflectance;
+                var["PerFrameCB"]["gCIRMaxReflectance"] = mCIRMaxReflectance;
             }
 
             // Bind raw CIR data buffers if raw data collection is enabled
@@ -264,7 +275,18 @@ namespace Falcor
                 var["gCIRCounterBuffer"] = mpCIRCounterBuffer;
                 var["PerFrameCB"]["gMaxCIRPaths"] = mMaxCIRPathsPerFrame;
 
-                logDebug("Successfully bound CIR raw data buffers to shader variables");
+                // Bind GPU-side CIR filtering parameters for real-time filtering
+                var["PerFrameCB"]["gCIRFilteringEnabled"] = mCIRFilteringEnabled;
+                var["PerFrameCB"]["gCIRMinPathLength"] = mCIRMinPathLength;
+                var["PerFrameCB"]["gCIRMaxPathLength"] = mCIRMaxPathLength;
+                var["PerFrameCB"]["gCIRMinEmittedPower"] = mCIRMinEmittedPower;
+                var["PerFrameCB"]["gCIRMaxEmittedPower"] = mCIRMaxEmittedPower;
+                var["PerFrameCB"]["gCIRMinAngle"] = mCIRMinAngle;
+                var["PerFrameCB"]["gCIRMaxAngle"] = mCIRMaxAngle;
+                var["PerFrameCB"]["gCIRMinReflectance"] = mCIRMinReflectance;
+                var["PerFrameCB"]["gCIRMaxReflectance"] = mCIRMaxReflectance;
+
+                logDebug("Successfully bound CIR raw data buffers and filtering parameters to shader variables");
             }
             else
             {
@@ -330,6 +352,43 @@ namespace Falcor
                 } else {
                     widget.text(fmt::format("CIR paths: {} collected (filtering disabled)", filteredCount));
                     widget.tooltip("Shows collected CIR paths count (no filtering applied)");
+                }
+                
+                // NEE-CIR: Display buffer usage information
+                if (mCollectedCIRPaths > 0)
+                {
+                    float bufferUsage = (float)mCollectedCIRPaths / (float)mMaxCIRPathsPerFrame * 100.0f;
+                    if (bufferUsage >= 100.0f)
+                    {
+                        widget.text(fmt::format("Buffer usage: {:.1f}% (OVERFLOW)", bufferUsage));
+                        widget.tooltip("CIR buffer is full! Some NEE-CIR paths may be lost. Consider increasing buffer size.");
+                    }
+                    else if (bufferUsage >= 90.0f)
+                    {
+                        widget.text(fmt::format("Buffer usage: {:.1f}% (HIGH)", bufferUsage));
+                        widget.tooltip("CIR buffer usage is high. Monitor for potential overflow.");
+                    }
+                    else
+                    {
+                        widget.text(fmt::format("Buffer usage: {:.1f}%", bufferUsage));
+                        widget.tooltip("CIR buffer usage percentage");
+                    }
+                    
+                    // Count NEE-CIR paths (those with hitEmissiveSurface = true)
+                    uint32_t neeCircCount = 0;
+                    if (mCIRRawDataValid)
+                    {
+                        for (const auto& data : mCIRRawData)
+                        {
+                            if (data.getHitEmissiveSurface()) neeCircCount++;
+                        }
+                        if (neeCircCount > 0)
+                        {
+                            float neeCircRatio = (float)neeCircCount / (float)filteredCount * 100.0f;
+                            widget.text(fmt::format("NEE-CIR paths: {} ({:.1f}%)", neeCircCount, neeCircRatio));
+                            widget.tooltip("Number and percentage of NEE-based CIR paths in collected data");
+                        }
+                    }
                 }
 
                 if (widget.button("Export CIR Data (Auto-timestamped)"))
@@ -660,8 +719,23 @@ namespace Falcor
                 const uint32_t* counterData = static_cast<const uint32_t*>(mpCIRCounterReadback->map());
                 if (counterData)
                 {
-                    mCollectedCIRPaths = std::min(*counterData, mMaxCIRPathsPerFrame);
+                    uint32_t actualPathCount = *counterData;
+                    mCollectedCIRPaths = std::min(actualPathCount, mMaxCIRPathsPerFrame);
                     mpCIRCounterReadback->unmap();
+                    
+                    // NEE-CIR: Buffer usage monitoring and overflow detection
+                    if (actualPathCount > mMaxCIRPathsPerFrame)
+                    {
+                        uint32_t overflowCount = actualPathCount - mMaxCIRPathsPerFrame;
+                        float overflowPercentage = (float)overflowCount / (float)actualPathCount * 100.0f;
+                        logWarning("CIR buffer overflow: {} paths attempted, {} collected, {} lost ({:.1f}%)", 
+                                  actualPathCount, mCollectedCIRPaths, overflowCount, overflowPercentage);
+                    }
+                    else if (actualPathCount > mMaxCIRPathsPerFrame * 0.9f) // Warn at 90% usage
+                    {
+                        float usagePercentage = (float)actualPathCount / (float)mMaxCIRPathsPerFrame * 100.0f;
+                        logInfo("CIR buffer usage high: {:.1f}% ({}/{})", usagePercentage, actualPathCount, mMaxCIRPathsPerFrame);
+                    }
 
                     if (mCollectedCIRPaths > 0)
                     {
@@ -1149,6 +1223,30 @@ namespace Falcor
         }
     }
 
+    // TASK 3: Validate CIR data with enhanced originalEmittedPower validation
+    void PixelStats::validateCIRDataForExport(CIRPathData& data, size_t pathIndex) const
+    {
+        // Validate original emitted power
+        if (data.originalEmittedPower <= 0.0f || data.originalEmittedPower == 0.666f)
+        {
+            logWarning("PixelStats: Path {} has invalid originalEmittedPower: {}", pathIndex, data.originalEmittedPower);
+        }
+
+        // Validate power relationship (original should be >= attenuated)
+        if (data.originalEmittedPower > 0.0f && data.originalEmittedPower != 0.666f &&
+            data.emittedPower > 0.0f && data.originalEmittedPower < data.emittedPower)
+        {
+            logWarning("PixelStats: Path {} has originalEmittedPower ({}) < emittedPower ({}), logical error",
+                      pathIndex, data.originalEmittedPower, data.emittedPower);
+        }
+
+        // Validate reasonable power ranges for LED systems
+        if (data.originalEmittedPower > 100.0f)
+        {
+            logWarning("PixelStats: Path {} has unusually high originalEmittedPower: {} W", pathIndex, data.originalEmittedPower);
+        }
+    }
+
     bool PixelStats::exportCIRDataCSV(const std::string& filename, const CIRStaticParameters& staticParams)
     {
         std::ofstream file(filename);
@@ -1169,9 +1267,10 @@ namespace Falcor
         file << "# g_optical_concentration," << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
         file << "#\n";
 
-        // Write CSV header with vertex data support
-        file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W,HitEmissiveSurface,";
+        // Write CSV header with originalEmittedPower field, vertex data support, and light source position
+        file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W,OriginalEmittedPower_W,HitEmissiveSurface,IsNEEPath,";
         file << "VertexCount,BasePosition_X,BasePosition_Y,BasePosition_Z,";
+        file << "LightSourcePosition_X,LightSourcePosition_Y,LightSourcePosition_Z,";  // NEE light source position
         file << "Vertex1_X,Vertex1_Y,Vertex1_Z,Vertex2_X,Vertex2_Y,Vertex2_Z,Vertex3_X,Vertex3_Y,Vertex3_Z,";
         file << "Vertex4_X,Vertex4_Y,Vertex4_Z,Vertex5_X,Vertex5_Y,Vertex5_Z,Vertex6_X,Vertex6_Y,Vertex6_Z,Vertex7_X,Vertex7_Y,Vertex7_Z\n";
 
@@ -1185,6 +1284,9 @@ namespace Falcor
             // Handle legacy data if needed
             handleLegacyData(data);
 
+            // TASK 3: Validate CIR data including originalEmittedPower
+            validateCIRDataForExport(data, i);
+
             // Validate vertex data integrity (log warnings for invalid data but continue export)
             if (!validateCIRVertexData(data))
             {
@@ -1194,7 +1296,7 @@ namespace Falcor
 
             try
             {
-                // Write basic path data
+                // TASK 3: Write basic path data including originalEmittedPower
                 file << i << ","
                      << data.pixelX << ","
                      << data.pixelY << ","
@@ -1204,13 +1306,19 @@ namespace Falcor
                      << data.reflectanceProduct << ","
                      << data.reflectionCount << ","
                      << data.emittedPower << ","
-                     << (data.hitEmissiveSurface ? 1 : 0) << ",";
+                     << data.originalEmittedPower << ","  // TASK 3: New field added
+                     << (data.getHitEmissiveSurface() ? 1 : 0) << ","
+                     << (data.getIsNEEPath() ? 1 : 0) << ",";
 
                 // Write vertex data
                 file << data.vertexCount << ","
                      << data.basePosition.x << ","
                      << data.basePosition.y << ","
                      << data.basePosition.z << ",";
+                
+                // Write light source position (for NEE paths)
+                float3 lightPos = data.getLightSourcePosition();
+                file << lightPos.x << "," << lightPos.y << "," << lightPos.z << ",";
 
                 // Decompress and write vertices (up to 7 vertices)
                 std::vector<float3> vertices = decompressPathVertices(data);
@@ -1231,8 +1339,8 @@ namespace Falcor
             catch (const std::exception& e)
             {
                 logError("PixelStats: Error writing path {} to CSV: {}", i, e.what());
-                // Write error marker row to maintain file structure
-                file << i << ",ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
+                // TASK 3: Write error marker row to maintain file structure (updated for new field)
+                file << i << ",ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
             }
         }
 
@@ -1280,7 +1388,7 @@ namespace Falcor
             {
                 file << "{\"type\":\"path_data\",\"data\":{";
 
-                // Basic path data
+                // TASK 3: Basic path data including originalEmittedPower
                 file << "\"path_index\":" << i << ",";
                 file << "\"pixel_x\":" << data.pixelX << ",";
                 file << "\"pixel_y\":" << data.pixelY << ",";
@@ -1290,7 +1398,13 @@ namespace Falcor
                 file << "\"reflectance_product\":" << data.reflectanceProduct << ",";
                 file << "\"reflection_count\":" << data.reflectionCount << ",";
                 file << "\"emitted_power_w\":" << data.emittedPower << ",";
-                file << "\"hit_emissive_surface\":" << (data.hitEmissiveSurface ? "true" : "false") << ",";
+                file << "\"original_emitted_power_w\":" << data.originalEmittedPower << ",";  // TASK 3: New field added
+                file << "\"hit_emissive_surface\":" << (data.getHitEmissiveSurface() ? "true" : "false") << ",";
+                file << "\"is_nee_path\":" << (data.getIsNEEPath() ? "true" : "false") << ",";
+
+                // Light source position (for NEE paths)
+                float3 lightPos = data.getLightSourcePosition();
+                file << "\"light_source_position\":[" << lightPos.x << "," << lightPos.y << "," << lightPos.z << "],";
 
                 // Vertex data
                 file << "\"vertex_data\":{";
@@ -1340,9 +1454,10 @@ namespace Falcor
         file << "# T_s_optical_filter_gain=" << std::fixed << std::setprecision(1) << staticParams.opticalFilterGain << "\n";
         file << "# g_optical_concentration=" << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
         file << "#\n";
+        // TASK 3: Path Data Format Extended with Vertex Collection and originalEmittedPower
         file << "# Path Data Format Extended with Vertex Collection:\n";
-        file << "# PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W),HitEmissiveSurface,\n";
-        file << "# VertexCount,BasePosition(X,Y,Z),Vertices(X,Y,Z for each vertex up to 7)\n";
+        file << "# PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W),OriginalEmittedPower(W),HitEmissiveSurface,IsNEEPath,\n";
+        file << "# VertexCount,BasePosition(X,Y,Z),LightSourcePosition(X,Y,Z),Vertices(X,Y,Z for each vertex up to 7)\n";
         file << "#\n";
         file << "# Vertex Collection Feature: Each path contains up to 7 collected vertices representing the light path trajectory\n";
         file << "# Base position is typically the camera position, vertices are stored as absolute world coordinates\n";
@@ -1367,7 +1482,7 @@ namespace Falcor
 
             try
             {
-                // Basic path data
+                // TASK 3: Basic path data including originalEmittedPower
                 file << i << ","
                      << data.pixelX << ","
                      << data.pixelY << ","
@@ -1377,13 +1492,19 @@ namespace Falcor
                      << data.reflectanceProduct << ","
                      << data.reflectionCount << ","
                      << data.emittedPower << ","
-                     << (data.hitEmissiveSurface ? 1 : 0) << ",";
+                     << data.originalEmittedPower << ","  // TASK 3: New field added
+                     << (data.getHitEmissiveSurface() ? 1 : 0) << ","
+                     << (data.getIsNEEPath() ? 1 : 0) << ",";
 
                 // Vertex data
                 file << data.vertexCount << ","
                      << data.basePosition.x << ","
                      << data.basePosition.y << ","
                      << data.basePosition.z;
+                
+                // Light source position (for NEE paths)
+                float3 lightPos = data.getLightSourcePosition();
+                file << "," << lightPos.x << "," << lightPos.y << "," << lightPos.z;
 
                 // Decompress and write vertices
                 std::vector<float3> vertices = decompressPathVertices(data);
@@ -1396,8 +1517,8 @@ namespace Falcor
             catch (const std::exception& e)
             {
                 logError("PixelStats: Error writing path {} to TXT: {}", i, e.what());
-                // Write error marker row to maintain file structure
-                file << i << ",ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,0,0,0\n";
+                // TASK 3: Write error marker row to maintain file structure (updated for new field)
+                file << i << ",ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,ERROR,0,0,0\n";
             }
         }
 

@@ -308,7 +308,7 @@ struct PathTracer
 
         // Create primary ray.
         Ray cameraRay = gScene.camera.computeRayPinhole(pixel, params.frameDim);
-        if (kUseViewDir) cameraRay.dir = -viewDir[pixel];
+        if (kUseViewDir != 0) cameraRay.dir = -viewDir[pixel];
         path.origin = cameraRay.origin;
         path.dir = cameraRay.dir;
 
@@ -317,6 +317,9 @@ struct PathTracer
 
         // === Initialize vertex collection ===
         path.initPathVertexCollection(cameraRay.origin);
+
+        // === Initialize CIR data ===
+        path.initCIRData();
 
         // Create sample generator.
         const uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
@@ -409,6 +412,12 @@ struct PathTracer
     */
     void addToPathContribution(inout PathState path, const float3 radiance)
     {
+        // Record initial L value for the first non-zero contribution (used for power calculation)
+        if (all(path.L == float3(0.0f)) && any(radiance > 0.0f))
+        {
+            path.setInitialL(radiance);
+        }
+        
         path.L += path.thp * radiance;
     }
 
@@ -1146,6 +1155,12 @@ struct PathTracer
                 validSample = generateLightSample(pathVertex, sampleUpperHemisphere, sampleLowerHemisphere, path.sg, ls);
                 path.setLightSampled(sampleUpperHemisphere, sampleLowerHemisphere);
 
+                // Record initial L value from light sample for power calculation
+                if (validSample && all(path.cirInitialL == float3(0.0f)) && any(ls.Li > 0.0f))
+                {
+                    path.setInitialL(ls.Li);
+                }
+
                 // Additional LED spectral sampling if needed
                 if (validSample && ls.lightType == (uint)LightType::Analytic)
                 {
@@ -1181,7 +1196,13 @@ struct PathTracer
 
                     logTraceRay(PixelStatsRayType::Visibility);
                     bool visible = visibilityQuery.traceVisibilityRay(ray);
-                    if (visible) addToPathContribution(path, Lr);
+                    if (visible)
+                    {
+                        addToPathContribution(path, Lr);
+                        
+                        // === NEE-CIR: Record CIR data for NEE path ===
+                        recordNEECIRPath(path, ls, pathVertex, sd);
+                    }
                 }
             }
         }
@@ -1412,6 +1433,10 @@ struct PathTracer
         {
             path.hitEmissiveSurface = true;  // Set flag when hitting emissive surface
             path.updateCIREmissionAngle(surfaceNormal);
+
+            // Calculate single path effective emitted power from emission
+            float emissionPower = calculateEmissionPower(bsdfProperties.emission, path);
+            path.setOriginalLEDPower(emissionPower);
         }
         // Strategy 2: For VLC systems, calculate emission angle at primary hit
         else if (isPrimaryHit && path.cirEmissionAngle == 0.0f)
@@ -1473,10 +1498,13 @@ struct PathTracer
     void outputCIRDataOnPathCompletion(PathState path)
     {
         // Update reception angle when path is about to terminate
-        if (path.isHit() && length(path.normal) > 0.1f)
+        // Copy path to local variable to avoid mutation warning on 'in' parameter
+        PathState localPath = path;
+        if (localPath.isHit() && length(localPath.normal) > 0.1f)
         {
-            path.updateCIRReceptionAngle(path.dir, path.normal);
+            localPath.updateCIRReceptionAngle(localPath.dir, localPath.normal);
         }
+        path = localPath;
 
         // Dynamically generate complete CIR data (utilizing reused fields)
         CIRPathData cirData = path.getCIRData();
@@ -1484,6 +1512,402 @@ struct PathTracer
         // UNIFIED VALIDATION: Use single validation point for both statistics and raw data
         // This ensures consistency between statistical aggregation and file output
         logCIRPathComplete(cirData);
+    }
+
+    /** Get surface normal for light source based on light sampling data.
+        Used for calculating emission angle in NEE-CIR paths.
+        \param[in] ls Light sample data containing light information
+        \return Surface normal vector for the light source
+    */
+    float3 getLightSurfaceNormal(LightSample ls)
+    {
+        // Default normal (upward)
+        float3 defaultNormal = float3(0.0f, 0.0f, 1.0f);
+        
+        // Method 1: LightSample does not have normalW field in this Falcor version
+        // Use alternative method based on light direction and geometry
+        
+        // Method 2: Infer normal based on light geometry
+        // For point lights: use radial direction as normal
+        // For area lights: use default or try to infer from geometry
+        
+        // Get direction from light to sample point
+        float3 lightToSample = normalize(ls.dir);
+        
+        // Assume point light if distance is significant
+        if (ls.distance > 1.0f)
+        {
+            // Point light: normal is radial outward direction
+            return -lightToSample; // Negative because ls.dir points from light to sample
+        }
+        else
+        {
+            // Area light or close light: use default normal
+            return defaultNormal;
+        }
+    }
+
+    /** Enhanced version with error handling for light surface normal calculation.
+        \param[in] ls Light sample data
+        \return Normalized surface normal, or default normal if invalid
+    */
+    float3 getLightSurfaceNormalSafe(LightSample ls)
+    {
+        float3 defaultNormal = float3(0.0f, 0.0f, 1.0f);
+        
+        // Input validation
+        if (length(ls.dir) < 0.001f)
+        {
+            // GPU shaders cannot use logError - return default normal for invalid input
+            return defaultNormal;
+        }
+        
+        float3 normal = getLightSurfaceNormal(ls);
+        
+        // Normal validity check
+        if (length(normal) < 0.1f || isnan(normal.x) || isnan(normal.y) || isnan(normal.z))
+        {
+            // GPU shaders cannot use logWarning - return default normal for invalid result
+            return defaultNormal;
+        }
+        
+        return normalize(normal);
+    }
+
+    /** Record CIR data for NEE (Next Event Estimation) paths.
+        This creates a new CIR path from light source through current vertex to camera.
+        \param[in] path Current path state
+        \param[in] ls Light sample data
+        \param[in] pathVertex Current path vertex
+        \param[in] sd Shading data at current vertex
+    */
+    void recordNEECIRPath(PathState path, LightSample ls, PathVertex pathVertex, ShadingData sd)
+    {
+        // Input validation
+        if (ls.pdf <= 0.0f || ls.distance <= 0.0f)
+        {
+            // GPU shaders cannot use logWarning or string concatenation - early return for invalid input
+            return;
+        }
+        
+        // Create NEE path's CIR data
+        CIRPathData neePathData = {};
+        neePathData.setIsNEEPath(true);  // Initialize immediately to avoid validation issues
+        
+        // 1. Calculate path length: light source to current vertex + current vertex to camera
+        neePathData.pathLength = ls.distance + path.sceneLength;
+        if (neePathData.pathLength <= 0.0f || isnan(neePathData.pathLength) || isinf(neePathData.pathLength))
+        {
+            // GPU shaders cannot use logError - set error indicator value
+            neePathData.pathLength = 0.666f; // Error indicator value
+        }
+        
+        // 2. Calculate emission angle (angle between light surface normal and light ray direction)
+        float3 lightNormal = getLightSurfaceNormalSafe(ls);
+        float cosEmissionAngle = dot(lightNormal, normalize(ls.dir));
+        neePathData.emissionAngle = acos(clamp(cosEmissionAngle, 0.0f, 1.0f));
+        
+        const float PI = 3.14159265359f;
+        if (neePathData.emissionAngle < 0.0f || neePathData.emissionAngle > PI)
+        {
+            // GPU shaders cannot use logWarning - set error indicator value
+            neePathData.emissionAngle = 0.666f; // Error indicator value
+        }
+        
+        // 3. Calculate reception angle (angle between camera surface normal and incident ray)
+        if (path.getVertexIndex() == 1) // Direct path
+        {
+            float3 cameraDir = normalize(path.origin - sd.posW);
+            neePathData.receptionAngle = acos(clamp(dot(sd.faceN, cameraDir), 0.0f, 1.0f));
+        }
+        else // Indirect path, use path's final reception angle
+        {
+            neePathData.receptionAngle = path.cirReceptionAngle;
+        }
+        
+        // 4. Reflection count: current path's reflection count
+        neePathData.reflectionCount = path.getVertexIndex() - 1;
+        
+        // 5. Reflectance product: use current path's accumulated reflectance
+        neePathData.reflectanceProduct = path.cirReflectanceProduct;
+        if (neePathData.reflectanceProduct < 0.0f || neePathData.reflectanceProduct > 1.0f)
+        {
+            if (neePathData.reflectanceProduct != 0.666f) // Don't warn about error indicator
+            {
+                // GPU shaders cannot use logWarning - set error indicator value
+            }
+            neePathData.reflectanceProduct = 0.666f;
+        }
+        
+        // 6. Emitted power: from light sampling
+        neePathData.emittedPower = luminance(ls.Li);
+        if (neePathData.emittedPower < 0.0f || isnan(neePathData.emittedPower))
+        {
+            // GPU shaders cannot use logWarning - set error indicator value
+            neePathData.emittedPower = 0.666f;
+        }
+        
+        // Set original emitted power same as emitted power for NEE paths
+        neePathData.originalEmittedPower = neePathData.emittedPower;
+        
+        // 7. Pixel coordinates
+        uint2 pixel = path.getPixel();
+        neePathData.pixelX = pixel.x;
+        neePathData.pixelY = pixel.y;
+        
+        // 8. Path index and flags
+        neePathData.pathIndex = path.getSampleIdx();
+        neePathData.setHitEmissiveSurface(true); // NEE paths always connect to light source
+        // isNEEPath already set at initialization
+        
+        // 9. Light source position: calculate and set directly
+        float3 lightPos = ls.origin + ls.dir * ls.distance; // Compute actual light position
+        
+        // Validate light source position before setting
+        if (!isnan(lightPos.x) && !isnan(lightPos.y) && !isnan(lightPos.z) &&
+            !isinf(lightPos.x) && !isinf(lightPos.y) && !isinf(lightPos.z))
+        {
+            neePathData.setLightSourcePosition(lightPos);
+        }
+        else
+        {
+            // Set default position for invalid light position
+            neePathData.setLightSourcePosition(float3(0.666, 0.666, 0.666)); // Error indicator
+        }
+        
+        // Copy existing path vertex data (simplified)
+        neePathData.vertexCount = path.pathVertexCount;
+        neePathData.basePosition = path.pathBasePosition;
+        for (uint i = 0; i < path.pathVertexCount && i < 7; ++i)
+        {
+            neePathData.compressedVertices[i] = compressVertex(path.pathVertices[i], neePathData.basePosition);
+        }
+        
+        // Record CIR data using existing logging mechanism
+        logCIRPathComplete(neePathData);
+    }
+
+    /** Validate NEE-CIR data for debugging and verification.
+        Checks if NEE-CIR path data meets expected physical constraints.
+        \param[in] neeData NEE-CIR path data to validate
+        \param[in] originalPath Original path state for comparison
+        \param[in] ls Light sample used for NEE
+        \return True if data is valid, false with error logging if invalid
+    */
+    bool validateNEECIRData(CIRPathData neeData, PathState originalPath, LightSample ls)
+    {
+        bool isValid = true;
+        
+        // 1. Check path length consistency
+        float expectedLength = originalPath.sceneLength + ls.distance;
+        if (abs(neeData.pathLength - expectedLength) > 0.001f && neeData.pathLength != 0.666f)
+        {
+            // GPU shaders cannot use logError or string concatenation - mark as invalid
+            isValid = false;
+        }
+        
+        // 2. Check vertex count
+        if (neeData.vertexCount != originalPath.pathVertexCount + 1)
+        {
+            // GPU shaders cannot use logError or string concatenation - mark as invalid
+            isValid = false;
+        }
+        
+        // 3. Check angle ranges
+        const float PI = 3.14159265359f;
+        if (neeData.emissionAngle < 0.0f || neeData.emissionAngle > PI)
+        {
+            // GPU shaders cannot use logError or string concatenation - mark as invalid
+            isValid = false;
+        }
+        
+        if (neeData.receptionAngle < 0.0f || neeData.receptionAngle > PI)
+        {
+            // GPU shaders cannot use logError or string concatenation - mark as invalid
+            isValid = false;
+        }
+        
+        // 4. Check reflectance product
+        if (neeData.reflectanceProduct < 0.0f || neeData.reflectanceProduct > 1.0f)
+        {
+            if (neeData.reflectanceProduct != 0.666f) // Skip error indicator values
+            {
+                // GPU shaders cannot use logError or string concatenation - mark as invalid
+                isValid = false;
+            }
+        }
+        
+        // 5. Check emitted power
+        if (neeData.emittedPower < 0.0f || isnan(neeData.emittedPower) || isinf(neeData.emittedPower))
+        {
+            if (neeData.emittedPower != 0.666f) // Skip error indicator values
+            {
+                // GPU shaders cannot use logError or string concatenation - mark as invalid
+                isValid = false;
+            }
+        }
+        
+        // 6. Check NEE-specific flags
+        if (!neeData.getHitEmissiveSurface())
+        {
+            // GPU shaders cannot use logError - mark as invalid
+            isValid = false;
+        }
+        
+        // 7. Check reflection count consistency
+        if (neeData.reflectionCount != originalPath.getVertexIndex() - 1)
+        {
+            // GPU shaders cannot use logError or string concatenation - mark as invalid
+            isValid = false;
+        }
+        
+        return isValid;
+    }
+
+    /** Output NEE-CIR debug statistics summary.
+        This function can be called periodically to output NEE-CIR performance metrics.
+        Should be called sparingly to avoid performance impact.
+    */
+    void outputNEECIRDebugInfo()
+    {
+        // GPU shaders cannot use logInfo functions
+        // This function is kept for API compatibility but does nothing on GPU
+        // Actual debug output should be implemented on CPU side using PixelStats
+    }
+
+    /** Convert radiance to single path power share.
+        Converts the sampled radiance from light sampling to the effective power
+        share that this single path represents from the LED source.
+        \param[in] radiance Sampled radiance from light sampling (Li).
+        \param[in] light LED light data structure.
+        \param[in] samplingPdf PDF used for light sampling.
+        \return Effective power share for this single path (watts).
+    */
+    float convertRadianceToPower(float3 radiance, LightData light, float samplingPdf)
+    {
+        // Calculate radiance magnitude
+        float radianceValue = luminance(radiance);
+
+        // Error checking for invalid inputs
+        if (radianceValue <= 0.0f || samplingPdf <= 0.0f || isnan(radianceValue) || isinf(radianceValue))
+        {
+            return 0.666f; // Error indicator value
+        }
+
+        // Calculate sampling weight (inverse of PDF)
+        float samplingWeight = 1.0f / samplingPdf;
+
+        // Estimate solid angle to power conversion factor
+        // This is a simplified conversion based on LED characteristics
+        // In a real implementation, this would use the actual LED surface area and emission pattern
+        float solidAngleToPower = 1.0f; // Simplified factor
+
+        // For LED lights, we can estimate the surface area from light properties
+        // This is a heuristic based on typical LED configurations
+        if (light.surfaceArea > 0.0f)
+        {
+            // Use actual surface area if available
+            solidAngleToPower = light.surfaceArea / (4.0f * 3.14159265359f);
+        }
+        else
+        {
+            // Fallback: estimate based on light intensity
+            // Typical LED surface area ranges from 1mm² to 100mm²
+            solidAngleToPower = 0.001f; // Default to 10mm² equivalent
+        }
+
+        // Calculate effective power share for this path
+        // This represents the portion of LED power that this single ray carries
+        float pathPower = radianceValue * samplingWeight * solidAngleToPower;
+
+        // Clamp to reasonable range for LED power shares
+        // Single path should be a small fraction of total LED power
+        pathPower = clamp(pathPower, 0.001f, 10.0f); // 1mW to 10W range
+
+        return pathPower;
+    }
+
+    /** Calculate emission power from emissive surface properties.
+        Estimates the effective power share for a single path based on the
+        emissive surface's emission properties.
+        \param[in] emission Emission radiance from BSDF properties.
+        \param[in] path Current path state for context.
+        \return Effective power share for this single path (watts).
+    */
+    float calculateEmissionPower(float3 emission, PathState path)
+    {
+        // Calculate emission magnitude
+        float emissionValue = luminance(emission);
+
+        // Error checking
+        if (emissionValue <= 0.0f || isnan(emissionValue) || isinf(emissionValue))
+        {
+            return 0.666f; // Error indicator value
+        }
+
+        // Estimate power conversion based on path throughput and sampling
+        // This is a heuristic conversion from radiance to power
+        float pathThroughput = luminance(path.thp);
+
+        // Simple conversion factor based on typical LED characteristics
+        // In practice, this would be calibrated based on actual LED specifications
+        float conversionFactor = 0.1f; // Heuristic factor
+
+        // Calculate effective power share
+        float pathPower = emissionValue * conversionFactor * max(pathThroughput, 0.001f);
+
+        // Clamp to reasonable range for single path power shares
+        pathPower = clamp(pathPower, 0.001f, 5.0f); // 1mW to 5W range
+
+        return pathPower;
+    }
+
+    /** Calculate path power from light sample.
+        Estimates the effective power share for a single path based on the
+        light sampling result.
+        \param[in] ls Light sample containing radiance and PDF information.
+        \return Effective power share for this single path (watts).
+    */
+    float calculatePathPowerFromLightSample(LightSample ls)
+    {
+        // Calculate radiance magnitude
+        float radianceValue = luminance(ls.Li);
+
+        // Error checking
+        if (radianceValue <= 0.0f || ls.pdf <= 0.0f || isnan(radianceValue) || isinf(radianceValue))
+        {
+            return 0.666f; // Error indicator value
+        }
+
+        // Calculate sampling weight (inverse of PDF)
+        float samplingWeight = 1.0f / ls.pdf;
+
+        // Different conversion factors based on light type
+        float conversionFactor = 0.1f; // Default factor
+
+        if (ls.lightType == (uint)LightType::Emissive)
+        {
+            // Emissive surfaces: use area-based conversion
+            conversionFactor = 0.05f; // Smaller factor for emissive surfaces
+        }
+        else if (ls.lightType == (uint)LightType::Analytic)
+        {
+            // Analytic lights (including LEDs): use intensity-based conversion
+            conversionFactor = 0.2f; // Larger factor for point/directional lights
+        }
+        else if (ls.lightType == (uint)LightType::EnvMap)
+        {
+            // Environment map: very small contribution per path
+            conversionFactor = 0.01f;
+        }
+
+        // Calculate effective power share
+        float pathPower = radianceValue * samplingWeight * conversionFactor;
+
+        // Clamp to reasonable range for single path power shares
+        pathPower = clamp(pathPower, 0.001f, 8.0f); // 1mW to 8W range
+
+        return pathPower;
     }
 
     /** Handle LED light sampling with spectral sampling support.
@@ -1541,6 +1965,8 @@ struct PathTracer
                             path.setWavelength(550.0f); // Default green wavelength
                         }
                     }
+
+                    // Original LED power is now handled by initial L value recording in addToPathContribution
 
                     // Add light contribution to path
                     // Note: BSDF evaluation would be handled by the calling code

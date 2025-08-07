@@ -243,7 +243,7 @@ private:
     // Statistics and export-related members
     PowerStatistics mPowerStats;              ///< Statistics about the calculated power
     bool mEnableStatistics = true;            ///< Whether to calculate statistics
-    uint32_t mStatisticsFrequency = 1;        ///< How often to calculate statistics (in frames, 1 = every frame)
+    uint32_t mStatisticsFrequency = 10;       ///< How often to calculate statistics (in frames, 1 = every frame)
     bool mNeedStatsUpdate = true;             ///< Flag indicating statistics need to be updated
     bool mAccumulatePower = false;            ///< Whether to accumulate power over frames
     uint32_t mAccumulatedFrames = 0;          ///< Number of accumulated frames
