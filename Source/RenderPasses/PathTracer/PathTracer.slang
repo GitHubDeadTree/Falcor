@@ -1083,7 +1083,9 @@ struct PathTracer
             // Check if we have sufficient data before terminating
             bool hasValidPathLength = path.sceneLength > 0.0f;
             bool hasValidPower = luminance(path.L) > 0.0f;
-            bool hasValidReflectionData = path.getBounces(BounceType::Diffuse) > 0 || path.getBounces(BounceType::Specular) > 0 || isPrimaryHit;
+            // Consider 2-endpoint path (camera -> surface -> light) as valid even without recorded bounces
+            bool isTwoEndpointPath = (path.getVertexIndex() == 2);
+            bool hasValidReflectionData = path.getBounces(BounceType::Diffuse) > 0 || path.getBounces(BounceType::Specular) > 0 || isPrimaryHit || isTwoEndpointPath;
 
             // Only terminate if we have meaningful data to record
             if (hasValidPathLength && hasValidPower && hasValidReflectionData)
@@ -1125,7 +1127,8 @@ struct PathTracer
         const bool hasNonDeltaLobes = (lobeTypes & (uint)LobeType::NonDelta) != 0;
 
         // Check if we should apply NEE.
-        const bool applyNEE = kUseNEE && hasNonDeltaLobes;
+        // ENHANCED: Force NEE on primary hits to ensure direct lighting data collection
+        const bool applyNEE = kUseNEE && (hasNonDeltaLobes || isPrimaryHit);
 
         // Check if sample from RTXDI should be applied instead of NEE.
         const bool applyRTXDI = kUseRTXDI && isPrimaryHit && hasNonDeltaLobes;

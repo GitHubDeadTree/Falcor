@@ -56,7 +56,7 @@ RWByteAddressBuffer gCIRCounterBuffer;              // Counter for number of sto
 cbuffer PerFrameCB
 {
     uint gMaxCIRPaths;                              // Maximum number of paths that can be stored
-    
+
     // GPU-side CIR filtering parameters for real-time filtering
     bool gCIRFilteringEnabled;                      // Enable/disable CIR filtering on GPU
     float gCIRMinPathLength;                        // Minimum path length for filtering (meters)
@@ -229,7 +229,7 @@ bool isValidCIRDataGPU(CIRPathData data)
 {
     // If filtering is disabled, accept all data (except NaN/inf checks in logCIRPathComplete)
     if (!gCIRFilteringEnabled) return true;
-    
+
     // Basic data validity checks - reject clearly invalid data
     if (data.pathLength < 0.0f || data.emittedPower < 0.0f ||
         data.emissionAngle < 0.0f || data.receptionAngle < 0.0f ||
@@ -237,14 +237,14 @@ bool isValidCIRDataGPU(CIRPathData data)
     {
         return false;
     }
-    
+
     // Apply user-configured filtering criteria
     bool validPathLength = data.pathLength >= gCIRMinPathLength && data.pathLength <= gCIRMaxPathLength;
     bool validEmittedPower = data.emittedPower >= gCIRMinEmittedPower && data.emittedPower <= gCIRMaxEmittedPower;
     bool validEmissionAngle = data.emissionAngle >= gCIRMinAngle && data.emissionAngle <= gCIRMaxAngle;
     bool validReceptionAngle = data.receptionAngle >= gCIRMinAngle && data.receptionAngle <= gCIRMaxAngle;
     bool validReflectance = data.reflectanceProduct >= gCIRMinReflectance && data.reflectanceProduct <= gCIRMaxReflectance;
-    
+
     return validPathLength && validEmittedPower && validEmissionAngle && validReceptionAngle && validReflectance;
 }
 
@@ -257,7 +257,7 @@ void logCIRPathComplete(CIRPathData pathData)
         // Discard invalid data immediately - do not store in buffer
         return;
     }
-    
+
     // Apply GPU-side real-time filtering using user-configured parameters
     if (!isValidCIRDataGPU(pathData))
     {
