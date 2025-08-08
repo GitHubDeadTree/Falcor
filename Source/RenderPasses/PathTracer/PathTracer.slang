@@ -417,7 +417,7 @@ struct PathTracer
         {
             path.setInitialL(radiance);
         }
-        
+
         path.L += path.thp * radiance;
     }
 
@@ -1199,7 +1199,7 @@ struct PathTracer
                     if (visible)
                     {
                         addToPathContribution(path, Lr);
-                        
+
                         // === NEE-CIR: Record CIR data for NEE path ===
                         recordNEECIRPath(path, ls, pathVertex, sd);
                     }
@@ -1500,7 +1500,9 @@ struct PathTracer
         // Update reception angle when path is about to terminate
         // Copy path to local variable to avoid mutation warning on 'in' parameter
         PathState localPath = path;
-        if (localPath.isHit() && length(localPath.normal) > 0.1f)
+        // Compute reception angle whenever we have a valid normal from the last hit,
+        // even if the path terminated by a miss.
+        if (length(localPath.normal) > 0.1f)
         {
             localPath.updateCIRReceptionAngle(localPath.dir, localPath.normal);
         }
@@ -1523,17 +1525,17 @@ struct PathTracer
     {
         // Default normal (upward)
         float3 defaultNormal = float3(0.0f, 0.0f, 1.0f);
-        
+
         // Method 1: LightSample does not have normalW field in this Falcor version
         // Use alternative method based on light direction and geometry
-        
+
         // Method 2: Infer normal based on light geometry
         // For point lights: use radial direction as normal
         // For area lights: use default or try to infer from geometry
-        
+
         // Get direction from light to sample point
         float3 lightToSample = normalize(ls.dir);
-        
+
         // Assume point light if distance is significant
         if (ls.distance > 1.0f)
         {
@@ -1554,23 +1556,23 @@ struct PathTracer
     float3 getLightSurfaceNormalSafe(LightSample ls)
     {
         float3 defaultNormal = float3(0.0f, 0.0f, 1.0f);
-        
+
         // Input validation
         if (length(ls.dir) < 0.001f)
         {
             // GPU shaders cannot use logError - return default normal for invalid input
             return defaultNormal;
         }
-        
+
         float3 normal = getLightSurfaceNormal(ls);
-        
+
         // Normal validity check
         if (length(normal) < 0.1f || isnan(normal.x) || isnan(normal.y) || isnan(normal.z))
         {
             // GPU shaders cannot use logWarning - return default normal for invalid result
             return defaultNormal;
         }
-        
+
         return normalize(normal);
     }
 
@@ -1589,11 +1591,11 @@ struct PathTracer
             // GPU shaders cannot use logWarning or string concatenation - early return for invalid input
             return;
         }
-        
+
         // Create NEE path's CIR data
         CIRPathData neePathData = {};
         neePathData.setIsNEEPath(true);  // Initialize immediately to avoid validation issues
-        
+
         // 1. Calculate path length: light source to current vertex + current vertex to camera
         neePathData.pathLength = ls.distance + path.sceneLength;
         if (neePathData.pathLength <= 0.0f || isnan(neePathData.pathLength) || isinf(neePathData.pathLength))
@@ -1601,33 +1603,41 @@ struct PathTracer
             // GPU shaders cannot use logError - set error indicator value
             neePathData.pathLength = 0.666f; // Error indicator value
         }
-        
+
         // 2. Calculate emission angle (angle between light surface normal and light ray direction)
         float3 lightNormal = getLightSurfaceNormalSafe(ls);
         float cosEmissionAngle = dot(lightNormal, normalize(ls.dir));
         neePathData.emissionAngle = acos(clamp(cosEmissionAngle, 0.0f, 1.0f));
-        
+
         const float PI = 3.14159265359f;
         if (neePathData.emissionAngle < 0.0f || neePathData.emissionAngle > PI)
         {
             // GPU shaders cannot use logWarning - set error indicator value
             neePathData.emissionAngle = 0.666f; // Error indicator value
         }
-        
+
         // 3. Calculate reception angle (angle between camera surface normal and incident ray)
         if (path.getVertexIndex() == 1) // Direct path
         {
             float3 cameraDir = normalize(path.origin - sd.posW);
             neePathData.receptionAngle = acos(clamp(dot(sd.faceN, cameraDir), 0.0f, 1.0f));
         }
-        else // Indirect path, use path's final reception angle
+        else // Indirect path
         {
-            neePathData.receptionAngle = path.cirReceptionAngle;
+            // Prefer the cached path reception angle; if unavailable (zero),
+            // fall back to computing from the current shading data relative to the camera.
+            float angle = path.cirReceptionAngle;
+            if (angle <= 0.0f)
+            {
+                float3 cameraDir = normalize(path.origin - sd.posW);
+                angle = acos(clamp(dot(sd.faceN, cameraDir), 0.0f, 1.0f));
+            }
+            neePathData.receptionAngle = angle;
         }
-        
+
         // 4. Reflection count: current path's reflection count
         neePathData.reflectionCount = path.getVertexIndex() - 1;
-        
+
         // 5. Reflectance product: use current path's accumulated reflectance
         neePathData.reflectanceProduct = path.cirReflectanceProduct;
         if (neePathData.reflectanceProduct < 0.0f || neePathData.reflectanceProduct > 1.0f)
@@ -1638,7 +1648,7 @@ struct PathTracer
             }
             neePathData.reflectanceProduct = 0.666f;
         }
-        
+
         // 6. Emitted power: from light sampling
         neePathData.emittedPower = luminance(ls.Li);
         if (neePathData.emittedPower < 0.0f || isnan(neePathData.emittedPower))
@@ -1646,23 +1656,23 @@ struct PathTracer
             // GPU shaders cannot use logWarning - set error indicator value
             neePathData.emittedPower = 0.666f;
         }
-        
+
         // Set original emitted power same as emitted power for NEE paths
         neePathData.originalEmittedPower = neePathData.emittedPower;
-        
+
         // 7. Pixel coordinates
         uint2 pixel = path.getPixel();
         neePathData.pixelX = pixel.x;
         neePathData.pixelY = pixel.y;
-        
+
         // 8. Path index and flags
         neePathData.pathIndex = path.getSampleIdx();
         neePathData.setHitEmissiveSurface(true); // NEE paths always connect to light source
         // isNEEPath already set at initialization
-        
+
         // 9. Light source position: calculate and set directly
         float3 lightPos = ls.origin + ls.dir * ls.distance; // Compute actual light position
-        
+
         // Validate light source position before setting
         if (!isnan(lightPos.x) && !isnan(lightPos.y) && !isnan(lightPos.z) &&
             !isinf(lightPos.x) && !isinf(lightPos.y) && !isinf(lightPos.z))
@@ -1674,7 +1684,7 @@ struct PathTracer
             // Set default position for invalid light position
             neePathData.setLightSourcePosition(float3(0.666, 0.666, 0.666)); // Error indicator
         }
-        
+
         // Copy existing path vertex data (simplified)
         neePathData.vertexCount = path.pathVertexCount;
         neePathData.basePosition = path.pathBasePosition;
@@ -1682,7 +1692,7 @@ struct PathTracer
         {
             neePathData.compressedVertices[i] = compressVertex(path.pathVertices[i], neePathData.basePosition);
         }
-        
+
         // Record CIR data using existing logging mechanism
         logCIRPathComplete(neePathData);
     }
@@ -1697,7 +1707,7 @@ struct PathTracer
     bool validateNEECIRData(CIRPathData neeData, PathState originalPath, LightSample ls)
     {
         bool isValid = true;
-        
+
         // 1. Check path length consistency
         float expectedLength = originalPath.sceneLength + ls.distance;
         if (abs(neeData.pathLength - expectedLength) > 0.001f && neeData.pathLength != 0.666f)
@@ -1705,14 +1715,14 @@ struct PathTracer
             // GPU shaders cannot use logError or string concatenation - mark as invalid
             isValid = false;
         }
-        
+
         // 2. Check vertex count
         if (neeData.vertexCount != originalPath.pathVertexCount + 1)
         {
             // GPU shaders cannot use logError or string concatenation - mark as invalid
             isValid = false;
         }
-        
+
         // 3. Check angle ranges
         const float PI = 3.14159265359f;
         if (neeData.emissionAngle < 0.0f || neeData.emissionAngle > PI)
@@ -1720,13 +1730,13 @@ struct PathTracer
             // GPU shaders cannot use logError or string concatenation - mark as invalid
             isValid = false;
         }
-        
+
         if (neeData.receptionAngle < 0.0f || neeData.receptionAngle > PI)
         {
             // GPU shaders cannot use logError or string concatenation - mark as invalid
             isValid = false;
         }
-        
+
         // 4. Check reflectance product
         if (neeData.reflectanceProduct < 0.0f || neeData.reflectanceProduct > 1.0f)
         {
@@ -1736,7 +1746,7 @@ struct PathTracer
                 isValid = false;
             }
         }
-        
+
         // 5. Check emitted power
         if (neeData.emittedPower < 0.0f || isnan(neeData.emittedPower) || isinf(neeData.emittedPower))
         {
@@ -1746,21 +1756,21 @@ struct PathTracer
                 isValid = false;
             }
         }
-        
+
         // 6. Check NEE-specific flags
         if (!neeData.getHitEmissiveSurface())
         {
             // GPU shaders cannot use logError - mark as invalid
             isValid = false;
         }
-        
+
         // 7. Check reflection count consistency
         if (neeData.reflectionCount != originalPath.getVertexIndex() - 1)
         {
             // GPU shaders cannot use logError or string concatenation - mark as invalid
             isValid = false;
         }
-        
+
         return isValid;
     }
 
