@@ -683,9 +683,11 @@ void scatterMiss(inout PathPayload payload : SV_RayPayload)
 {
     gScheduler.handleMiss(payload);
 
-    // === Output CIR data on path miss (if path has valid vertices) ===
+    // === Output CIR data on path miss (if path has collected any vertices) ===
     PathState path = PathPayload::unpack(payload);
-    if (path.getVertexIndex() > 0)
+    // Use vertex count semantics: index 0 is camera, count >= 1 means at least camera stored,
+    // but require that we have passed the camera (i.e., encountered at least one hit).
+    if (path.getVertexIndex() >= 1)
     {
         gPathTracer.outputCIRDataOnPathCompletion(path);
     }
