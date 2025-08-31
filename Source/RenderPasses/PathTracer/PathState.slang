@@ -261,16 +261,15 @@ struct PathState
     {
         float3 rayDir = normalize(dir);
         float3 normal = normalize(surfaceNormal);
-        float cosAngle = abs(dot(rayDir, normal));
+        float cosAngle = dot(rayDir, normal);
 
-        // Error checking: ensure cosAngle is in valid range
-        if (cosAngle < 0.0f || cosAngle > 1.0f || isnan(cosAngle) || isinf(cosAngle))
+        // Numerical domain protection only; semantic filtering is done at export.
+        if (isnan(cosAngle) || isinf(cosAngle))
         {
-            cirEmissionAngle = 0.0f; // Default value: perpendicular emission
             return;
         }
 
-        cirEmissionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
+        cirEmissionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
     }
 
     /** Update reception angle based on incoming ray direction and surface normal.
@@ -282,16 +281,15 @@ struct PathState
     {
         float3 incDir = normalize(-incomingDir);
         float3 normal = normalize(surfaceNormal);
-        float cosAngle = abs(dot(incDir, normal));
+        float cosAngle = dot(incDir, normal);
 
-        // Error checking: ensure cosAngle is in valid range
-        if (cosAngle < 0.0f || cosAngle > 1.0f || isnan(cosAngle) || isinf(cosAngle))
+        // Numerical domain protection only; semantic filtering is done at export.
+        if (isnan(cosAngle) || isinf(cosAngle))
         {
-            cirReceptionAngle = 0.0f; // Default value: perpendicular reception
             return;
         }
 
-        cirReceptionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
+        cirReceptionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
     }
 
     /** Update reflectance by accumulating surface reflectance values.
@@ -355,14 +353,14 @@ struct PathState
     {
         // Use the initial path radiance directly (scaling factor = 1.0)
         float initialLuminance = luminance(cirInitialL);
-        
+
         // Error checking for invalid initial radiance
         if (initialLuminance <= 0.0f || isnan(initialLuminance) || isinf(initialLuminance))
         {
             // Return error indicator value for debugging
             return 0.666f;
         }
-        
+
         // Return the initial luminance directly as power (scaling factor = 1.0)
         return initialLuminance;
     }

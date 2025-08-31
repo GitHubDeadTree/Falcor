@@ -1446,15 +1446,11 @@ struct PathTracer
         {
             float3 emissionNormal = normalize(surfaceNormal);
             float3 lightDirection = normalize(-path.initialDir);
-            float cosAngle = abs(dot(lightDirection, emissionNormal));
+            float cosAngle = dot(lightDirection, emissionNormal);
 
-            if (cosAngle > 0.001f && !isnan(cosAngle) && !isinf(cosAngle))
+            if (!isnan(cosAngle) && !isinf(cosAngle))
             {
-                path.cirEmissionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
-            }
-            else
-            {
-                path.cirEmissionAngle = 0.785398f; // 45 degrees fallback
+                path.cirEmissionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
             }
         }
         // Strategy 3: Final fallback for primary hits without calculated angle
@@ -1462,16 +1458,9 @@ struct PathTracer
         {
             float3 surfaceUp = float3(0, 1, 0);
             float3 normal = normalize(surfaceNormal);
-            float cosAngle = abs(dot(normal, surfaceUp));
+            float cosAngle = dot(normal, surfaceUp);
 
-            if (cosAngle > 0.001f)
-            {
-                path.cirEmissionAngle = acos(clamp(cosAngle, 0.0f, 1.0f));
-            }
-            else
-            {
-                path.cirEmissionAngle = 0.523599f; // 30 degrees fallback
-            }
+            path.cirEmissionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
         }
 
         // Update reflectance using material properties
@@ -1610,7 +1599,7 @@ struct PathTracer
         // 2. Calculate emission angle (angle between light surface normal and light ray direction)
         float3 lightNormal = getLightSurfaceNormalSafe(ls);
         float cosEmissionAngle = dot(lightNormal, normalize(ls.dir));
-        neePathData.emissionAngle = acos(clamp(cosEmissionAngle, 0.0f, 1.0f));
+        neePathData.emissionAngle = acos(clamp(cosEmissionAngle, -1.0f, 1.0f));
 
         const float PI = 3.14159265359f;
         if (neePathData.emissionAngle < 0.0f || neePathData.emissionAngle > PI)
@@ -1623,7 +1612,7 @@ struct PathTracer
         if (path.getVertexIndex() == 1) // Direct path
         {
             float3 cameraDir = normalize(path.origin - sd.posW);
-            neePathData.receptionAngle = acos(clamp(dot(sd.faceN, cameraDir), 0.0f, 1.0f));
+            neePathData.receptionAngle = acos(clamp(dot(sd.faceN, cameraDir), -1.0f, 1.0f));
         }
         else // Indirect path
         {
@@ -1633,7 +1622,7 @@ struct PathTracer
             if (angle <= 0.0f)
             {
                 float3 cameraDir = normalize(path.origin - sd.posW);
-                angle = acos(clamp(dot(sd.faceN, cameraDir), 0.0f, 1.0f));
+                angle = acos(clamp(dot(sd.faceN, cameraDir), -1.0f, 1.0f));
             }
             neePathData.receptionAngle = angle;
         }
