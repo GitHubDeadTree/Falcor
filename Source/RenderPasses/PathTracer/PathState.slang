@@ -490,8 +490,9 @@ struct PathState
 
         // ✅ Reuse existing fields (7/9 parameters - 77.8% reuse rate)
         cir.pathLength = sceneLength;                                           // Direct assignment, no conversion needed
-        cir.reflectionCount = getBounces(BounceType::Diffuse) +
-                             getBounces(BounceType::Specular);                  // Reuse existing field
+        // Use vertex-based reflection counting: camera -> hit points -> light source
+        // Reflection count = number of intermediate vertices = pathVertexCount - 1
+        cir.reflectionCount = (pathVertexCount > 0) ? (pathVertexCount - 1) : 0;
         cir.emittedPower = getLightIntensity();                                 // Reuse existing field (attenuated power)
         uint2 pixel = getPixel();
         cir.pixelX = pixel.x;                                                   // Reuse existing field

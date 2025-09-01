@@ -1623,8 +1623,9 @@ struct PathTracer
             neePathData.receptionAngle = angle;
         }
 
-        // 4. Reflection count: current path's reflection count
-        neePathData.reflectionCount = path.getVertexIndex() - 1;
+        // 4. Reflection count: use vertex-based calculation consistent with CIR paths
+        // NEE path structure: camera -> hit points -> light source (same as CIR)
+        neePathData.reflectionCount = (path.pathVertexCount > 0) ? (path.pathVertexCount - 1) : 0;
 
         // 5. Reflectance product: use current path's accumulated reflectance
         neePathData.reflectanceProduct = path.cirReflectanceProduct;
