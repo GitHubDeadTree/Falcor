@@ -230,10 +230,17 @@ bool isValidCIRDataGPU(CIRPathData data)
     // If filtering is disabled, accept all data (except NaN/inf checks in logCIRPathComplete)
     if (!gCIRFilteringEnabled) return true;
 
-    // Basic data validity checks - reject clearly invalid data
+    // Enhanced VLC-specific data validity checks
     if (data.pathLength < 0.0f || data.emittedPower < 0.0f ||
-        data.emissionAngle < 0.0f || data.receptionAngle < 0.0f ||
-        data.reflectanceProduct < 0.0f)
+        data.reflectanceProduct < 0.0f || data.reflectanceProduct > 1.0f)
+    {
+        return false;
+    }
+
+    // VLC angle validity: angles should be in range [0, π/2] for physical systems
+    // Reject angles that are clearly unphysical (negative or > π)
+    if (data.emissionAngle < 0.0f || data.emissionAngle > 3.14159f ||
+        data.receptionAngle < 0.0f || data.receptionAngle > 3.14159f)
     {
         return false;
     }
@@ -251,8 +258,10 @@ bool isValidCIRDataGPU(CIRPathData data)
 // Unified CIR logging function - MODIFIED: Added GPU-side real-time filtering
 void logCIRPathComplete(CIRPathData pathData)
 {
-    // Basic sanity check - reject NaN/infinite path lengths
-    if (isnan(pathData.pathLength) || isinf(pathData.pathLength))
+    // Enhanced sanity checks - reject NaN/infinite values in critical fields
+    if (isnan(pathData.pathLength) || isinf(pathData.pathLength) ||
+        isnan(pathData.emissionAngle) || isinf(pathData.emissionAngle) ||
+        isnan(pathData.receptionAngle) || isinf(pathData.receptionAngle))
     {
         // Discard invalid data immediately - do not store in buffer
         return;

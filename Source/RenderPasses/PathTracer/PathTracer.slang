@@ -320,6 +320,10 @@ struct PathTracer
 
         // === Initialize CIR data ===
         path.initCIRData();
+        // Calculate reception angle at path start for CIR paths
+        // Use camera forward direction as PD surface normal
+        float3 cameraForward = normalize(cameraRay.dir);
+        path.initCIRReceptionAngle(cameraForward, cameraRay.dir);
 
         // Create sample generator.
         const uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
@@ -1489,16 +1493,8 @@ struct PathTracer
     */
     void outputCIRDataOnPathCompletion(PathState path)
     {
-        // Update reception angle when path is about to terminate
-        // Copy path to local variable to avoid mutation warning on 'in' parameter
-        PathState localPath = path;
-        // Compute reception angle whenever we have a valid normal from the last hit,
-        // even if the path terminated by a miss.
-        if (length(localPath.normal) > 0.1f)
-        {
-            localPath.updateCIRReceptionAngle(localPath.dir, localPath.normal);
-        }
-        path = localPath;
+        // NOTE: Reception angle calculation moved to path initialization (generatePath function)
+        // for correct CIR calculation using camera/PD surface normal instead of last hit surface
 
         // Dynamically generate complete CIR data (utilizing reused fields)
         CIRPathData cirData = path.getCIRData();

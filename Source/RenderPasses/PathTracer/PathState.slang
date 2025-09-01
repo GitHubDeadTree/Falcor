@@ -272,10 +272,10 @@ struct PathState
         cirEmissionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
     }
 
-    /** Update reception angle based on incoming ray direction and surface normal.
-        Should be called at the final surface interaction (reception surface).
-        \param[in] incomingDir Incoming ray direction.
-        \param[in] surfaceNormal Surface normal at the reception point.
+    /** DEPRECATED: Old reception angle calculation (incorrect for CIR paths).
+        This function calculated angle with last hit surface instead of camera/PD surface.
+        Kept for backward compatibility but should not be used.
+        Use initCIRReceptionAngle() instead.
     */
     [mutating] void updateCIRReceptionAngle(float3 incomingDir, float3 surfaceNormal)
     {
@@ -286,6 +286,29 @@ struct PathState
         // Numerical domain protection only; semantic filtering is done at export.
         if (isnan(cosAngle) || isinf(cosAngle))
         {
+            return;
+        }
+
+        cirReceptionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
+    }
+
+    /** Initialize reception angle for CIR paths at path start.
+        For CIR paths (from camera/PD), this calculates the angle between
+        the initial ray direction and the camera/PD surface normal.
+        Should be called once when the path is initialized.
+        \param[in] cameraDirection Camera/PD surface normal direction.
+        \param[in] initialRayDir Initial ray direction from camera/PD.
+    */
+    [mutating] void initCIRReceptionAngle(float3 cameraDirection, float3 initialRayDir)
+    {
+        float3 camDir = normalize(cameraDirection);
+        float3 rayDir = normalize(initialRayDir);
+        float cosAngle = dot(rayDir, camDir);
+
+        // Numerical domain protection
+        if (isnan(cosAngle) || isinf(cosAngle))
+        {
+            cirReceptionAngle = 0.0f; // Default: perpendicular emission from PD
             return;
         }
 

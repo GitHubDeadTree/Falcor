@@ -451,7 +451,7 @@ namespace Falcor
 
                             // Angle Filtering
                             group.text("Angle Filtering:");
-                            if (group.var("Min Angle (rad)", mCIRMinAngle, 0.0f, 3.14159f, 0.01f)) {
+                            if (group.var("Min Angle (rad)", mCIRMinAngle, 0.0f, 1.5708f, 0.01f)) {
                                 if (mCIRMinAngle > mCIRMaxAngle) {
                                     mCIRMaxAngle = mCIRMinAngle;
                                     logWarning("CIR UI: Adjusted max angle to match min value");
@@ -459,7 +459,7 @@ namespace Falcor
                             }
                             group.tooltip("Minimum angle for emission/reception filtering (radians)");
 
-                            if (group.var("Max Angle (rad)", mCIRMaxAngle, 0.0f, 3.14159f, 0.01f)) {
+                            if (group.var("Max Angle (rad)", mCIRMaxAngle, 0.0f, 1.5708f, 0.01f)) {
                                 if (mCIRMaxAngle < mCIRMinAngle) {
                                     mCIRMinAngle = mCIRMaxAngle;
                                     logWarning("CIR UI: Adjusted min angle to match max value");
@@ -493,7 +493,7 @@ namespace Falcor
                             mCIRMinEmittedPower = 0.0f;
                             mCIRMaxEmittedPower = 100000.0f;
                             mCIRMinAngle = 0.0f;
-                            mCIRMaxAngle = 3.14159f;
+                            mCIRMaxAngle = 1.5708f;  // π/2 radians (90 degrees) - VLC physical limit
                             mCIRMinReflectance = 0.0f;
                             mCIRMaxReflectance = 1.0f;
                         }
