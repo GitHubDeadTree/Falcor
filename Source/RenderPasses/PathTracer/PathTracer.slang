@@ -434,17 +434,17 @@ struct PathTracer
     */
     void updateCIRWithMaterialReflectance(inout PathState path, BSDFProperties bsdfProperties, BSDFSample bsdfSample)
     {
-        // If already hit emissive surface, do not update reflectance
-        if (path.hitEmissiveSurface) return;
+        // MODIFIED: Removed hitEmissiveSurface limitation to support NEE paths
+        // NEE paths need to accumulate reflectance even after hitting emissive surfaces
 
         const uint vertexIndex = path.getVertexIndex();
         const bool isPrimaryHit = (vertexIndex == 1);
 
-        // Only accumulate reflectance for actual surface interactions (not primary hit from camera)
-        // and only for reflection events
-        if (!isPrimaryHit && (bsdfSample.isLobe(LobeType::Reflection) ||
-                              bsdfSample.isLobe(LobeType::DiffuseReflection) ||
-                              bsdfSample.isLobe(LobeType::SpecularReflection)))
+        // MODIFIED: Include primary hits for NEE path reflectance calculation
+        // Accumulate reflectance for all reflection events including primary hits
+        if (bsdfSample.isLobe(LobeType::Reflection) ||
+            bsdfSample.isLobe(LobeType::DiffuseReflection) ||
+            bsdfSample.isLobe(LobeType::SpecularReflection))
         {
             // Calculate separate diffuse and specular components
             float3 diffuseAlbedo = bsdfProperties.diffuseReflectionAlbedo;
