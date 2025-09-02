@@ -52,6 +52,10 @@ RWTexture2D<uint> gStatsCIRValidSamples;     // Per-pixel valid CIR sample count
 RWStructuredBuffer<CIRPathData> gCIRRawDataBuffer;  // Raw CIR path data storage
 RWByteAddressBuffer gCIRCounterBuffer;              // Counter for number of stored paths
 
+// P1 optimization: Path type counters
+RWByteAddressBuffer gNEEPathCounter;                // Counter for NEE paths
+RWByteAddressBuffer gRegularPathCounter;            // Counter for regular paths
+
 // Constant buffer for CIR parameters following Falcor standard pattern
 cbuffer PerFrameCB
 {
@@ -67,6 +71,10 @@ cbuffer PerFrameCB
     float gCIRMaxAngle;                             // Maximum angle for filtering (radians)
     float gCIRMinReflectance;                       // Minimum reflectance for filtering
     float gCIRMaxReflectance;                       // Maximum reflectance for filtering
+    
+    // P0 optimization: NEE path filtering parameters
+    bool gCIRCollectNEEOnly;                        // Collect only NEE paths (default: true for VLC)
+    bool gCIRCollectRegularPaths;                   // Collect regular (non-NEE) paths
 }
 
 #ifdef _PIXEL_STATS_ENABLED
@@ -164,6 +172,18 @@ void logRayWavelength(float wavelength)
 void logCIRRawPathInternal(CIRPathData pathData)
 {
 #ifdef _PIXEL_STATS_RAW_DATA_ENABLED
+    // P1 optimization: Track path type statistics
+    if (pathData.getIsNEEPath())
+    {
+        uint dummy;
+        gNEEPathCounter.InterlockedAdd(0, 1, dummy);
+    }
+    else
+    {
+        uint dummy;
+        gRegularPathCounter.InterlockedAdd(0, 1, dummy);
+    }
+    
     // Atomically increment the counter to get a unique index
     uint index = 0;
     gCIRCounterBuffer.InterlockedAdd(0, 1, index);
@@ -258,6 +278,22 @@ bool isValidCIRDataGPU(CIRPathData data)
 // Unified CIR logging function - MODIFIED: Added GPU-side real-time filtering
 void logCIRPathComplete(CIRPathData pathData)
 {
+    // P0 optimization: NEE path filtering
+    // Check if we should filter based on path type (NEE vs regular)
+    if (gCIRCollectNEEOnly && !pathData.getIsNEEPath())
+    {
+        // We're in NEE-only mode but this is not an NEE path - skip it
+        return;
+    }
+    
+    // Check if we should collect regular paths
+    if (!gCIRCollectNEEOnly && !gCIRCollectRegularPaths && !pathData.getIsNEEPath())
+    {
+        // We're not in NEE-only mode, but regular path collection is disabled 
+        // and this is not an NEE path - skip it
+        return;
+    }
+    
     // Enhanced sanity checks - reject NaN/infinite values in critical fields
     if (isnan(pathData.pathLength) || isinf(pathData.pathLength) ||
         isnan(pathData.emissionAngle) || isinf(pathData.emissionAngle) ||
