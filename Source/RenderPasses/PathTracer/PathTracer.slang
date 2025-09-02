@@ -1446,25 +1446,42 @@ struct PathTracer
             path.setOriginalLEDPower(emissionPower);
         }
         // Strategy 2: For VLC systems, calculate emission angle at primary hit
+        // NOTE: This algorithm is CORRECT and consistent with NEE path fix above
         else if (isPrimaryHit && path.cirEmissionAngle == 0.0f)
         {
             float3 emissionNormal = normalize(surfaceNormal);
+            // CORRECT: -path.initialDir gives emission direction (from surface to camera/receiver)
             float3 lightDirection = normalize(-path.initialDir);
             float cosAngle = dot(lightDirection, emissionNormal);
 
             if (!isnan(cosAngle) && !isinf(cosAngle))
             {
                 path.cirEmissionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
+                
+                // Apply same physical validation as NEE paths
+                const float PI_2 = 3.14159265359f * 0.5f;
+                if (path.cirEmissionAngle > PI_2)
+                {
+                    path.cirEmissionAngle = 0.777f; // Physical range error indicator
+                }
             }
         }
-        // Strategy 3: Final fallback for primary hits without calculated angle
+        // Strategy 3: Improved fallback with proper emission direction calculation
         else if (isPrimaryHit && path.cirEmissionAngle == 0.0f)
         {
-            float3 surfaceUp = float3(0, 1, 0);
+            // Fallback: use camera direction as emission direction for consistency
             float3 normal = normalize(surfaceNormal);
-            float cosAngle = dot(normal, surfaceUp);
+            float3 emissionDirection = normalize(-path.initialDir);  // Consistent with Strategy 2
+            float cosAngle = dot(emissionDirection, normal);
 
             path.cirEmissionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
+            
+            // Apply same physical validation as NEE paths
+            const float PI_2 = 3.14159265359f * 0.5f;
+            if (path.cirEmissionAngle > PI_2)
+            {
+                path.cirEmissionAngle = 0.777f; // Physical range error indicator
+            }
         }
 
         // Update reflectance using material properties
@@ -1593,15 +1610,26 @@ struct PathTracer
         }
 
         // 2. Calculate emission angle (angle between light surface normal and light ray direction)
+        // FIXED: ls.dir points FROM surface TO light, we need FROM light TO surface for emission angle
         float3 lightNormal = getLightSurfaceNormalSafe(ls);
-        float cosEmissionAngle = dot(lightNormal, normalize(ls.dir));
+        float3 emissionDirection = normalize(-ls.dir);  // Correct: from light to surface
+        float cosEmissionAngle = dot(lightNormal, emissionDirection);
         neePathData.emissionAngle = acos(clamp(cosEmissionAngle, -1.0f, 1.0f));
 
         const float PI = 3.14159265359f;
-        if (neePathData.emissionAngle < 0.0f || neePathData.emissionAngle > PI)
+        const float PI_2 = PI * 0.5f;  // π/2 for physical emission angle limit
+        
+        // Enhanced validation: Emission angle should be in [0, π/2] for physical VLC systems
+        if (neePathData.emissionAngle < 0.0f || neePathData.emissionAngle > PI_2)
         {
             // GPU shaders cannot use logWarning - set error indicator value
-            neePathData.emissionAngle = 0.666f; // Error indicator value
+            // 0.777f indicates physical range violation (was >π/2)
+            neePathData.emissionAngle = 0.777f; // Physical range error indicator
+        }
+        else if (isnan(neePathData.emissionAngle) || isinf(neePathData.emissionAngle))
+        {
+            // 0.666f indicates numerical error (NaN/inf)
+            neePathData.emissionAngle = 0.666f; // Numerical error indicator
         }
 
         // 3. Calculate reception angle (angle between camera surface normal and incident ray)
