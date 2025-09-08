@@ -61,7 +61,7 @@ struct PathPayload
     float3 packed_cir_initialL; ///< CIR initial L value: pack cirInitialL as 3 32-bit floats
 
     // New normalization fields - keep as plain types to avoid precision loss
-    float  primaryRayPdfW;      ///< p_det(ω) at receiver (1/sr)
+    float  samplingPdfW;        ///< p_sampling(ω): Actual sampling PDF from path tracing (1/sr)
     float4 cirRadianceRGBA;     ///< MIS-combined radiance at camera position (W/(m²·sr)), A unused
 
     PackedHitInfo hit;
@@ -129,7 +129,7 @@ struct PathPayload
         p.packed_cir_initialL = path.cirInitialL;
 
         // Pack normalization fields
-        p.primaryRayPdfW = path.cirPrimaryRayPdfW;
+        p.samplingPdfW = path.cirSamplingPdfW;
         p.cirRadianceRGBA = path.cirRadianceRGBA;
 
         p.hit = path.hit.pack();
@@ -242,13 +242,13 @@ struct PathPayload
         }
 
         // Unpack normalization fields
-        path.cirPrimaryRayPdfW = p.primaryRayPdfW;
+        path.cirSamplingPdfW = p.samplingPdfW;
         path.cirRadianceRGBA = p.cirRadianceRGBA;
 
         // Validate normalization fields
-        if (!(path.cirPrimaryRayPdfW > 0.0f) || isinf(path.cirPrimaryRayPdfW) || isnan(path.cirPrimaryRayPdfW))
+        if (!(path.cirSamplingPdfW > 0.0f) || isinf(path.cirSamplingPdfW) || isnan(path.cirSamplingPdfW))
         {
-            path.cirPrimaryRayPdfW = 0.0f;
+            path.cirSamplingPdfW = 0.0f;
         }
         if (any(isnan(path.cirRadianceRGBA)) || any(isinf(path.cirRadianceRGBA)))
         {

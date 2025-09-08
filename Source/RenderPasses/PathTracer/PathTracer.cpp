@@ -705,7 +705,7 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
         // Display calculated solid angle for reference
         float solidAngle = 4.0f * tan(mParams.pdFovHorizontal / 2.0f) * tan(mParams.pdFovVertical / 2.0f);
         widget.text("PD solid angle: " + std::to_string(solidAngle) + " sr");
-        widget.tooltip("Calculated solid angle coverage of the photodiode.\nUsed for primaryRayPdfW calculation in CIR data.");
+        widget.tooltip("Calculated solid angle coverage of the photodiode.\nNote: Now using actual sampling PDFs from path tracing instead of recalculating.");
     }
 
     if (dirty) mRecompile = true;

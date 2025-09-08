@@ -64,7 +64,7 @@ struct CIRPathData
     float4 lightSourcePosition;  ///< World space position of light source (for NEE paths only), w component unused
     
     // NEW FIELDS - Added at end to maintain memory layout compatibility
-    float primaryRayPdfW;       ///< p_det(ω): Direction probability density at receiver/PD for solid angle (1/sr)
+    float samplingPdfW;         ///< p_sampling(ω): Actual sampling PDF from path tracing (NEE or BSDF) (1/sr)
     float4 radianceRGBA;        ///< L(ω): MIS-combined radiance at camera position (W/(m²·sr)), A component unused
     
     // Light source position accessor functions (float4 with unused w component for alignment)

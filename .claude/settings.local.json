@@ -7,7 +7,8 @@
       "Bash(cmd /c:*)",
       "Bash(powershell:*)",
       "Read(d:\\Campus\\KY\\Light\\Falcor4\\Falcor\\zReadme\\CIR归一化修改/**)",
-      "Read(d:\\Campus\\KY\\Light\\Falcor4\\Falcor\\zReadme\\疑难杂症/**)"
+      "Read(d:\\Campus\\KY\\Light\\Falcor4\\Falcor\\zReadme\\疑难杂症/**)",
+      "Read(//d/**)"
     ],
     "deny": []
   }

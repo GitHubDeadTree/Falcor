@@ -118,7 +118,7 @@ struct PathState
     float3 cirInitialL;                 ///< Initial path radiance L for power calculation
     
     // New fields for unbiased CIR calculation
-    float cirPrimaryRayPdfW;            ///< p_det(ω): Direction PDF at PD/receiver for solid angle (1/sr)
+    float cirSamplingPdfW;              ///< p_sampling(ω): Actual sampling PDF from path tracing (1/sr)
     float4 cirRadianceRGBA;             ///< L(ω): MIS-combined radiance at camera position (W/(m²·sr)), A unused
 
     // === Vertex collection fields for path vertex collection feature ===
@@ -257,7 +257,7 @@ struct PathState
         cirOriginalLEDPower = 0.0f;   // Default: no power assigned yet
         
         // Initialize new fields for unbiased CIR calculation
-        cirPrimaryRayPdfW = 0.0f;     // Will be set during path initialization
+        cirSamplingPdfW = 0.0f;       // Will be set when actual sampling occurs
         cirRadianceRGBA = float4(0.0f); // Will be accumulated during path traversal
     }
 
@@ -445,12 +445,12 @@ struct PathState
         }
     }
 
-    /** Set primary ray PDF for CIR calculation.
-        \param[in] pdfW Direction probability density at receiver (1/sr).
+    /** Set sampling PDF for CIR calculation.
+        \param[in] pdfW Actual sampling PDF from path tracing (NEE or BSDF) (1/sr).
     */
-    [mutating] void setCIRPrimaryRayPdfW(float pdfW)
+    [mutating] void setCIRSamplingPdfW(float pdfW)
     {
-        cirPrimaryRayPdfW = pdfW;
+        cirSamplingPdfW = pdfW;
     }
 
     /** Set or accumulate radiance for CIR calculation.
@@ -544,7 +544,7 @@ struct PathState
         cir.originalEmittedPower = getOriginalLEDPower();                       // Original LED power for this path
         
         // Fill new fields for unbiased CIR calculation
-        cir.primaryRayPdfW = cirPrimaryRayPdfW;     // Direction PDF at PD/receiver
+        cir.samplingPdfW = cirSamplingPdfW;         // Actual sampling PDF from path tracing
         cir.radianceRGBA = cirRadianceRGBA;         // MIS-combined radiance
 
         // === New: Handle vertex collection data ===
