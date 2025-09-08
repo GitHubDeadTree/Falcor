@@ -1394,8 +1394,8 @@ namespace Falcor
         file << "# g_optical_concentration," << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
         file << "#\n";
 
-        // Write CSV header with originalEmittedPower field, vertex data support, and light source position
-        file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W,OriginalEmittedPower_W,HitEmissiveSurface,IsNEEPath,";
+        // Write CSV header with extended fields (originalEmittedPower, primaryRayPdfW, radianceRGBA), vertex data support, and light source position
+        file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W,OriginalEmittedPower_W,PrimaryRayPdfW,Radiance_R,Radiance_G,Radiance_B,Radiance_A,HitEmissiveSurface,IsNEEPath,";
         file << "VertexCount,BasePosition_X,BasePosition_Y,BasePosition_Z,";
         file << "LightSourcePosition_X,LightSourcePosition_Y,LightSourcePosition_Z,";  // NEE light source position
         file << "Vertex1_X,Vertex1_Y,Vertex1_Z,Vertex2_X,Vertex2_Y,Vertex2_Z,Vertex3_X,Vertex3_Y,Vertex3_Z,";
@@ -1423,7 +1423,7 @@ namespace Falcor
 
             try
             {
-                // TASK 3: Write basic path data including originalEmittedPower
+                // Write basic path data including originalEmittedPower and new normalization fields
                 file << i << ","
                      << data.pixelX << ","
                      << data.pixelY << ","
@@ -1433,7 +1433,9 @@ namespace Falcor
                      << data.reflectanceProduct << ","
                      << data.reflectionCount << ","
                      << data.emittedPower << ","
-                     << data.originalEmittedPower << ","  // TASK 3: New field added
+                     << data.originalEmittedPower << ","
+                     << data.primaryRayPdfW << ","
+                     << data.radianceRGBA.x << "," << data.radianceRGBA.y << "," << data.radianceRGBA.z << "," << data.radianceRGBA.w << ","
                      << (data.getHitEmissiveSurface() ? 1 : 0) << ","
                      << (data.getIsNEEPath() ? 1 : 0) << ",";
 
@@ -1525,7 +1527,10 @@ namespace Falcor
                 file << "\"reflectance_product\":" << data.reflectanceProduct << ",";
                 file << "\"reflection_count\":" << data.reflectionCount << ",";
                 file << "\"emitted_power_w\":" << data.emittedPower << ",";
-                file << "\"original_emitted_power_w\":" << data.originalEmittedPower << ",";  // TASK 3: New field added
+                file << "\"original_emitted_power_w\":" << data.originalEmittedPower << ",";
+                // New normalization fields
+                file << "\"primary_ray_pdf_w\":" << data.primaryRayPdfW << ",";
+                file << "\"radiance_rgba\":[" << data.radianceRGBA.x << "," << data.radianceRGBA.y << "," << data.radianceRGBA.z << "," << data.radianceRGBA.w << "],";
                 file << "\"hit_emissive_surface\":" << (data.getHitEmissiveSurface() ? "true" : "false") << ",";
                 file << "\"is_nee_path\":" << (data.getIsNEEPath() ? "true" : "false") << ",";
 
@@ -1581,9 +1586,9 @@ namespace Falcor
         file << "# T_s_optical_filter_gain=" << std::fixed << std::setprecision(1) << staticParams.opticalFilterGain << "\n";
         file << "# g_optical_concentration=" << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
         file << "#\n";
-        // TASK 3: Path Data Format Extended with Vertex Collection and originalEmittedPower
-        file << "# Path Data Format Extended with Vertex Collection:\n";
-        file << "# PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W),OriginalEmittedPower(W),HitEmissiveSurface,IsNEEPath,\n";
+        // Path Data Format Extended with normalization fields and Vertex Collection
+        file << "# Path Data Format Extended with Vertex Collection and Normalization Fields:\n";
+        file << "# PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W),OriginalEmittedPower(W),PrimaryRayPdfW(1/sr),Radiance(R,G,B,A),HitEmissiveSurface,IsNEEPath,\n";
         file << "# VertexCount,BasePosition(X,Y,Z),LightSourcePosition(X,Y,Z),Vertices(X,Y,Z for each vertex up to 7)\n";
         file << "#\n";
         file << "# Vertex Collection Feature: Each path contains up to 7 collected vertices representing the light path trajectory\n";
@@ -1609,7 +1614,7 @@ namespace Falcor
 
             try
             {
-                // TASK 3: Basic path data including originalEmittedPower
+                // Basic path data including originalEmittedPower and new normalization fields
                 file << i << ","
                      << data.pixelX << ","
                      << data.pixelY << ","
@@ -1619,7 +1624,9 @@ namespace Falcor
                      << data.reflectanceProduct << ","
                      << data.reflectionCount << ","
                      << data.emittedPower << ","
-                     << data.originalEmittedPower << ","  // TASK 3: New field added
+                     << data.originalEmittedPower << ","
+                     << data.primaryRayPdfW << ","
+                     << data.radianceRGBA.x << "," << data.radianceRGBA.y << "," << data.radianceRGBA.z << "," << data.radianceRGBA.w << ","
                      << (data.getHitEmissiveSurface() ? 1 : 0) << ","
                      << (data.getIsNEEPath() ? 1 : 0) << ",";
 
