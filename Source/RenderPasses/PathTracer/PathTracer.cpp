@@ -400,7 +400,7 @@ RenderPassReflection PathTracer::reflect(const CompileData& compileData)
     try
     {
         const uint32_t maxSamples = sz.x * sz.y * mStaticParams.samplesPerPixel;
-        const uint32_t cirDataSize = maxSamples * 40; // TASK 3: 40 bytes = size of CIRPathData structure (added originalEmittedPower)
+        const uint32_t cirDataSize = maxSamples * mCIRDataStructSize; // Use dynamically determined size via reflection
         reflector.addOutput(kOutputCIRData, "CIR path data buffer for VLC analysis")
             .bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource)
             .rawBuffer(cirDataSize)
@@ -903,6 +903,49 @@ void PathTracer::updatePrograms()
     preparePass(mpGeneratePaths);
     preparePass(mpResolvePass);
     preparePass(mpReflectTypes);
+
+    // Get CIRPathData structure size via reflection
+    if (mpTracePass && mpTracePass->pProgram)
+    {
+        try
+        {
+            auto pReflector = mpTracePass->pProgram->getReflector();
+            if (pReflector)
+            {
+                auto pCIRType = pReflector->findType("CIRPathData");
+                if (pCIRType)
+                {
+                    uint32_t reflectedSize = (uint32_t)pCIRType->getByteSize();
+                    if (reflectedSize > 0 && reflectedSize <= 512) // Sanity check
+                    {
+                        if (mCIRDataStructSize != reflectedSize)
+                        {
+                            logInfo("PathTracer: CIRPathData size updated via reflection: {} bytes (was: {})", 
+                                   reflectedSize, mCIRDataStructSize);
+                            mCIRDataStructSize = reflectedSize;
+                            
+                            // Note: Detailed field layout inspection requires advanced reflection API
+                            logInfo("PathTracer: CIRPathData structure validated - size: {} bytes", reflectedSize);
+                        }
+                    }
+                    else
+                    {
+                        logWarning("PathTracer: Invalid CIRPathData size from reflection: {}, using fallback: {}", 
+                                  reflectedSize, mCIRDataStructSize);
+                    }
+                }
+                else
+                {
+                    logWarning("PathTracer: CIRPathData type not found in shader reflection, using fallback size: {}", 
+                              mCIRDataStructSize);
+                }
+            }
+        }
+        catch (const std::exception& e)
+        {
+            logError("PathTracer: Exception getting CIRPathData size via reflection: {}", e.what());
+        }
+    }
 
     mVarsChanged = true;
     mRecompile = false;

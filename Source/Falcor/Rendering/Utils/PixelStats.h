@@ -70,7 +70,7 @@ namespace Falcor
         bool getIsNEEPath() const { return (flags & 0x2) != 0; }
         void setHitEmissiveSurface(bool value) { flags = value ? (flags | 0x1) : (flags & ~0x1); }
         void setIsNEEPath(bool value) { flags = value ? (flags | 0x2) : (flags & ~0x2); }
-        
+
         // Light source position accessor functions (must match GPU interface)
         float3 getLightSourcePosition() const { return float3(lightSourcePosition.x, lightSourcePosition.y, lightSourcePosition.z); }
         void setLightSourcePosition(const float3& position) { lightSourcePosition = float4(position.x, position.y, position.z, 0.0f); }
@@ -83,9 +83,13 @@ namespace Falcor
         } compressedVertices[7];  // Compressed vertex coordinates, each vertex uses 6 bytes
         uint32_t vertexCount;     // Actual number of vertices in the path
         float3 basePosition;      // Base position (camera position) for relative coordinate calculation
-        
+
         // NEE-specific fields - must match GPU structure exactly
         float4 lightSourcePosition;  // World space position of light source (for NEE paths only), w component unused
+
+        // NEW FIELDS - Must match GPU CIRPathData exactly (order and alignment)
+        float primaryRayPdfW;       // Direction probability density at receiver (1/sr)
+        float4 radianceRGBA;        // MIS-combined radiance at camera position; A component unused
 
         bool isValid(float minPathLength, float maxPathLength,
                     float minEmittedPower, float maxEmittedPower,
@@ -206,7 +210,7 @@ namespace Falcor
             float    avgCIREmittedPower = 0.f;
             float    avgCIRReflectionCount = 0.f;
             float    avgRayWavelength = 0.f;
-            
+
             // NEE-CIR statistics (for monitoring NEE-based light path collection)
             uint32_t neeAttempts = 0;           ///< Total NEE visibility queries attempted
             uint32_t neeSuccessful = 0;         ///< Successful NEE visibility queries
@@ -215,7 +219,7 @@ namespace Falcor
             float    neeSuccessRate = 0.f;      ///< NEE success rate (successful/attempts)
             float    avgNEEPathLength = 0.f;    ///< Average NEE path length
             float    avgNEEEmissionAngle = 0.f; ///< Average NEE emission angle
-            
+
             // P1 optimization: Path type statistics
             uint32_t neePathsCollected = 0;     ///< Number of NEE paths collected
             uint32_t regularPathsCollected = 0; ///< Number of regular (non-NEE) paths collected
@@ -406,7 +410,7 @@ namespace Falcor
         float                               mCIRMaxAngle = 3.14159f;         ///< Maximum angle for CIR filtering (radians)
         float                               mCIRMinReflectance = 0.0f;       ///< Minimum reflectance for CIR filtering
         float                               mCIRMaxReflectance = 1.0f;       ///< Maximum reflectance for CIR filtering
-        
+
         // NEE path filtering parameters (P0 optimization)
         bool                                mCIRCollectNEEOnly = true;       ///< Collect only NEE (direct illumination) paths (default: true for VLC)
         bool                                mCIRCollectRegularPaths = false; ///< Collect regular (non-NEE) paths when NEE-only is disabled
@@ -445,13 +449,13 @@ namespace Falcor
         ref<Buffer>                         mpCIRCounterBuffer;             ///< GPU buffer for path counter.
         ref<Buffer>                         mpCIRRawDataReadback;           ///< CPU-readable buffer for CIR raw data.
         ref<Buffer>                         mpCIRCounterReadback;           ///< CPU-readable buffer for path counter.
-        
+
         // P1 optimization: Path type counter buffers
         ref<Buffer>                         mpNEEPathCounterBuffer;         ///< GPU buffer for NEE path counter.
         ref<Buffer>                         mpRegularPathCounterBuffer;     ///< GPU buffer for regular path counter.
         ref<Buffer>                         mpNEEPathCounterReadback;       ///< CPU-readable buffer for NEE path counter.
         ref<Buffer>                         mpRegularPathCounterReadback;   ///< CPU-readable buffer for regular path counter.
-        
+
         bool                                mCIRRawDataValid = false;       ///< True if raw CIR data is valid.
         uint32_t                            mCollectedCIRPaths = 0;         ///< Number of CIR paths collected in last frame.
         std::vector<CIRPathData>            mCIRRawData;                    ///< CPU copy of raw CIR data.

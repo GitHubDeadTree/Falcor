@@ -127,7 +127,7 @@ namespace Falcor
             {
                 // Clear the counter buffer for new frame
                 pRenderContext->clearUAV(mpCIRCounterBuffer->getUAV().get(), uint4(0, 0, 0, 0));
-                
+
                 // P1 optimization: Clear path type counters
                 if (mpNEEPathCounterBuffer)
                 {
@@ -192,9 +192,15 @@ namespace Falcor
                 // Copy counter to readback buffer
                 pRenderContext->copyBufferRegion(mpCIRCounterReadback.get(), 0, mpCIRCounterBuffer.get(), 0, sizeof(uint32_t));
 
-                // Copy raw data to readback buffer
-                pRenderContext->copyBufferRegion(mpCIRRawDataReadback.get(), 0, mpCIRRawDataBuffer.get(), 0, mMaxCIRPathsPerFrame * sizeof(CIRPathData));
-                
+                // Copy raw data to readback buffer using runtime struct stride to avoid layout mismatch
+                pRenderContext->copyBufferRegion(
+                    mpCIRRawDataReadback.get(),
+                    0,
+                    mpCIRRawDataBuffer.get(),
+                    0,
+                    (size_t)mMaxCIRPathsPerFrame * (size_t)mpCIRRawDataBuffer->getStructSize()
+                );
+
                 // P1 optimization: Copy path type counters to readback buffers
                 if (mpNEEPathCounterBuffer && mpNEEPathCounterReadback)
                 {
@@ -251,7 +257,7 @@ namespace Falcor
                 var["PerFrameCB"]["gCIRMaxAngle"] = mCIRMaxAngle;
                 var["PerFrameCB"]["gCIRMinReflectance"] = mCIRMinReflectance;
                 var["PerFrameCB"]["gCIRMaxReflectance"] = mCIRMaxReflectance;
-                
+
                 // P0 optimization: Bind NEE filtering parameters
                 var["PerFrameCB"]["gCIRCollectNEEOnly"] = mCIRCollectNEEOnly;
                 var["PerFrameCB"]["gCIRCollectRegularPaths"] = mCIRCollectRegularPaths;
@@ -272,7 +278,7 @@ namespace Falcor
                         MemoryType::DeviceLocal, nullptr, false
                     );
                     mpCIRRawDataReadback = mpDevice->createBuffer(
-                        mMaxCIRPathsPerFrame * sizeof(CIRPathData),
+                        (size_t)mMaxCIRPathsPerFrame * (size_t)mpCIRRawDataBuffer->getStructSize(),
                         ResourceBindFlags::None,
                         MemoryType::ReadBack
                     );
@@ -293,7 +299,7 @@ namespace Falcor
                     );
                     logInfo("Created CIR counter buffer: {} bytes", sizeof(uint32_t));
                 }
-                
+
                 // P1 optimization: Create NEE and regular path counter buffers
                 if (!mpNEEPathCounterBuffer)
                 {
@@ -309,7 +315,7 @@ namespace Falcor
                     );
                     logInfo("Created NEE path counter buffer");
                 }
-                
+
                 if (!mpRegularPathCounterBuffer)
                 {
                     mpRegularPathCounterBuffer = mpDevice->createBuffer(
@@ -329,7 +335,7 @@ namespace Falcor
                 var["gCIRRawDataBuffer"] = mpCIRRawDataBuffer;
                 var["gCIRCounterBuffer"] = mpCIRCounterBuffer;
                 var["PerFrameCB"]["gMaxCIRPaths"] = mMaxCIRPathsPerFrame;
-                
+
                 // P1 optimization: Bind path type counter buffers
                 var["gNEEPathCounter"] = mpNEEPathCounterBuffer;
                 var["gRegularPathCounter"] = mpRegularPathCounterBuffer;
@@ -344,7 +350,7 @@ namespace Falcor
                 var["PerFrameCB"]["gCIRMaxAngle"] = mCIRMaxAngle;
                 var["PerFrameCB"]["gCIRMinReflectance"] = mCIRMinReflectance;
                 var["PerFrameCB"]["gCIRMaxReflectance"] = mCIRMaxReflectance;
-                
+
                 // P0 optimization: Bind NEE filtering parameters
                 var["PerFrameCB"]["gCIRCollectNEEOnly"] = mCIRCollectNEEOnly;
                 var["PerFrameCB"]["gCIRCollectRegularPaths"] = mCIRCollectRegularPaths;
@@ -416,7 +422,7 @@ namespace Falcor
                     widget.text(fmt::format("CIR paths: {} collected (filtering disabled)", filteredCount));
                     widget.tooltip("Shows collected CIR paths count (no filtering applied)");
                 }
-                
+
                 // NEE-CIR: Display buffer usage information
                 if (mCollectedCIRPaths > 0)
                 {
@@ -436,7 +442,7 @@ namespace Falcor
                         widget.text(fmt::format("Buffer usage: {:.1f}%", bufferUsage));
                         widget.tooltip("CIR buffer usage percentage");
                     }
-                    
+
                     // Count NEE-CIR paths (those with hitEmissiveSurface = true)
                     uint32_t neeCircCount = 0;
                     if (mCIRRawDataValid)
@@ -470,28 +476,28 @@ namespace Falcor
                 if (auto group = widget.group("NEE Path Filtering")) {
                     group.checkbox("Collect NEE Paths Only", mCIRCollectNEEOnly);
                     group.tooltip("When enabled, only NEE (Next Event Estimation / direct illumination) paths are collected. Recommended for VLC applications.");
-                    
+
                     if (!mCIRCollectNEEOnly) {
                         group.checkbox("Collect Regular Paths", mCIRCollectRegularPaths);
                         group.tooltip("Enable collection of regular (non-NEE) paths when NEE-only mode is disabled");
                     }
-                    
+
                     // P1: Display path type statistics from GPU counters
                     copyCIRRawDataToCPU(); // Ensure latest data is available
-                    
+
                     group.text(fmt::format("NEE Paths: {}", mStats.neePathsCollected));
                     group.tooltip("Number of NEE (Next Event Estimation) paths collected from GPU counter");
-                    
+
                     group.text(fmt::format("Regular Paths: {}", mStats.regularPathsCollected));
                     group.tooltip("Number of regular (non-NEE) paths collected from GPU counter");
-                    
+
                     if (mStats.totalPathsAttempted > 0) {
                         group.text(fmt::format("Total Attempted: {}", mStats.totalPathsAttempted));
                         group.text(fmt::format("NEE Ratio: {:.1f}%", mStats.neePathRatio * 100.0f));
                         group.tooltip("Percentage of NEE paths out of all attempted paths");
                     }
                 }
-                
+
                 // Add CIR filtering parameters UI
                 if (auto group = widget.group("CIR Physical Parameters Filtering")) {
                     try {
@@ -811,7 +817,7 @@ namespace Falcor
                     uint32_t actualPathCount = *counterData;
                     mCollectedCIRPaths = std::min(actualPathCount, mMaxCIRPathsPerFrame);
                     mpCIRCounterReadback->unmap();
-                    
+
                     // P1 optimization: Read path type counters
                     if (mpNEEPathCounterReadback)
                     {
@@ -822,7 +828,7 @@ namespace Falcor
                             mpNEEPathCounterReadback->unmap();
                         }
                     }
-                    
+
                     if (mpRegularPathCounterReadback)
                     {
                         const uint32_t* regularCounterData = static_cast<const uint32_t*>(mpRegularPathCounterReadback->map());
@@ -832,7 +838,7 @@ namespace Falcor
                             mpRegularPathCounterReadback->unmap();
                         }
                     }
-                    
+
                     // Calculate path statistics
                     mStats.totalPathsAttempted = mStats.neePathsCollected + mStats.regularPathsCollected;
                     if (mStats.totalPathsAttempted > 0)
@@ -843,13 +849,13 @@ namespace Falcor
                     {
                         mStats.neePathRatio = 0.0f;
                     }
-                    
+
                     // NEE-CIR: Buffer usage monitoring and overflow detection
                     if (actualPathCount > mMaxCIRPathsPerFrame)
                     {
                         uint32_t overflowCount = actualPathCount - mMaxCIRPathsPerFrame;
                         float overflowPercentage = (float)overflowCount / (float)actualPathCount * 100.0f;
-                        logWarning("CIR buffer overflow: {} paths attempted, {} collected, {} lost ({:.1f}%)", 
+                        logWarning("CIR buffer overflow: {} paths attempted, {} collected, {} lost ({:.1f}%)",
                                   actualPathCount, mCollectedCIRPaths, overflowCount, overflowPercentage);
                     }
                     else if (actualPathCount > mMaxCIRPathsPerFrame * 0.9f) // Warn at 90% usage
@@ -1436,7 +1442,7 @@ namespace Falcor
                      << data.basePosition.x << ","
                      << data.basePosition.y << ","
                      << data.basePosition.z << ",";
-                
+
                 // Write light source position (for NEE paths)
                 float3 lightPos = data.getLightSourcePosition();
                 file << lightPos.x << "," << lightPos.y << "," << lightPos.z << ",";
@@ -1622,7 +1628,7 @@ namespace Falcor
                      << data.basePosition.x << ","
                      << data.basePosition.y << ","
                      << data.basePosition.z;
-                
+
                 // Light source position (for NEE paths)
                 float3 lightPos = data.getLightSourcePosition();
                 file << "," << lightPos.x << "," << lightPos.y << "," << lightPos.z;

@@ -48,10 +48,6 @@ struct CIRPathData
     uint pixelY;                ///< Pixel Y coordinate
     uint pathIndex;             ///< Unique index identifier for this path
     uint flags;                 ///< Bit 0: hitEmissiveSurface, Bit 1: isNEEPath, Bits 2-31: reserved
-    
-    // New fields for unbiased energy-conserving CIR calculation
-    float primaryRayPdfW;       ///< p_det(ω): Direction probability density at receiver/PD for solid angle (1/sr)
-    float3 radianceRGB;         ///< L(ω): MIS-combined radiance at camera position (W/(m²·sr))
 
     // Helper functions for flag access
     bool getHitEmissiveSurface() { return (flags & 0x1) != 0; }
@@ -59,13 +55,17 @@ struct CIRPathData
     [mutating] void setHitEmissiveSurface(bool value) { flags = value ? (flags | 0x1) : (flags & ~0x1); }
     [mutating] void setIsNEEPath(bool value) { flags = value ? (flags | 0x2) : (flags & ~0x2); }
 
-    // New vertex-related fields for path vertex collection feature
+    // Vertex-related fields for path vertex collection feature
     uint2 compressedVertices[7];  ///< Compressed vertex coordinates, each vertex uses 6 bytes
     uint vertexCount;             ///< Actual number of vertices in the path
     float3 basePosition;          ///< Base position (camera position) for relative coordinate calculation
     
-    // NEE-specific fields - placed at end to avoid disrupting existing memory layout
+    // NEE-specific fields
     float4 lightSourcePosition;  ///< World space position of light source (for NEE paths only), w component unused
+    
+    // NEW FIELDS - Added at end to maintain memory layout compatibility
+    float primaryRayPdfW;       ///< p_det(ω): Direction probability density at receiver/PD for solid angle (1/sr)
+    float4 radianceRGBA;        ///< L(ω): MIS-combined radiance at camera position (W/(m²·sr)), A component unused
     
     // Light source position accessor functions (float4 with unused w component for alignment)
     float3 getLightSourcePosition() { return lightSourcePosition.xyz; }

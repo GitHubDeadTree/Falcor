@@ -119,7 +119,7 @@ struct PathState
     
     // New fields for unbiased CIR calculation
     float cirPrimaryRayPdfW;            ///< p_det(ω): Direction PDF at PD/receiver for solid angle (1/sr)
-    float3 cirRadianceRGB;              ///< L(ω): MIS-combined radiance at camera position (W/(m²·sr))
+    float4 cirRadianceRGBA;             ///< L(ω): MIS-combined radiance at camera position (W/(m²·sr)), A unused
 
     // === Vertex collection fields for path vertex collection feature ===
     float3 pathVertices[7];             ///< Temporary storage for vertex coordinates (max 7 vertices)
@@ -258,7 +258,7 @@ struct PathState
         
         // Initialize new fields for unbiased CIR calculation
         cirPrimaryRayPdfW = 0.0f;     // Will be set during path initialization
-        cirRadianceRGB = float3(0.0f); // Will be accumulated during path traversal
+        cirRadianceRGBA = float4(0.0f); // Will be accumulated during path traversal
     }
 
     /** Update emission angle based on surface normal and ray direction.
@@ -458,7 +458,7 @@ struct PathState
     */
     [mutating] void setCIRRadiance(float3 radiance)
     {
-        cirRadianceRGB = radiance;
+        cirRadianceRGBA = float4(radiance, 0.0f);
     }
     
     /** Add radiance contribution for CIR calculation.
@@ -466,7 +466,7 @@ struct PathState
     */
     [mutating] void addCIRRadiance(float3 radiance)
     {
-        cirRadianceRGB += radiance;
+        cirRadianceRGBA.rgb += radiance;
     }
 
     /** Validate the current state of vertex collection.
@@ -545,7 +545,7 @@ struct PathState
         
         // Fill new fields for unbiased CIR calculation
         cir.primaryRayPdfW = cirPrimaryRayPdfW;     // Direction PDF at PD/receiver
-        cir.radianceRGB = cirRadianceRGB;           // MIS-combined radiance
+        cir.radianceRGBA = cirRadianceRGBA;         // MIS-combined radiance
 
         // === New: Handle vertex collection data ===
         if (!isVertexCollectionValid())

@@ -1696,7 +1696,7 @@ struct PathTracer
         neePathData.primaryRayPdfW = path.cirPrimaryRayPdfW;
         
         // For NEE paths, use the light sample radiance
-        neePathData.radianceRGB = ls.Li;
+        neePathData.radianceRGBA = float4(ls.Li, 0.0f);
 
         // 7. Pixel coordinates
         uint2 pixel = path.getPixel();

@@ -188,6 +188,9 @@ private:
     bool                            mOutputNRDData = false;     ///< True if NRD diffuse/specular data should be generated as outputs.
     bool                            mOutputNRDAdditionalData = false;   ///< True if NRD data from delta and residual paths should be generated as designated outputs rather than being included in specular NRD outputs.
     bool                            mOutputInitialRayInfo = false; ///< True if initial ray direction and intensity data should be generated as outputs.
+    
+    // CIR data structure size (determined via reflection)
+    uint32_t                        mCIRDataStructSize = 64;    ///< Size of CIRPathData structure in bytes (fallback: 64)
 
     ref<ComputePass>                mpGeneratePaths;            ///< Fullscreen compute pass generating paths starting at primary hits.
     ref<ComputePass>                mpResolvePass;              ///< Sample resolve pass.
