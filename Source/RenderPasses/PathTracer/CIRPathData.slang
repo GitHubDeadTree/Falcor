@@ -42,12 +42,16 @@ struct CIRPathData
     float receptionAngle;       ///< θ_i: Reception angle at photodiode surface (radians, range [0, π])
     float reflectanceProduct;   ///< r_i product: Product of all surface reflectances along the path [0,1]
     uint reflectionCount;       ///< K_i: Number of reflections in the path
-    float emittedPower;         ///< P_t: Emitted optical power after attenuation (watts)
-    float originalEmittedPower; ///< P_t_orig: Original LED emitted power before attenuation (watts)
+    float emittedPower;         ///< @deprecated P_t: Emitted optical power after attenuation (watts) - USE radianceRGB instead
+    float originalEmittedPower; ///< @deprecated P_t_orig: Original LED emitted power before attenuation (watts) - USE radianceRGB instead
     uint pixelX;                ///< Pixel X coordinate
     uint pixelY;                ///< Pixel Y coordinate
     uint pathIndex;             ///< Unique index identifier for this path
     uint flags;                 ///< Bit 0: hitEmissiveSurface, Bit 1: isNEEPath, Bits 2-31: reserved
+    
+    // New fields for unbiased energy-conserving CIR calculation
+    float primaryRayPdfW;       ///< p_det(ω): Direction probability density at receiver/PD for solid angle (1/sr)
+    float3 radianceRGB;         ///< L(ω): MIS-combined radiance at camera position (W/(m²·sr))
 
     // Helper functions for flag access
     bool getHitEmissiveSurface() { return (flags & 0x1) != 0; }

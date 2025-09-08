@@ -90,7 +90,12 @@ struct PathTracerParams
 
     uint    frameCount = 0;             ///< Frames rendered. This is used as random seed.
     uint    seed = 0;                   ///< Random seed. This will get updated from the host depending on settings.
-    uint2   _pad0;
+    
+    // PD (Photodiode) parameters for CIR calculation
+    float   pdEffectiveArea = 9e-6f;    ///< PD effective area in m² (default: 9e-6 m²)
+    float   pdFovHorizontal = 1.047197551f; ///< PD horizontal field of view in radians (default: π/3 ≈ 60°)
+    float   pdFovVertical = 1.047197551f;   ///< PD vertical field of view in radians (default: π/3 ≈ 60°)
+    float   _pad0;
 
 #ifndef HOST_CODE
     /** Computes the offset into the tiled sample buffer for a given tile.

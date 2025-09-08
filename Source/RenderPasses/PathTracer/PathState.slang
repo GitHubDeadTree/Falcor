@@ -109,13 +109,17 @@ struct PathState
 
     float       wavelength;             ///< Light wavelength in nm (0 = not determined or white light)
 
-    // === CIR (Channel Impulse Response) specific fields (29 bytes) ===
+    // === CIR (Channel Impulse Response) specific fields ===
     float cirEmissionAngle;             ///< φ_i: Emission angle at LED surface (radians)
     float cirReceptionAngle;            ///< θ_i: Reception angle at receiver surface (radians)
     float cirReflectanceProduct;        ///< r_i: Accumulated product of surface reflectances [0,1]
     bool hitEmissiveSurface;            ///< Flag indicating if the path has hit an emissive surface
     float cirOriginalLEDPower;          ///< P_t_orig: Single path effective emitted power (watts)
     float3 cirInitialL;                 ///< Initial path radiance L for power calculation
+    
+    // New fields for unbiased CIR calculation
+    float cirPrimaryRayPdfW;            ///< p_det(ω): Direction PDF at PD/receiver for solid angle (1/sr)
+    float3 cirRadianceRGB;              ///< L(ω): MIS-combined radiance at camera position (W/(m²·sr))
 
     // === Vertex collection fields for path vertex collection feature ===
     float3 pathVertices[7];             ///< Temporary storage for vertex coordinates (max 7 vertices)
@@ -251,6 +255,10 @@ struct PathState
         cirReflectanceProduct = 1.0f; // Initial value: no attenuation, will be multiplied by reflectances
         hitEmissiveSurface = false;   // Default: not hit emissive surface
         cirOriginalLEDPower = 0.0f;   // Default: no power assigned yet
+        
+        // Initialize new fields for unbiased CIR calculation
+        cirPrimaryRayPdfW = 0.0f;     // Will be set during path initialization
+        cirRadianceRGB = float3(0.0f); // Will be accumulated during path traversal
     }
 
     /** Update emission angle based on surface normal and ray direction.
@@ -437,6 +445,30 @@ struct PathState
         }
     }
 
+    /** Set primary ray PDF for CIR calculation.
+        \param[in] pdfW Direction probability density at receiver (1/sr).
+    */
+    [mutating] void setCIRPrimaryRayPdfW(float pdfW)
+    {
+        cirPrimaryRayPdfW = pdfW;
+    }
+
+    /** Set or accumulate radiance for CIR calculation.
+        \param[in] radiance MIS-combined radiance (W/(m²·sr)).
+    */
+    [mutating] void setCIRRadiance(float3 radiance)
+    {
+        cirRadianceRGB = radiance;
+    }
+    
+    /** Add radiance contribution for CIR calculation.
+        \param[in] radiance Additional radiance contribution (W/(m²·sr)).
+    */
+    [mutating] void addCIRRadiance(float3 radiance)
+    {
+        cirRadianceRGB += radiance;
+    }
+
     /** Validate the current state of vertex collection.
         Checks if vertex collection data is valid and ready for use.
         \return True if vertex collection is valid, false if there are issues
@@ -510,6 +542,10 @@ struct PathState
 
         // TASK 3: Set original LED power with validation
         cir.originalEmittedPower = getOriginalLEDPower();                       // Original LED power for this path
+        
+        // Fill new fields for unbiased CIR calculation
+        cir.primaryRayPdfW = cirPrimaryRayPdfW;     // Direction PDF at PD/receiver
+        cir.radianceRGB = cirRadianceRGB;           // MIS-combined radiance
 
         // === New: Handle vertex collection data ===
         if (!isVertexCollectionValid())

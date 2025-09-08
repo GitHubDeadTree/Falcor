@@ -324,6 +324,15 @@ struct PathTracer
         // Use camera forward direction as PD surface normal
         float3 cameraForward = normalize(cameraRay.dir);
         path.initCIRReceptionAngle(cameraForward, cameraRay.dir);
+        
+        // Calculate primary ray PDF for unbiased CIR calculation
+        float primaryRayPdfW = calculatePrimaryRayPdfW(
+            cameraRay.dir,          // Ray direction
+            cameraForward,          // PD forward direction (camera forward)
+            params.pdFovHorizontal, // PD horizontal FOV
+            params.pdFovVertical    // PD vertical FOV
+        );
+        path.setCIRPrimaryRayPdfW(primaryRayPdfW);
 
         // Create sample generator.
         const uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
@@ -422,7 +431,12 @@ struct PathTracer
             path.setInitialL(radiance);
         }
 
+        // Standard path contribution
         path.L += path.thp * radiance;
+        
+        // CIR radiance accumulation: store MIS-combined radiance for unbiased calculation
+        // Note: This stores the raw radiance before throughput multiplication for physical accuracy
+        path.addCIRRadiance(radiance);
     }
 
     /** Update CIR data with material reflectance from BSDF properties.
@@ -1676,6 +1690,13 @@ struct PathTracer
 
         // Set original emitted power same as emitted power for NEE paths
         neePathData.originalEmittedPower = neePathData.emittedPower;
+        
+        // Fill new fields for unbiased CIR calculation
+        // Use same primary ray PDF as the original path (from camera/PD)
+        neePathData.primaryRayPdfW = path.cirPrimaryRayPdfW;
+        
+        // For NEE paths, use the light sample radiance
+        neePathData.radianceRGB = ls.Li;
 
         // 7. Pixel coordinates
         uint2 pixel = path.getPixel();
@@ -1887,6 +1908,77 @@ struct PathTracer
         pathPower = clamp(pathPower, 0.001f, 5.0f); // 1mW to 5W range
 
         return pathPower;
+    }
+
+    /** Calculate PD (photodiode) direction probability density for CIR paths.
+        Computes the direction PDF at the receiver (PD) for a given ray direction
+        using the pinhole PD model with specified field of view.
+        
+        This implements the formula:
+        primaryRayPdfW = 1/(4*tan(αx/2)*tan(αy/2)) * 1/cos³θ
+        
+        \param[in] rayDir Ray direction vector (from PD to scene)
+        \param[in] pdForward PD surface normal direction
+        \param[in] pdFovHorizontal PD horizontal field of view in radians
+        \param[in] pdFovVertical PD vertical field of view in radians
+        \return Direction probability density (1/sr), or 0 if outside FOV
+    */
+    float calculatePrimaryRayPdfW(float3 rayDir, float3 pdForward, float pdFovHorizontal, float pdFovVertical)
+    {
+        // Normalize vectors
+        float3 ray = normalize(rayDir);
+        float3 forward = normalize(pdForward);
+        
+        // Calculate cosine of angle between ray and PD normal
+        float cosTheta = dot(ray, forward);
+        
+        // Check if ray is within PD field of view
+        const float epsilon = 1e-8f;
+        if (cosTheta <= epsilon)
+        {
+            return 0.0f; // Ray pointing away or parallel to PD surface
+        }
+        
+        // Calculate maximum cosine values for FOV boundaries
+        float maxCosX = cos(pdFovHorizontal * 0.5f);
+        float maxCosY = cos(pdFovVertical * 0.5f);
+        
+        // Project ray onto horizontal and vertical planes to check FOV bounds
+        float3 rightDir = normalize(cross(forward, float3(0, 1, 0)));
+        if (length(rightDir) < epsilon) // Handle edge case where forward is parallel to up vector
+        {
+            rightDir = normalize(cross(forward, float3(1, 0, 0)));
+        }
+        float3 upDir = normalize(cross(rightDir, forward));
+        
+        float cosX = abs(dot(ray, rightDir));
+        float cosY = abs(dot(ray, upDir));
+        
+        // Check if ray is within FOV bounds (simplified rectangular approximation)
+        if (cosX > sin(pdFovHorizontal * 0.5f) || cosY > sin(pdFovVertical * 0.5f))
+        {
+            return 0.0f; // Outside FOV
+        }
+        
+        // Calculate PDF denominator (solid angle factor)
+        float tanHalfX = tan(pdFovHorizontal * 0.5f);
+        float tanHalfY = tan(pdFovVertical * 0.5f);
+        float solidAngleFactor = 4.0f * tanHalfX * tanHalfY;
+        
+        // Protect against division by zero
+        if (solidAngleFactor <= epsilon)
+        {
+            return 0.0f;
+        }
+        
+        // Calculate direction PDF using pinhole model
+        float cosTheta3 = cosTheta * cosTheta * cosTheta;
+        float primaryRayPdfW = 1.0f / (solidAngleFactor * cosTheta3);
+        
+        // Clamp to reasonable range to avoid numerical issues
+        primaryRayPdfW = clamp(primaryRayPdfW, epsilon, 1e6f);
+        
+        return primaryRayPdfW;
     }
 
     /** Calculate path power from light sample.

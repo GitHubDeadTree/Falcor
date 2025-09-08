@@ -680,6 +680,34 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
         widget.tooltip("Selects the color format used for internal per-sample color and denoiser buffers");
     }
 
+    if (auto group = widget.group("CIR/PD Configuration"))
+    {
+        runtimeDirty |= widget.var("PD effective area (m²)", mParams.pdEffectiveArea, 1e-9f, 1e-3f, 0.f, "%.2e");
+        widget.tooltip("Photodiode effective area in square meters.\nDefault: 9e-6 m² (typical for VLC applications)");
+        
+        float pdFovHorizontalDeg = mParams.pdFovHorizontal * 180.0f / (float)M_PI;
+        float pdFovVerticalDeg = mParams.pdFovVertical * 180.0f / (float)M_PI;
+        
+        if (widget.var("PD horizontal FOV (degrees)", pdFovHorizontalDeg, 1.0f, 180.0f))
+        {
+            mParams.pdFovHorizontal = pdFovHorizontalDeg * (float)M_PI / 180.0f;
+            runtimeDirty = true;
+        }
+        widget.tooltip("Photodiode horizontal field of view in degrees.\nDefault: 60° (π/3 radians)");
+        
+        if (widget.var("PD vertical FOV (degrees)", pdFovVerticalDeg, 1.0f, 180.0f))
+        {
+            mParams.pdFovVertical = pdFovVerticalDeg * (float)M_PI / 180.0f;
+            runtimeDirty = true;
+        }
+        widget.tooltip("Photodiode vertical field of view in degrees.\nDefault: 60° (π/3 radians)");
+        
+        // Display calculated solid angle for reference
+        float solidAngle = 4.0f * tan(mParams.pdFovHorizontal / 2.0f) * tan(mParams.pdFovVertical / 2.0f);
+        widget.text("PD solid angle: " + std::to_string(solidAngle) + " sr");
+        widget.tooltip("Calculated solid angle coverage of the photodiode.\nUsed for primaryRayPdfW calculation in CIR data.");
+    }
+
     if (dirty) mRecompile = true;
     return dirty || runtimeDirty;
 }

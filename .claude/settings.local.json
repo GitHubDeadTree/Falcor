@@ -5,7 +5,8 @@
       "Bash(cmake:*)",
       "Bash(dir:*)",
       "Bash(cmd /c:*)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Read(d:\\Campus\\KY\\Light\\Falcor4\\Falcor\\zReadme\\CIR归一化修改/**)"
     ],
     "deny": []
   }
