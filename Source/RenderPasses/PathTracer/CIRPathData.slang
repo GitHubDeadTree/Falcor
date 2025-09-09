@@ -42,8 +42,8 @@ struct CIRPathData
     float receptionAngle;       ///< θ_i: Reception angle at photodiode surface (radians, range [0, π])
     float reflectanceProduct;   ///< r_i product: Product of all surface reflectances along the path [0,1]
     uint reflectionCount;       ///< K_i: Number of reflections in the path
-    float emittedPower;         ///< P_t: Emitted optical power after attenuation (watts)
-    float originalEmittedPower; ///< P_t_orig: Original LED emitted power before attenuation (watts)
+    float emittedPower;         ///< @deprecated P_t: Emitted optical power after attenuation (watts) - USE radianceRGB instead
+    float originalEmittedPower; ///< @deprecated P_t_orig: Original LED emitted power before attenuation (watts) - USE radianceRGB instead
     uint pixelX;                ///< Pixel X coordinate
     uint pixelY;                ///< Pixel Y coordinate
     uint pathIndex;             ///< Unique index identifier for this path
@@ -55,13 +55,17 @@ struct CIRPathData
     [mutating] void setHitEmissiveSurface(bool value) { flags = value ? (flags | 0x1) : (flags & ~0x1); }
     [mutating] void setIsNEEPath(bool value) { flags = value ? (flags | 0x2) : (flags & ~0x2); }
 
-    // New vertex-related fields for path vertex collection feature
+    // Vertex-related fields for path vertex collection feature
     uint2 compressedVertices[7];  ///< Compressed vertex coordinates, each vertex uses 6 bytes
     uint vertexCount;             ///< Actual number of vertices in the path
     float3 basePosition;          ///< Base position (camera position) for relative coordinate calculation
     
-    // NEE-specific fields - placed at end to avoid disrupting existing memory layout
+    // NEE-specific fields
     float4 lightSourcePosition;  ///< World space position of light source (for NEE paths only), w component unused
+    
+    // NEW FIELDS - Added at end to maintain memory layout compatibility
+    float samplingPdfW;         ///< p_sampling(ω): Actual sampling PDF from path tracing (NEE or BSDF) (1/sr)
+    float4 radianceRGBA;        ///< L(ω): MIS-combined radiance at camera position (W/(m²·sr)), A component unused
     
     // Light source position accessor functions (float4 with unused w component for alignment)
     float3 getLightSourcePosition() { return lightSourcePosition.xyz; }

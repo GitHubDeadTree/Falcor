@@ -400,7 +400,7 @@ RenderPassReflection PathTracer::reflect(const CompileData& compileData)
     try
     {
         const uint32_t maxSamples = sz.x * sz.y * mStaticParams.samplesPerPixel;
-        const uint32_t cirDataSize = maxSamples * 40; // TASK 3: 40 bytes = size of CIRPathData structure (added originalEmittedPower)
+        const uint32_t cirDataSize = maxSamples * mCIRDataStructSize; // Use dynamically determined size via reflection
         reflector.addOutput(kOutputCIRData, "CIR path data buffer for VLC analysis")
             .bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource)
             .rawBuffer(cirDataSize)
@@ -680,6 +680,34 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
         widget.tooltip("Selects the color format used for internal per-sample color and denoiser buffers");
     }
 
+    if (auto group = widget.group("CIR/PD Configuration"))
+    {
+        runtimeDirty |= widget.var("PD effective area (m²)", mParams.pdEffectiveArea, 1e-9f, 1e-3f, 0.f, "%.2e");
+        widget.tooltip("Photodiode effective area in square meters.\nDefault: 9e-6 m² (typical for VLC applications)");
+        
+        float pdFovHorizontalDeg = mParams.pdFovHorizontal * 180.0f / (float)M_PI;
+        float pdFovVerticalDeg = mParams.pdFovVertical * 180.0f / (float)M_PI;
+        
+        if (widget.var("PD horizontal FOV (degrees)", pdFovHorizontalDeg, 1.0f, 180.0f))
+        {
+            mParams.pdFovHorizontal = pdFovHorizontalDeg * (float)M_PI / 180.0f;
+            runtimeDirty = true;
+        }
+        widget.tooltip("Photodiode horizontal field of view in degrees.\nDefault: 60° (π/3 radians)");
+        
+        if (widget.var("PD vertical FOV (degrees)", pdFovVerticalDeg, 1.0f, 180.0f))
+        {
+            mParams.pdFovVertical = pdFovVerticalDeg * (float)M_PI / 180.0f;
+            runtimeDirty = true;
+        }
+        widget.tooltip("Photodiode vertical field of view in degrees.\nDefault: 60° (π/3 radians)");
+        
+        // Display calculated solid angle for reference
+        float solidAngle = 4.0f * tan(mParams.pdFovHorizontal / 2.0f) * tan(mParams.pdFovVertical / 2.0f);
+        widget.text("PD solid angle: " + std::to_string(solidAngle) + " sr");
+        widget.tooltip("Calculated solid angle coverage of the photodiode.\nNote: Now using actual sampling PDFs from path tracing instead of recalculating.");
+    }
+
     if (dirty) mRecompile = true;
     return dirty || runtimeDirty;
 }
@@ -875,6 +903,49 @@ void PathTracer::updatePrograms()
     preparePass(mpGeneratePaths);
     preparePass(mpResolvePass);
     preparePass(mpReflectTypes);
+
+    // Get CIRPathData structure size via reflection
+    if (mpTracePass && mpTracePass->pProgram)
+    {
+        try
+        {
+            auto pReflector = mpTracePass->pProgram->getReflector();
+            if (pReflector)
+            {
+                auto pCIRType = pReflector->findType("CIRPathData");
+                if (pCIRType)
+                {
+                    uint32_t reflectedSize = (uint32_t)pCIRType->getByteSize();
+                    if (reflectedSize > 0 && reflectedSize <= 512) // Sanity check
+                    {
+                        if (mCIRDataStructSize != reflectedSize)
+                        {
+                            logInfo("PathTracer: CIRPathData size updated via reflection: {} bytes (was: {})", 
+                                   reflectedSize, mCIRDataStructSize);
+                            mCIRDataStructSize = reflectedSize;
+                            
+                            // Note: Detailed field layout inspection requires advanced reflection API
+                            logInfo("PathTracer: CIRPathData structure validated - size: {} bytes", reflectedSize);
+                        }
+                    }
+                    else
+                    {
+                        logWarning("PathTracer: Invalid CIRPathData size from reflection: {}, using fallback: {}", 
+                                  reflectedSize, mCIRDataStructSize);
+                    }
+                }
+                else
+                {
+                    logWarning("PathTracer: CIRPathData type not found in shader reflection, using fallback size: {}", 
+                              mCIRDataStructSize);
+                }
+            }
+        }
+        catch (const std::exception& e)
+        {
+            logError("PathTracer: Exception getting CIRPathData size via reflection: {}", e.what());
+        }
+    }
 
     mVarsChanged = true;
     mRecompile = false;

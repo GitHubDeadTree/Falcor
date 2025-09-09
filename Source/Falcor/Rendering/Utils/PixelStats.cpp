@@ -127,6 +127,16 @@ namespace Falcor
             {
                 // Clear the counter buffer for new frame
                 pRenderContext->clearUAV(mpCIRCounterBuffer->getUAV().get(), uint4(0, 0, 0, 0));
+
+                // P1 optimization: Clear path type counters
+                if (mpNEEPathCounterBuffer)
+                {
+                    pRenderContext->clearUAV(mpNEEPathCounterBuffer->getUAV().get(), uint4(0, 0, 0, 0));
+                }
+                if (mpRegularPathCounterBuffer)
+                {
+                    pRenderContext->clearUAV(mpRegularPathCounterBuffer->getUAV().get(), uint4(0, 0, 0, 0));
+                }
             }
 
             for (uint32_t i = 0; i < kRayTypeCount; i++)
@@ -182,8 +192,24 @@ namespace Falcor
                 // Copy counter to readback buffer
                 pRenderContext->copyBufferRegion(mpCIRCounterReadback.get(), 0, mpCIRCounterBuffer.get(), 0, sizeof(uint32_t));
 
-                // Copy raw data to readback buffer
-                pRenderContext->copyBufferRegion(mpCIRRawDataReadback.get(), 0, mpCIRRawDataBuffer.get(), 0, mMaxCIRPathsPerFrame * sizeof(CIRPathData));
+                // Copy raw data to readback buffer using runtime struct stride to avoid layout mismatch
+                pRenderContext->copyBufferRegion(
+                    mpCIRRawDataReadback.get(),
+                    0,
+                    mpCIRRawDataBuffer.get(),
+                    0,
+                    (size_t)mMaxCIRPathsPerFrame * (size_t)mpCIRRawDataBuffer->getStructSize()
+                );
+
+                // P1 optimization: Copy path type counters to readback buffers
+                if (mpNEEPathCounterBuffer && mpNEEPathCounterReadback)
+                {
+                    pRenderContext->copyBufferRegion(mpNEEPathCounterReadback.get(), 0, mpNEEPathCounterBuffer.get(), 0, sizeof(uint32_t));
+                }
+                if (mpRegularPathCounterBuffer && mpRegularPathCounterReadback)
+                {
+                    pRenderContext->copyBufferRegion(mpRegularPathCounterReadback.get(), 0, mpRegularPathCounterBuffer.get(), 0, sizeof(uint32_t));
+                }
             }
 
             // Submit command list and insert signal.
@@ -231,6 +257,10 @@ namespace Falcor
                 var["PerFrameCB"]["gCIRMaxAngle"] = mCIRMaxAngle;
                 var["PerFrameCB"]["gCIRMinReflectance"] = mCIRMinReflectance;
                 var["PerFrameCB"]["gCIRMaxReflectance"] = mCIRMaxReflectance;
+
+                // P0 optimization: Bind NEE filtering parameters
+                var["PerFrameCB"]["gCIRCollectNEEOnly"] = mCIRCollectNEEOnly;
+                var["PerFrameCB"]["gCIRCollectRegularPaths"] = mCIRCollectRegularPaths;
             }
 
             // Bind raw CIR data buffers if raw data collection is enabled
@@ -248,7 +278,7 @@ namespace Falcor
                         MemoryType::DeviceLocal, nullptr, false
                     );
                     mpCIRRawDataReadback = mpDevice->createBuffer(
-                        mMaxCIRPathsPerFrame * sizeof(CIRPathData),
+                        (size_t)mMaxCIRPathsPerFrame * (size_t)mpCIRRawDataBuffer->getStructSize(),
                         ResourceBindFlags::None,
                         MemoryType::ReadBack
                     );
@@ -270,10 +300,45 @@ namespace Falcor
                     logInfo("Created CIR counter buffer: {} bytes", sizeof(uint32_t));
                 }
 
+                // P1 optimization: Create NEE and regular path counter buffers
+                if (!mpNEEPathCounterBuffer)
+                {
+                    mpNEEPathCounterBuffer = mpDevice->createBuffer(
+                        sizeof(uint32_t),
+                        ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess,
+                        MemoryType::DeviceLocal
+                    );
+                    mpNEEPathCounterReadback = mpDevice->createBuffer(
+                        sizeof(uint32_t),
+                        ResourceBindFlags::None,
+                        MemoryType::ReadBack
+                    );
+                    logInfo("Created NEE path counter buffer");
+                }
+
+                if (!mpRegularPathCounterBuffer)
+                {
+                    mpRegularPathCounterBuffer = mpDevice->createBuffer(
+                        sizeof(uint32_t),
+                        ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess,
+                        MemoryType::DeviceLocal
+                    );
+                    mpRegularPathCounterReadback = mpDevice->createBuffer(
+                        sizeof(uint32_t),
+                        ResourceBindFlags::None,
+                        MemoryType::ReadBack
+                    );
+                    logInfo("Created regular path counter buffer");
+                }
+
                 // Direct binding following PixelInspectorPass pattern - variables always exist now
                 var["gCIRRawDataBuffer"] = mpCIRRawDataBuffer;
                 var["gCIRCounterBuffer"] = mpCIRCounterBuffer;
                 var["PerFrameCB"]["gMaxCIRPaths"] = mMaxCIRPathsPerFrame;
+
+                // P1 optimization: Bind path type counter buffers
+                var["gNEEPathCounter"] = mpNEEPathCounterBuffer;
+                var["gRegularPathCounter"] = mpRegularPathCounterBuffer;
 
                 // Bind GPU-side CIR filtering parameters for real-time filtering
                 var["PerFrameCB"]["gCIRFilteringEnabled"] = mCIRFilteringEnabled;
@@ -285,6 +350,10 @@ namespace Falcor
                 var["PerFrameCB"]["gCIRMaxAngle"] = mCIRMaxAngle;
                 var["PerFrameCB"]["gCIRMinReflectance"] = mCIRMinReflectance;
                 var["PerFrameCB"]["gCIRMaxReflectance"] = mCIRMaxReflectance;
+
+                // P0 optimization: Bind NEE filtering parameters
+                var["PerFrameCB"]["gCIRCollectNEEOnly"] = mCIRCollectNEEOnly;
+                var["PerFrameCB"]["gCIRCollectRegularPaths"] = mCIRCollectRegularPaths;
 
                 logDebug("Successfully bound CIR raw data buffers and filtering parameters to shader variables");
             }
@@ -353,7 +422,7 @@ namespace Falcor
                     widget.text(fmt::format("CIR paths: {} collected (filtering disabled)", filteredCount));
                     widget.tooltip("Shows collected CIR paths count (no filtering applied)");
                 }
-                
+
                 // NEE-CIR: Display buffer usage information
                 if (mCollectedCIRPaths > 0)
                 {
@@ -373,7 +442,7 @@ namespace Falcor
                         widget.text(fmt::format("Buffer usage: {:.1f}%", bufferUsage));
                         widget.tooltip("CIR buffer usage percentage");
                     }
-                    
+
                     // Count NEE-CIR paths (those with hitEmissiveSurface = true)
                     uint32_t neeCircCount = 0;
                     if (mCIRRawDataValid)
@@ -403,12 +472,38 @@ namespace Falcor
                     exportCIRData("cir_data.txt", mpScene);
                 }
 
+                // P0/P1 optimization: NEE Path Filtering UI
+                if (auto group = widget.group("NEE Path Filtering")) {
+                    group.checkbox("Collect NEE Paths Only", mCIRCollectNEEOnly);
+                    group.tooltip("When enabled, only NEE (Next Event Estimation / direct illumination) paths are collected. Recommended for VLC applications.");
+
+                    if (!mCIRCollectNEEOnly) {
+                        group.checkbox("Collect Regular Paths", mCIRCollectRegularPaths);
+                        group.tooltip("Enable collection of regular (non-NEE) paths when NEE-only mode is disabled");
+                    }
+
+                    // P1: Display path type statistics from GPU counters
+                    copyCIRRawDataToCPU(); // Ensure latest data is available
+
+                    group.text(fmt::format("NEE Paths: {}", mStats.neePathsCollected));
+                    group.tooltip("Number of NEE (Next Event Estimation) paths collected from GPU counter");
+
+                    group.text(fmt::format("Regular Paths: {}", mStats.regularPathsCollected));
+                    group.tooltip("Number of regular (non-NEE) paths collected from GPU counter");
+
+                    if (mStats.totalPathsAttempted > 0) {
+                        group.text(fmt::format("Total Attempted: {}", mStats.totalPathsAttempted));
+                        group.text(fmt::format("NEE Ratio: {:.1f}%", mStats.neePathRatio * 100.0f));
+                        group.tooltip("Percentage of NEE paths out of all attempted paths");
+                    }
+                }
+
                 // Add CIR filtering parameters UI
-                if (auto group = widget.group("CIR Filtering Parameters")) {
+                if (auto group = widget.group("CIR Physical Parameters Filtering")) {
                     try {
                         // Filtering Enable/Disable Switch
-                        group.checkbox("Enable CIR Filtering", mCIRFilteringEnabled);
-                        group.tooltip("Enable or disable CIR data filtering. When disabled, all collected paths are included.");
+                        group.checkbox("Enable Physical Filtering", mCIRFilteringEnabled);
+                        group.tooltip("Enable or disable physical parameter-based CIR data filtering. When disabled, all collected paths are included.");
 
                         if (mCIRFilteringEnabled) {
                             // Path Length Filtering
@@ -451,7 +546,7 @@ namespace Falcor
 
                             // Angle Filtering
                             group.text("Angle Filtering:");
-                            if (group.var("Min Angle (rad)", mCIRMinAngle, 0.0f, 3.14159f, 0.01f)) {
+                            if (group.var("Min Angle (rad)", mCIRMinAngle, 0.0f, 1.5708f, 0.01f)) {
                                 if (mCIRMinAngle > mCIRMaxAngle) {
                                     mCIRMaxAngle = mCIRMinAngle;
                                     logWarning("CIR UI: Adjusted max angle to match min value");
@@ -459,7 +554,7 @@ namespace Falcor
                             }
                             group.tooltip("Minimum angle for emission/reception filtering (radians)");
 
-                            if (group.var("Max Angle (rad)", mCIRMaxAngle, 0.0f, 3.14159f, 0.01f)) {
+                            if (group.var("Max Angle (rad)", mCIRMaxAngle, 0.0f, 1.5708f, 0.01f)) {
                                 if (mCIRMaxAngle < mCIRMinAngle) {
                                     mCIRMinAngle = mCIRMaxAngle;
                                     logWarning("CIR UI: Adjusted min angle to match max value");
@@ -493,7 +588,7 @@ namespace Falcor
                             mCIRMinEmittedPower = 0.0f;
                             mCIRMaxEmittedPower = 100000.0f;
                             mCIRMinAngle = 0.0f;
-                            mCIRMaxAngle = 3.14159f;
+                            mCIRMaxAngle = 1.5708f;  // π/2 radians (90 degrees) - VLC physical limit
                             mCIRMinReflectance = 0.0f;
                             mCIRMaxReflectance = 1.0f;
                         }
@@ -722,13 +817,45 @@ namespace Falcor
                     uint32_t actualPathCount = *counterData;
                     mCollectedCIRPaths = std::min(actualPathCount, mMaxCIRPathsPerFrame);
                     mpCIRCounterReadback->unmap();
-                    
+
+                    // P1 optimization: Read path type counters
+                    if (mpNEEPathCounterReadback)
+                    {
+                        const uint32_t* neeCounterData = static_cast<const uint32_t*>(mpNEEPathCounterReadback->map());
+                        if (neeCounterData)
+                        {
+                            mStats.neePathsCollected = *neeCounterData;
+                            mpNEEPathCounterReadback->unmap();
+                        }
+                    }
+
+                    if (mpRegularPathCounterReadback)
+                    {
+                        const uint32_t* regularCounterData = static_cast<const uint32_t*>(mpRegularPathCounterReadback->map());
+                        if (regularCounterData)
+                        {
+                            mStats.regularPathsCollected = *regularCounterData;
+                            mpRegularPathCounterReadback->unmap();
+                        }
+                    }
+
+                    // Calculate path statistics
+                    mStats.totalPathsAttempted = mStats.neePathsCollected + mStats.regularPathsCollected;
+                    if (mStats.totalPathsAttempted > 0)
+                    {
+                        mStats.neePathRatio = (float)mStats.neePathsCollected / (float)mStats.totalPathsAttempted;
+                    }
+                    else
+                    {
+                        mStats.neePathRatio = 0.0f;
+                    }
+
                     // NEE-CIR: Buffer usage monitoring and overflow detection
                     if (actualPathCount > mMaxCIRPathsPerFrame)
                     {
                         uint32_t overflowCount = actualPathCount - mMaxCIRPathsPerFrame;
                         float overflowPercentage = (float)overflowCount / (float)actualPathCount * 100.0f;
-                        logWarning("CIR buffer overflow: {} paths attempted, {} collected, {} lost ({:.1f}%)", 
+                        logWarning("CIR buffer overflow: {} paths attempted, {} collected, {} lost ({:.1f}%)",
                                   actualPathCount, mCollectedCIRPaths, overflowCount, overflowPercentage);
                     }
                     else if (actualPathCount > mMaxCIRPathsPerFrame * 0.9f) // Warn at 90% usage
@@ -1267,8 +1394,8 @@ namespace Falcor
         file << "# g_optical_concentration," << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
         file << "#\n";
 
-        // Write CSV header with originalEmittedPower field, vertex data support, and light source position
-        file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W,OriginalEmittedPower_W,HitEmissiveSurface,IsNEEPath,";
+        // Write CSV header with extended fields (originalEmittedPower, primaryRayPdfW, radianceRGBA), vertex data support, and light source position
+        file << "PathIndex,PixelX,PixelY,PathLength_m,EmissionAngle_rad,ReceptionAngle_rad,ReflectanceProduct,ReflectionCount,EmittedPower_W,OriginalEmittedPower_W,PrimaryRayPdfW,Radiance_R,Radiance_G,Radiance_B,Radiance_A,HitEmissiveSurface,IsNEEPath,";
         file << "VertexCount,BasePosition_X,BasePosition_Y,BasePosition_Z,";
         file << "LightSourcePosition_X,LightSourcePosition_Y,LightSourcePosition_Z,";  // NEE light source position
         file << "Vertex1_X,Vertex1_Y,Vertex1_Z,Vertex2_X,Vertex2_Y,Vertex2_Z,Vertex3_X,Vertex3_Y,Vertex3_Z,";
@@ -1296,7 +1423,7 @@ namespace Falcor
 
             try
             {
-                // TASK 3: Write basic path data including originalEmittedPower
+                // Write basic path data including originalEmittedPower and new normalization fields
                 file << i << ","
                      << data.pixelX << ","
                      << data.pixelY << ","
@@ -1306,7 +1433,9 @@ namespace Falcor
                      << data.reflectanceProduct << ","
                      << data.reflectionCount << ","
                      << data.emittedPower << ","
-                     << data.originalEmittedPower << ","  // TASK 3: New field added
+                     << data.originalEmittedPower << ","
+                     << data.primaryRayPdfW << ","
+                     << data.radianceRGBA.x << "," << data.radianceRGBA.y << "," << data.radianceRGBA.z << "," << data.radianceRGBA.w << ","
                      << (data.getHitEmissiveSurface() ? 1 : 0) << ","
                      << (data.getIsNEEPath() ? 1 : 0) << ",";
 
@@ -1315,7 +1444,7 @@ namespace Falcor
                      << data.basePosition.x << ","
                      << data.basePosition.y << ","
                      << data.basePosition.z << ",";
-                
+
                 // Write light source position (for NEE paths)
                 float3 lightPos = data.getLightSourcePosition();
                 file << lightPos.x << "," << lightPos.y << "," << lightPos.z << ",";
@@ -1398,7 +1527,10 @@ namespace Falcor
                 file << "\"reflectance_product\":" << data.reflectanceProduct << ",";
                 file << "\"reflection_count\":" << data.reflectionCount << ",";
                 file << "\"emitted_power_w\":" << data.emittedPower << ",";
-                file << "\"original_emitted_power_w\":" << data.originalEmittedPower << ",";  // TASK 3: New field added
+                file << "\"original_emitted_power_w\":" << data.originalEmittedPower << ",";
+                // New normalization fields
+                file << "\"primary_ray_pdf_w\":" << data.primaryRayPdfW << ",";
+                file << "\"radiance_rgba\":[" << data.radianceRGBA.x << "," << data.radianceRGBA.y << "," << data.radianceRGBA.z << "," << data.radianceRGBA.w << "],";
                 file << "\"hit_emissive_surface\":" << (data.getHitEmissiveSurface() ? "true" : "false") << ",";
                 file << "\"is_nee_path\":" << (data.getIsNEEPath() ? "true" : "false") << ",";
 
@@ -1454,9 +1586,9 @@ namespace Falcor
         file << "# T_s_optical_filter_gain=" << std::fixed << std::setprecision(1) << staticParams.opticalFilterGain << "\n";
         file << "# g_optical_concentration=" << std::fixed << std::setprecision(1) << staticParams.opticalConcentration << "\n";
         file << "#\n";
-        // TASK 3: Path Data Format Extended with Vertex Collection and originalEmittedPower
-        file << "# Path Data Format Extended with Vertex Collection:\n";
-        file << "# PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W),OriginalEmittedPower(W),HitEmissiveSurface,IsNEEPath,\n";
+        // Path Data Format Extended with normalization fields and Vertex Collection
+        file << "# Path Data Format Extended with Vertex Collection and Normalization Fields:\n";
+        file << "# PathIndex,PixelX,PixelY,PathLength(m),EmissionAngle(rad),ReceptionAngle(rad),ReflectanceProduct,ReflectionCount,EmittedPower(W),OriginalEmittedPower(W),PrimaryRayPdfW(1/sr),Radiance(R,G,B,A),HitEmissiveSurface,IsNEEPath,\n";
         file << "# VertexCount,BasePosition(X,Y,Z),LightSourcePosition(X,Y,Z),Vertices(X,Y,Z for each vertex up to 7)\n";
         file << "#\n";
         file << "# Vertex Collection Feature: Each path contains up to 7 collected vertices representing the light path trajectory\n";
@@ -1482,7 +1614,7 @@ namespace Falcor
 
             try
             {
-                // TASK 3: Basic path data including originalEmittedPower
+                // Basic path data including originalEmittedPower and new normalization fields
                 file << i << ","
                      << data.pixelX << ","
                      << data.pixelY << ","
@@ -1492,7 +1624,9 @@ namespace Falcor
                      << data.reflectanceProduct << ","
                      << data.reflectionCount << ","
                      << data.emittedPower << ","
-                     << data.originalEmittedPower << ","  // TASK 3: New field added
+                     << data.originalEmittedPower << ","
+                     << data.primaryRayPdfW << ","
+                     << data.radianceRGBA.x << "," << data.radianceRGBA.y << "," << data.radianceRGBA.z << "," << data.radianceRGBA.w << ","
                      << (data.getHitEmissiveSurface() ? 1 : 0) << ","
                      << (data.getIsNEEPath() ? 1 : 0) << ",";
 
@@ -1501,7 +1635,7 @@ namespace Falcor
                      << data.basePosition.x << ","
                      << data.basePosition.y << ","
                      << data.basePosition.z;
-                
+
                 // Light source position (for NEE paths)
                 float3 lightPos = data.getLightSourcePosition();
                 file << "," << lightPos.x << "," << lightPos.y << "," << lightPos.z;

@@ -52,6 +52,10 @@ RWTexture2D<uint> gStatsCIRValidSamples;     // Per-pixel valid CIR sample count
 RWStructuredBuffer<CIRPathData> gCIRRawDataBuffer;  // Raw CIR path data storage
 RWByteAddressBuffer gCIRCounterBuffer;              // Counter for number of stored paths
 
+// P1 optimization: Path type counters
+RWByteAddressBuffer gNEEPathCounter;                // Counter for NEE paths
+RWByteAddressBuffer gRegularPathCounter;            // Counter for regular paths
+
 // Constant buffer for CIR parameters following Falcor standard pattern
 cbuffer PerFrameCB
 {
@@ -67,6 +71,10 @@ cbuffer PerFrameCB
     float gCIRMaxAngle;                             // Maximum angle for filtering (radians)
     float gCIRMinReflectance;                       // Minimum reflectance for filtering
     float gCIRMaxReflectance;                       // Maximum reflectance for filtering
+    
+    // P0 optimization: NEE path filtering parameters
+    bool gCIRCollectNEEOnly;                        // Collect only NEE paths (default: true for VLC)
+    bool gCIRCollectRegularPaths;                   // Collect regular (non-NEE) paths
 }
 
 #ifdef _PIXEL_STATS_ENABLED
@@ -164,6 +172,18 @@ void logRayWavelength(float wavelength)
 void logCIRRawPathInternal(CIRPathData pathData)
 {
 #ifdef _PIXEL_STATS_RAW_DATA_ENABLED
+    // P1 optimization: Track path type statistics
+    if (pathData.getIsNEEPath())
+    {
+        uint dummy;
+        gNEEPathCounter.InterlockedAdd(0, 1, dummy);
+    }
+    else
+    {
+        uint dummy;
+        gRegularPathCounter.InterlockedAdd(0, 1, dummy);
+    }
+    
     // Atomically increment the counter to get a unique index
     uint index = 0;
     gCIRCounterBuffer.InterlockedAdd(0, 1, index);
@@ -230,10 +250,17 @@ bool isValidCIRDataGPU(CIRPathData data)
     // If filtering is disabled, accept all data (except NaN/inf checks in logCIRPathComplete)
     if (!gCIRFilteringEnabled) return true;
 
-    // Basic data validity checks - reject clearly invalid data
+    // Enhanced VLC-specific data validity checks
     if (data.pathLength < 0.0f || data.emittedPower < 0.0f ||
-        data.emissionAngle < 0.0f || data.receptionAngle < 0.0f ||
-        data.reflectanceProduct < 0.0f)
+        data.reflectanceProduct < 0.0f || data.reflectanceProduct > 1.0f)
+    {
+        return false;
+    }
+
+    // VLC angle validity: angles should be in range [0, π/2] for physical systems
+    // Reject angles that are clearly unphysical (negative or > π)
+    if (data.emissionAngle < 0.0f || data.emissionAngle > 3.14159f ||
+        data.receptionAngle < 0.0f || data.receptionAngle > 3.14159f)
     {
         return false;
     }
@@ -251,8 +278,26 @@ bool isValidCIRDataGPU(CIRPathData data)
 // Unified CIR logging function - MODIFIED: Added GPU-side real-time filtering
 void logCIRPathComplete(CIRPathData pathData)
 {
-    // Basic sanity check - reject NaN/infinite path lengths
-    if (isnan(pathData.pathLength) || isinf(pathData.pathLength))
+    // P0 optimization: NEE path filtering
+    // Check if we should filter based on path type (NEE vs regular)
+    if (gCIRCollectNEEOnly && !pathData.getIsNEEPath())
+    {
+        // We're in NEE-only mode but this is not an NEE path - skip it
+        return;
+    }
+    
+    // Check if we should collect regular paths
+    if (!gCIRCollectNEEOnly && !gCIRCollectRegularPaths && !pathData.getIsNEEPath())
+    {
+        // We're not in NEE-only mode, but regular path collection is disabled 
+        // and this is not an NEE path - skip it
+        return;
+    }
+    
+    // Enhanced sanity checks - reject NaN/infinite values in critical fields
+    if (isnan(pathData.pathLength) || isinf(pathData.pathLength) ||
+        isnan(pathData.emissionAngle) || isinf(pathData.emissionAngle) ||
+        isnan(pathData.receptionAngle) || isinf(pathData.receptionAngle))
     {
         // Discard invalid data immediately - do not store in buffer
         return;

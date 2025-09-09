@@ -320,6 +320,13 @@ struct PathTracer
 
         // === Initialize CIR data ===
         path.initCIRData();
+        // Calculate reception angle at path start for CIR paths
+        // Use camera forward direction (cameraW) as PD surface normal
+        float3 cameraForward = normalize(gScene.camera.data.cameraW);
+        path.initCIRReceptionAngle(cameraForward, cameraRay.dir);
+        
+        // Note: samplingPdfW will be set during path tracing when actual sampling occurs
+        // This follows the correct Monte Carlo principle: use the PDF from the actual sampling process
 
         // Create sample generator.
         const uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
@@ -418,7 +425,12 @@ struct PathTracer
             path.setInitialL(radiance);
         }
 
+        // Standard path contribution
         path.L += path.thp * radiance;
+        
+        // CIR radiance accumulation: store MIS-combined radiance for unbiased calculation
+        // Note: This stores the raw radiance before throughput multiplication for physical accuracy
+        path.addCIRRadiance(radiance);
     }
 
     /** Update CIR data with material reflectance from BSDF properties.
@@ -430,17 +442,17 @@ struct PathTracer
     */
     void updateCIRWithMaterialReflectance(inout PathState path, BSDFProperties bsdfProperties, BSDFSample bsdfSample)
     {
-        // If already hit emissive surface, do not update reflectance
-        if (path.hitEmissiveSurface) return;
+        // MODIFIED: Removed hitEmissiveSurface limitation to support NEE paths
+        // NEE paths need to accumulate reflectance even after hitting emissive surfaces
 
         const uint vertexIndex = path.getVertexIndex();
         const bool isPrimaryHit = (vertexIndex == 1);
 
-        // Only accumulate reflectance for actual surface interactions (not primary hit from camera)
-        // and only for reflection events
-        if (!isPrimaryHit && (bsdfSample.isLobe(LobeType::Reflection) ||
-                              bsdfSample.isLobe(LobeType::DiffuseReflection) ||
-                              bsdfSample.isLobe(LobeType::SpecularReflection)))
+        // MODIFIED: Include primary hits for NEE path reflectance calculation
+        // Accumulate reflectance for all reflection events including primary hits
+        if (bsdfSample.isLobe(LobeType::Reflection) ||
+            bsdfSample.isLobe(LobeType::DiffuseReflection) ||
+            bsdfSample.isLobe(LobeType::SpecularReflection))
         {
             // Calculate separate diffuse and specular components
             float3 diffuseAlbedo = bsdfProperties.diffuseReflectionAlbedo;
@@ -561,6 +573,10 @@ struct PathTracer
         path.dir = bs.wo;
         updatePathThroughput(path, bs.weight);
         path.pdf = bs.pdf;
+        
+        // === SOTA Solution: Record actual BSDF sampling PDF for CIR ===
+        // Use the real PDF from BSDF sampling - this is the correct Monte Carlo approach!
+        path.setCIRSamplingPdfW(bs.pdf); // bs.pdf is the true BSDF sampling PDF
 
         path.clearEventFlags();
 
@@ -1203,6 +1219,10 @@ struct PathTracer
                     {
                         addToPathContribution(path, Lr);
 
+                        // === SOTA Solution: Record actual sampling PDF from NEE ===
+                        // Use the real PDF from light sampling - this is the correct Monte Carlo approach!
+                        path.setCIRSamplingPdfW(ls.pdf); // ls.pdf is the true NEE sampling PDF
+                        
                         // === NEE-CIR: Record CIR data for NEE path ===
                         recordNEECIRPath(path, ls, pathVertex, sd);
                     }
@@ -1442,25 +1462,42 @@ struct PathTracer
             path.setOriginalLEDPower(emissionPower);
         }
         // Strategy 2: For VLC systems, calculate emission angle at primary hit
+        // NOTE: This algorithm is CORRECT and consistent with NEE path fix above
         else if (isPrimaryHit && path.cirEmissionAngle == 0.0f)
         {
             float3 emissionNormal = normalize(surfaceNormal);
+            // CORRECT: -path.initialDir gives emission direction (from surface to camera/receiver)
             float3 lightDirection = normalize(-path.initialDir);
             float cosAngle = dot(lightDirection, emissionNormal);
 
             if (!isnan(cosAngle) && !isinf(cosAngle))
             {
                 path.cirEmissionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
+                
+                // Apply same physical validation as NEE paths
+                const float PI_2 = 3.14159265359f * 0.5f;
+                if (path.cirEmissionAngle > PI_2)
+                {
+                    path.cirEmissionAngle = 0.777f; // Physical range error indicator
+                }
             }
         }
-        // Strategy 3: Final fallback for primary hits without calculated angle
+        // Strategy 3: Improved fallback with proper emission direction calculation
         else if (isPrimaryHit && path.cirEmissionAngle == 0.0f)
         {
-            float3 surfaceUp = float3(0, 1, 0);
+            // Fallback: use camera direction as emission direction for consistency
             float3 normal = normalize(surfaceNormal);
-            float cosAngle = dot(normal, surfaceUp);
+            float3 emissionDirection = normalize(-path.initialDir);  // Consistent with Strategy 2
+            float cosAngle = dot(emissionDirection, normal);
 
             path.cirEmissionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
+            
+            // Apply same physical validation as NEE paths
+            const float PI_2 = 3.14159265359f * 0.5f;
+            if (path.cirEmissionAngle > PI_2)
+            {
+                path.cirEmissionAngle = 0.777f; // Physical range error indicator
+            }
         }
 
         // Update reflectance using material properties
@@ -1489,16 +1526,8 @@ struct PathTracer
     */
     void outputCIRDataOnPathCompletion(PathState path)
     {
-        // Update reception angle when path is about to terminate
-        // Copy path to local variable to avoid mutation warning on 'in' parameter
-        PathState localPath = path;
-        // Compute reception angle whenever we have a valid normal from the last hit,
-        // even if the path terminated by a miss.
-        if (length(localPath.normal) > 0.1f)
-        {
-            localPath.updateCIRReceptionAngle(localPath.dir, localPath.normal);
-        }
-        path = localPath;
+        // NOTE: Reception angle calculation moved to path initialization (generatePath function)
+        // for correct CIR calculation using camera/PD surface normal instead of last hit surface
 
         // Dynamically generate complete CIR data (utilizing reused fields)
         CIRPathData cirData = path.getCIRData();
@@ -1597,15 +1626,26 @@ struct PathTracer
         }
 
         // 2. Calculate emission angle (angle between light surface normal and light ray direction)
+        // FIXED: ls.dir points FROM surface TO light, we need FROM light TO surface for emission angle
         float3 lightNormal = getLightSurfaceNormalSafe(ls);
-        float cosEmissionAngle = dot(lightNormal, normalize(ls.dir));
+        float3 emissionDirection = normalize(-ls.dir);  // Correct: from light to surface
+        float cosEmissionAngle = dot(lightNormal, emissionDirection);
         neePathData.emissionAngle = acos(clamp(cosEmissionAngle, -1.0f, 1.0f));
 
         const float PI = 3.14159265359f;
-        if (neePathData.emissionAngle < 0.0f || neePathData.emissionAngle > PI)
+        const float PI_2 = PI * 0.5f;  // π/2 for physical emission angle limit
+        
+        // Enhanced validation: Emission angle should be in [0, π/2] for physical VLC systems
+        if (neePathData.emissionAngle < 0.0f || neePathData.emissionAngle > PI_2)
         {
             // GPU shaders cannot use logWarning - set error indicator value
-            neePathData.emissionAngle = 0.666f; // Error indicator value
+            // 0.777f indicates physical range violation (was >π/2)
+            neePathData.emissionAngle = 0.777f; // Physical range error indicator
+        }
+        else if (isnan(neePathData.emissionAngle) || isinf(neePathData.emissionAngle))
+        {
+            // 0.666f indicates numerical error (NaN/inf)
+            neePathData.emissionAngle = 0.666f; // Numerical error indicator
         }
 
         // 3. Calculate reception angle (angle between camera surface normal and incident ray)
@@ -1627,8 +1667,9 @@ struct PathTracer
             neePathData.receptionAngle = angle;
         }
 
-        // 4. Reflection count: current path's reflection count
-        neePathData.reflectionCount = path.getVertexIndex() - 1;
+        // 4. Reflection count: use vertex-based calculation consistent with CIR paths
+        // NEE path structure: camera -> hit points -> light source (same as CIR)
+        neePathData.reflectionCount = (path.pathVertexCount > 0) ? (path.pathVertexCount - 1) : 0;
 
         // 5. Reflectance product: use current path's accumulated reflectance
         neePathData.reflectanceProduct = path.cirReflectanceProduct;
@@ -1651,6 +1692,13 @@ struct PathTracer
 
         // Set original emitted power same as emitted power for NEE paths
         neePathData.originalEmittedPower = neePathData.emittedPower;
+        
+        // Fill new fields for unbiased CIR calculation
+        // Use the actual light sampling PDF - this is the correct Monte Carlo approach!
+        neePathData.samplingPdfW = ls.pdf; // Direct use of NEE sampling PDF
+        
+        // For NEE paths, use the light sample radiance
+        neePathData.radianceRGBA = float4(ls.Li, 0.0f);
 
         // 7. Pixel coordinates
         uint2 pixel = path.getPixel();
@@ -1863,6 +1911,7 @@ struct PathTracer
 
         return pathPower;
     }
+
 
     /** Calculate path power from light sample.
         Estimates the effective power share for a single path based on the

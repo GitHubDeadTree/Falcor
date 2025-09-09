@@ -109,13 +109,17 @@ struct PathState
 
     float       wavelength;             ///< Light wavelength in nm (0 = not determined or white light)
 
-    // === CIR (Channel Impulse Response) specific fields (29 bytes) ===
+    // === CIR (Channel Impulse Response) specific fields ===
     float cirEmissionAngle;             ///< φ_i: Emission angle at LED surface (radians)
     float cirReceptionAngle;            ///< θ_i: Reception angle at receiver surface (radians)
     float cirReflectanceProduct;        ///< r_i: Accumulated product of surface reflectances [0,1]
     bool hitEmissiveSurface;            ///< Flag indicating if the path has hit an emissive surface
     float cirOriginalLEDPower;          ///< P_t_orig: Single path effective emitted power (watts)
     float3 cirInitialL;                 ///< Initial path radiance L for power calculation
+    
+    // New fields for unbiased CIR calculation
+    float cirSamplingPdfW;              ///< p_sampling(ω): Actual sampling PDF from path tracing (1/sr)
+    float4 cirRadianceRGBA;             ///< L(ω): MIS-combined radiance at camera position (W/(m²·sr)), A unused
 
     // === Vertex collection fields for path vertex collection feature ===
     float3 pathVertices[7];             ///< Temporary storage for vertex coordinates (max 7 vertices)
@@ -251,6 +255,10 @@ struct PathState
         cirReflectanceProduct = 1.0f; // Initial value: no attenuation, will be multiplied by reflectances
         hitEmissiveSurface = false;   // Default: not hit emissive surface
         cirOriginalLEDPower = 0.0f;   // Default: no power assigned yet
+        
+        // Initialize new fields for unbiased CIR calculation
+        cirSamplingPdfW = 0.0f;       // Will be set when actual sampling occurs
+        cirRadianceRGBA = float4(0.0f); // Will be accumulated during path traversal
     }
 
     /** Update emission angle based on surface normal and ray direction.
@@ -272,10 +280,10 @@ struct PathState
         cirEmissionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
     }
 
-    /** Update reception angle based on incoming ray direction and surface normal.
-        Should be called at the final surface interaction (reception surface).
-        \param[in] incomingDir Incoming ray direction.
-        \param[in] surfaceNormal Surface normal at the reception point.
+    /** DEPRECATED: Old reception angle calculation (incorrect for CIR paths).
+        This function calculated angle with last hit surface instead of camera/PD surface.
+        Kept for backward compatibility but should not be used.
+        Use initCIRReceptionAngle() instead.
     */
     [mutating] void updateCIRReceptionAngle(float3 incomingDir, float3 surfaceNormal)
     {
@@ -286,6 +294,29 @@ struct PathState
         // Numerical domain protection only; semantic filtering is done at export.
         if (isnan(cosAngle) || isinf(cosAngle))
         {
+            return;
+        }
+
+        cirReceptionAngle = acos(clamp(cosAngle, -1.0f, 1.0f));
+    }
+
+    /** Initialize reception angle for CIR paths at path start.
+        For CIR paths (from camera/PD), this calculates the angle between
+        the initial ray direction and the camera/PD surface normal.
+        Should be called once when the path is initialized.
+        \param[in] cameraDirection Camera/PD surface normal direction.
+        \param[in] initialRayDir Initial ray direction from camera/PD.
+    */
+    [mutating] void initCIRReceptionAngle(float3 cameraDirection, float3 initialRayDir)
+    {
+        float3 camDir = normalize(cameraDirection);
+        float3 rayDir = normalize(initialRayDir);
+        float cosAngle = dot(rayDir, camDir);
+
+        // Numerical domain protection
+        if (isnan(cosAngle) || isinf(cosAngle))
+        {
+            cirReceptionAngle = 0.0f; // Default: perpendicular emission from PD
             return;
         }
 
@@ -414,6 +445,30 @@ struct PathState
         }
     }
 
+    /** Set sampling PDF for CIR calculation.
+        \param[in] pdfW Actual sampling PDF from path tracing (NEE or BSDF) (1/sr).
+    */
+    [mutating] void setCIRSamplingPdfW(float pdfW)
+    {
+        cirSamplingPdfW = pdfW;
+    }
+
+    /** Set or accumulate radiance for CIR calculation.
+        \param[in] radiance MIS-combined radiance (W/(m²·sr)).
+    */
+    [mutating] void setCIRRadiance(float3 radiance)
+    {
+        cirRadianceRGBA = float4(radiance, 0.0f);
+    }
+    
+    /** Add radiance contribution for CIR calculation.
+        \param[in] radiance Additional radiance contribution (W/(m²·sr)).
+    */
+    [mutating] void addCIRRadiance(float3 radiance)
+    {
+        cirRadianceRGBA.rgb += radiance;
+    }
+
     /** Validate the current state of vertex collection.
         Checks if vertex collection data is valid and ready for use.
         \return True if vertex collection is valid, false if there are issues
@@ -467,8 +522,9 @@ struct PathState
 
         // ✅ Reuse existing fields (7/9 parameters - 77.8% reuse rate)
         cir.pathLength = sceneLength;                                           // Direct assignment, no conversion needed
-        cir.reflectionCount = getBounces(BounceType::Diffuse) +
-                             getBounces(BounceType::Specular);                  // Reuse existing field
+        // Use vertex-based reflection counting: camera -> hit points -> light source
+        // Reflection count = number of intermediate vertices = pathVertexCount - 1
+        cir.reflectionCount = (pathVertexCount > 0) ? (pathVertexCount - 1) : 0;
         cir.emittedPower = getLightIntensity();                                 // Reuse existing field (attenuated power)
         uint2 pixel = getPixel();
         cir.pixelX = pixel.x;                                                   // Reuse existing field
@@ -486,6 +542,10 @@ struct PathState
 
         // TASK 3: Set original LED power with validation
         cir.originalEmittedPower = getOriginalLEDPower();                       // Original LED power for this path
+        
+        // Fill new fields for unbiased CIR calculation
+        cir.samplingPdfW = cirSamplingPdfW;         // Actual sampling PDF from path tracing
+        cir.radianceRGBA = cirRadianceRGBA;         // MIS-combined radiance
 
         // === New: Handle vertex collection data ===
         if (!isVertexCollectionValid())

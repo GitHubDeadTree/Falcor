@@ -60,6 +60,10 @@ struct PathPayload
     uint  packed_cir_power;    ///< CIR original LED power: pack cirOriginalLEDPower as 32-bit float
     float3 packed_cir_initialL; ///< CIR initial L value: pack cirInitialL as 3 32-bit floats
 
+    // New normalization fields - keep as plain types to avoid precision loss
+    float  samplingPdfW;        ///< p_sampling(ω): Actual sampling PDF from path tracing (1/sr)
+    float4 cirRadianceRGBA;     ///< MIS-combined radiance at camera position (W/(m²·sr)), A unused
+
     PackedHitInfo hit;
     GuideData guideData;
     InteriorList interiorList;  ///< Interior list. Keeping track of a stack of materials with medium properties. The size depends on the config (4B/item).
@@ -123,6 +127,10 @@ struct PathPayload
 
         // Pack initial L value as 3 32-bit floats
         p.packed_cir_initialL = path.cirInitialL;
+
+        // Pack normalization fields
+        p.samplingPdfW = path.cirSamplingPdfW;
+        p.cirRadianceRGBA = path.cirRadianceRGBA;
 
         p.hit = path.hit.pack();
         p.guideData = path.guideData;
@@ -231,6 +239,20 @@ struct PathPayload
         if (any(isnan(path.cirInitialL)) || any(isinf(path.cirInitialL)) || any(path.cirInitialL < 0.0f))
         {
             path.cirInitialL = float3(0.0f);  // Reset to zero for invalid values
+        }
+
+        // Unpack normalization fields
+        path.cirSamplingPdfW = p.samplingPdfW;
+        path.cirRadianceRGBA = p.cirRadianceRGBA;
+
+        // Validate normalization fields
+        if (!(path.cirSamplingPdfW > 0.0f) || isinf(path.cirSamplingPdfW) || isnan(path.cirSamplingPdfW))
+        {
+            path.cirSamplingPdfW = 0.0f;
+        }
+        if (any(isnan(path.cirRadianceRGBA)) || any(isinf(path.cirRadianceRGBA)))
+        {
+            path.cirRadianceRGBA = float4(0.0f);
         }
 
         path.hit = unpackHitInfo(p.hit);
